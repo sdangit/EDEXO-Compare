@@ -62,10 +62,11 @@ async function smokeBoot() {
   const smokeHome = mkdtempSync(path.join(tmpdir(), "edexo-smoke-"));
   const child = spawn(process.execPath, ["build/app.cjs", "--host", "127.0.0.1", "--port", String(port)], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, EDEXO_USER_DATA_DIR: smokeHome },
+    env: { ...process.env, EDEXO_USER_DATA_DIR: smokeHome, ED_JOURNAL_DIR: path.resolve("tests/fixtures/journal-smoke") },
   });
 
   let output = "";
+  let timeout;
   const done = new Promise((resolve) => {
     const onChunk = (buf) => {
       output += String(buf);
@@ -74,11 +75,16 @@ async function smokeBoot() {
     child.stdout.on("data", onChunk);
     child.stderr.on("data", onChunk);
     child.on("exit", (code) => resolve(`exited with code ${code}`));
-    setTimeout(() => resolve("timed out after 90s"), 90_000);
+    timeout = setTimeout(() => resolve("timed out after 90s"), 90_000);
   });
 
   const outcome = await done;
-  child.kill();
+  clearTimeout(timeout);
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  if (child.exitCode === null) {
+    child.kill();
+    await exited;
+  }
   rmSync(smokeHome, { recursive: true, force: true });
   if (outcome !== "listening") {
     console.error(`\n[bundle] build/app.cjs did not start — ${outcome}\n`);

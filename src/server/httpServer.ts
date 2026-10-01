@@ -6,6 +6,7 @@ import type { RegionalRarity } from "../shared/speciesRarity.js";
 import { findMatchDetail, parseWsChannel, slimSnapshotForChannel, type WsChannel } from "./wsChannels.js";
 import { eliteDisplaySettingsPath, eliteDisplayWarning, readEliteDisplayMode } from "./eliteDisplayMode.js";
 import { linuxCheckForThisMachine } from "./linuxProbes.js";
+import { platformFeatures } from "./platformFeatures.js";
 import http from "node:http";
 import os from "node:os";
 import express from "express";
@@ -366,6 +367,7 @@ export function createHttpServer(opts: HttpServerOptions): {
   /** The radar's own frame, straight to the HUD sockets. See {@link ExoLiveDTO}. */
   broadcastExoLive: (live: ExoLiveDTO) => void;
   listening: Promise<void>;
+  closeConnections: () => void;
 } {
   const app = express();
   const root = getProjectRoot();
@@ -415,6 +417,23 @@ export function createHttpServer(opts: HttpServerOptions): {
     perfCount("http.apiStatus");
     res.json(opts.getStatus());
   });
+
+  // Loaded before launcher initialization, including through Vite's /api proxy.
+  app.get("/api/platform.js", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.type("application/javascript").send(`window.edexoPlatform = ${JSON.stringify(platformFeatures())};`);
+  });
+  if (!platformFeatures().hud) {
+    app.use((req, res, next) => {
+      if (/^\/api\/hud(?:\/|$)/.test(req.path) || req.path === "/api/settings/hud-prefs" ||
+          req.path === "/api/elite-display-mode" || /^\/hud(?:\/|\.|$)/.test(req.path) ||
+          /-overlay\.html$/.test(req.path)) {
+        res.status(404).json({ ok: false, error: "HUD overlays are not included on macOS." });
+        return;
+      }
+      next();
+    });
+  }
 
   /*
     Fleet carriers, from EDAstro. Three routes, and none of them runs by itself.
@@ -483,6 +502,10 @@ export function createHttpServer(opts: HttpServerOptions): {
     perfCount("http.apiState");
     res.setHeader("X-Edexo-Rev", String(pushRev));
     const chq = parseWsChannel(req.query?.channel) ?? "app";
+    if (chq === "hud" && !platformFeatures().hud) {
+      res.status(404).json({ error: "HUD overlays are not included on macOS." });
+      return;
+    }
     const snap = opts.getSnapshot();
     if (chq === "app") lastAppSnap = snap;
     const body = perfTime("http.apiState.serialize", () => JSON.stringify(slimSnapshotForChannel(snap, chq)));
@@ -850,6 +873,10 @@ export function createHttpServer(opts: HttpServerOptions): {
         const msg = JSON.parse(String(raw)) as { type?: unknown; channel?: unknown };
         if (msg && msg.type === "hello") {
           const ch = parseWsChannel(msg.channel);
+          if (ch === "hud" && !platformFeatures().hud) {
+            ws.close(1008, "HUD overlays are not included on macOS.");
+            return;
+          }
           if (ch && ch !== channelOf.get(ws)) {
             channelOf.set(ws, ch);
             ws.send(stateMessage(opts.getSnapshot(), ch));
@@ -934,5 +961,9 @@ export function createHttpServer(opts: HttpServerOptions): {
   };
 
   server.listen(opts.port, opts.bindHost);
-  return { server, broadcast, broadcastExoLive, listening };
+  const closeConnections = () => {
+    for (const ws of wss.clients) ws.terminate();
+    server.closeAllConnections();
+  };
+  return { server, broadcast, broadcastExoLive, listening, closeConnections };
 }

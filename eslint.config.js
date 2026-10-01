@@ -1,4 +1,4 @@
-// Flat config (ESLint 9). Deliberately warn-heavy rather than error-heavy for v0.2.0:
+// Flat config (ESLint 10). Deliberately warn-heavy rather than error-heavy for v0.2.0:
 // the point of this stage is signal, not a clean board. Later stages tighten it.
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
@@ -21,6 +21,8 @@ export default tseslint.config(
     ],
   },
   js.configs.recommended,
+  // ESLint 10 adds this to recommended. Keep the existing codebase's warning policy.
+  { rules: { "no-useless-assignment": "warn" } },
   ...tseslint.configs.recommended,
   {
     files: ["src/**/*.{ts,tsx}"],
@@ -29,7 +31,7 @@ export default tseslint.config(
     },
     plugins: { "react-hooks": reactHooks },
     rules: {
-      ...reactHooks.configs.recommended.rules,
+      "react-hooks/rules-of-hooks": "error",
 
       // TypeScript already resolves identifiers; `no-undef` only produces false positives here.
       "no-undef": "off",

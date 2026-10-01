@@ -51,14 +51,19 @@
     "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
     "dev:perf": "cross-env EDEXO_PERF=1 npm run dev",
     "start:client:perf": "cross-env EDEXO_PERF=1 tsx src/server/devEntry.ts --host 127.0.0.1 --port 7111 --open",
-    "typecheck:client": "tsc --noEmit"
+    "typecheck:client": "tsc --noEmit",
+    "dist:mac": "npm run build && npm run bundle && node scripts/dist-mac.mjs",
+    "dist:mac:electron": "npm run build && npm run bundle && node scripts/dist-mac-electron.mjs",
+    "electron:dev:mac": "npm run build && npm run bundle && electron electron/main.mac.cjs",
+    "test:e2e:mac": "playwright test -c playwright.mac.config.ts",
+    "test:electron:mac": "node scripts/smoke-mac-electron.mjs"
   },
   "dependencies": {
     "express": "^4.21.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5",
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
     "@types/express": "^5.0.1",
     "@types/node": "^22.10.5",
@@ -68,16 +73,16 @@
     "@types/three": "^0.186.0",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.4",
-    "@yao-pkg/pkg": "^5.16.1",
+    "@yao-pkg/pkg": "^6.23.0",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
-    "csv-parse": "^5.6.0",
+    "csv-parse": "^7.0.3",
     "electron": "^42.0.0",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.0",
-    "eslint": "^9.39.5",
+    "eslint": "^10.11.0",
     "eslint-config-prettier": "^9.1.2",
-    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.12.0",
     "html-to-image": "^1.11.13",
     "jsdom": "^29.1.1",
@@ -93,6 +98,14 @@
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.69.0",
     "vite": "^6.0.6",
-    "vitest": "^3.2.7"
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "overrides": {
+    "express": {
+      "qs": "^6.16.0"
+    }
   }
 }

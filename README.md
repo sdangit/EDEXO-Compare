@@ -172,6 +172,47 @@ Every request is listed in the [privacy policy](public/legal/privacy.html), whic
 
 ## Running it
 
+### macOS / CrossOver (local port)
+
+Use Node 24 LTS (`.nvmrc` pins the major), then `npm ci`.
+Start Elite Dangerous in CrossOver before starting this app.
+
+```sh
+npm run build
+npm run start:client           # local browser UI at http://127.0.0.1:7111
+npm run dist:mac               # self-contained browser release for this Mac's architecture
+npm run dist:mac -- --arch x64 # optional Intel release, built on macOS
+npm run electron:dev:mac       # optional native launcher and app window, without overlays
+npm run dist:mac:electron      # optional .app in dist/electron-out-mac
+npm run test:e2e:mac           # extracted browser archive + live journal smoke test (Chrome)
+npm run test:electron:mac      # packaged Electron launcher, main window and shutdown smoke test
+```
+
+The browser release is under `dist/mac/` as a folder and `.tar.gz`. It embeds Node 24;
+users do not need Node installed. Double-click `edexo-client.command` in the extracted
+folder, and keep its Terminal window open; Ctrl+C stops the server. Settings and
+backups are available at `http://127.0.0.1:7111/launcher.html`.
+
+The default journal folder is:
+
+```text
+~/Library/Application Support/CrossOver/Bottles/Elite Dangerous/drive_c/users/crossover/Saved Games/Frontier Developments/Elite Dangerous
+```
+
+For a different bottle, use **Journal folder** in the launcher or set
+`ED_JOURNAL_DIR="/absolute/path/to/journals"`. Settings live in
+`~/Library/Application Support/ED Exo Compare`.
+
+The macOS experience excludes HUD overlays, their controls, and game-process/focus
+checks. Journals and `Status.json` still update the main app. Automatic departure
+backups rely on journal `Shutdown` events; crash/process-exit detection is excluded.
+The launcher can still make manual and scheduled backups.
+
+These are local test builds. Browser executables use ad-hoc signing; the Electron
+`.app` is not prepared for public distribution. Developer ID signing and notarization
+should be configured before publishing a Mac download. Existing Windows/Linux
+overlay functionality is retained for those platforms.
+
 The packaged app is a small launcher window; the app itself opens in your browser.
 
 ```

@@ -1,5 +1,11 @@
 "use strict";
 
+// The macOS shell intentionally has no overlay integration, including in electron:dev.
+if (process.platform === "darwin") {
+  require("./main.mac.cjs");
+  return;
+}
+
 const {
   app,
   BrowserWindow,

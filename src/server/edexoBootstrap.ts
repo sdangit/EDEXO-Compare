@@ -1350,7 +1350,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   };
 
   // The process check only matters to the desktop app's overlays; a plain server does not poll.
-  const gamePresence = createGamePresence({ autoStart: process.env.EDEXO_ELECTRON === "1" });
+  const gamePresence = createGamePresence({ autoStart: process.platform !== "darwin" && process.env.EDEXO_ELECTRON === "1" });
 
   const backupService = createBackupService({
     appDataDir: path.dirname(userSettingsPath),
@@ -1358,6 +1358,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     getCommander: () => store.commanderName,
     appVersion: APP_VERSION,
     exports: () => [exportOwn("exomastery"), exportOwn("codex")],
+    // CrossOver process names are unreliable; journal Shutdown events still trigger backups.
+    ...(process.platform === "darwin" ? { isGameRunning: async () => true } : {}),
   });
 
   const {
@@ -1365,6 +1367,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     broadcast: broadcastFn,
     broadcastExoLive,
     listening,
+    closeConnections,
   } = createHttpServer({
     backup: backupService,
     port,
@@ -1481,7 +1484,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       if (store.setMinimapRadiusM(raw)) {
         persistUserPreferences();
         lastFootStatusRunAt = Date.now();
-        if (store.exoOrganicTracker || store.overlayTouchdownBodyKey) broadcastExoLive(buildExoLive());
+        if (process.platform !== "darwin" && (store.exoOrganicTracker || store.overlayTouchdownBodyKey)) broadcastExoLive(buildExoLive());
         push();
       }
       return store.minimapRadiusM;
@@ -1800,7 +1803,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
           Identical frames are dropped inside the broadcaster, so standing still costs nothing.
         */
-        if (store.exoOrganicTracker || store.overlayTouchdownBodyKey) broadcastExoLive(buildExoLive());
+        if (process.platform !== "darwin" && (store.exoOrganicTracker || store.overlayTouchdownBodyKey)) broadcastExoLive(buildExoLive());
 
         const footHud = store.footTravelOdometerEnabled && store.footTravelOdometerTracking;
         if (footHud || store.exoOrganicTracker || fuelChanged || navChanged || destChanged || jumpChanged)
@@ -1884,6 +1887,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     if (speciesPollFallback) unwatchFile(speciesDataWatchRoot, onSpeciesTreeOrPricesChange);
     if (existsSync(priceListPath)) unwatchFile(priceListPath, onSpeciesTreeOrPricesChange);
     if (watcher) await watcher.close();
+    // A browser can still have a WebSocket open when its Terminal receives Ctrl+C.
+    if (process.platform === "darwin") closeConnections();
     await new Promise<void>((res) => {
       server.close(() => res());
     });

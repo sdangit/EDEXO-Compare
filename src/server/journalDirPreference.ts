@@ -15,6 +15,7 @@
  */
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { homedir } from "node:os";
 import { resolveJournalPathsPath } from "./paths.js";
 import { findLinuxJournalDirs, type ProtonFs } from "./protonJournals.js";
 
@@ -71,10 +72,18 @@ function linuxDefaultJournalDir(): string {
   return found ? found.dir : path.join(home, ".local/share/Frontier Developments/Elite Dangerous");
 }
 
-export const DEFAULT_JOURNAL_DIR =
-  process.platform === "win32"
-    ? path.join(process.env.USERPROFILE || "", "Saved Games", "Frontier Developments", "Elite Dangerous")
-    : linuxDefaultJournalDir();
+export function defaultJournalDir(platform = process.platform, home = homedir()): string {
+  if (platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "CrossOver", "Bottles", "Elite Dangerous",
+      "drive_c", "users", "crossover", "Saved Games", "Frontier Developments", "Elite Dangerous");
+  }
+  if (platform === "win32") {
+    return path.join(process.env.USERPROFILE || home, "Saved Games", "Frontier Developments", "Elite Dangerous");
+  }
+  return linuxDefaultJournalDir();
+}
+
+export const DEFAULT_JOURNAL_DIR = defaultJournalDir();
 
 function readJournalDirFrom(file: string): string | null {
   try {

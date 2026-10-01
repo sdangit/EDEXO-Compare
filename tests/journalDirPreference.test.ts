@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   DEFAULT_JOURNAL_DIR,
+  defaultJournalDir,
   PATHS_FILE,
   loadPersistedJournalDir,
   persistJournalDirPreference,
@@ -94,6 +95,11 @@ describe("an answer given before the move", () => {
 });
 
 describe("what wins", () => {
+  it("uses the CrossOver bottle on macOS without probing Linux locations", () => {
+    expect(defaultJournalDir("darwin", "/Users/pilot")).toBe(
+      "/Users/pilot/Library/Application Support/CrossOver/Bottles/Elite Dangerous/drive_c/users/crossover/Saved Games/Frontier Developments/Elite Dangerous",
+    );
+  });
   it("puts ED_JOURNAL_DIR above everything, which is what makes an isolated test run possible", () => {
     writePrefs(join(projectRoot, PATHS_FILE), "E:\\Old\\Journals");
     persistJournalDirPreference("F:\\New\\Journals");

@@ -77,6 +77,8 @@ module.exports = {
   */
   files: [
     "electron/main.cjs",
+    "electron/main.mac.cjs",
+    "electron/preload.mac.cjs",
     "electron/preload.cjs",
     "electron/windowState.cjs",
     "electron/hudWindows.cjs",

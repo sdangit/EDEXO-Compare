@@ -64,6 +64,7 @@ test("launcher: renders with the live strip", async ({ page }) => {
 });
 
 test("launcher: the HUD menu warns when Elite is set to fullscreen", async ({ page }) => {
+  test.skip(process.platform === "darwin", "HUDs are excluded from the macOS port.");
   /*
     The warning has to be *rendered*, not merely computed. An always-on-top window cannot draw over
     an exclusive fullscreen game, and this line is the only place the app ever says so — shipped
@@ -100,6 +101,7 @@ test("launcher: the HUD menu warns when Elite is set to fullscreen", async ({ pa
   a change made elsewhere (the hotkey, the tray) must reach the buttons.
 */
 test("launcher: the HUDs' Show / Hide switch follows the saved state and the hotkey", async ({ page }) => {
+  test.skip(process.platform === "darwin", "HUDs are excluded from the macOS port.");
   const errors = watchErrors(page);
   await page.addInitScript(() => {
     const w = window as unknown as Record<string, unknown>;
@@ -257,6 +259,7 @@ test("launcher: a long Proton journal path wraps inside the first-run card", asy
 });
 
 test("hud: the merged overlay shows every section", async ({ page }) => {
+  test.skip(process.platform === "darwin", "HUDs are excluded from the macOS port.");
   const errors = watchErrors(page);
   await page.setViewportSize({ width: 420, height: 900 });
   await page.goto("/hud-overlay.html?s=jump,fss,candidates,distance,datavalue");
@@ -602,6 +605,7 @@ test("launcher: Backups backs up into the chosen folder and lists it for restore
 });
 
 test("phone hud: chips and the portrait layout", async ({ page }) => {
+  test.skip(process.platform === "darwin", "HUDs are excluded from the macOS port.");
   const errors = watchErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/hud-overlay.html?phone=1");

@@ -45,7 +45,7 @@ if (shouldRunCliAutoStart()) {
         console builds are used as a background server too, and writing "edexo> " into a log file
         would be a regression for anyone doing that.
       */
-      if (shouldStartRepl()) {
+      if (process.platform !== "darwin" && shouldStartRepl()) {
         const host = cli.bindHost === "0.0.0.0" ? "127.0.0.1" : cli.bindHost;
         startRepl({ ownBase: `http://${host}:${cli.port}`, onExit: onShutdown });
       }
