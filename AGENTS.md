@@ -7,11 +7,12 @@
 - `macos` is our integration baseline and will be the fork's default branch.
 - Create work branches from `macos`: `fix/<topic>`, `feature/<topic>`,
   `chore/<topic>`, or `docs/<topic>`. Commit work on these branches.
-- Currently this is a local clone and `origin` points to the original repository
-  (`bahuckel/EDEXO-Compare`). Do not push there. Fork creation and publication are
-  deferred until requested.
-- After creating a formal fork, `origin` should point to our fork and `upstream`
-  to the original repository. Check `git remote -v` before synchronization or push.
+- `origin` points to our fork: `https://github.com/sdangit/EDEXO-Compare.git`.
+- `upstream` points to the original: `https://github.com/bahuckel/EDEXO-Compare.git`.
+  Push our branches to `origin`, never to `upstream`. Check `git remote -v` before
+  synchronization or push. Local `main` tracks `upstream/main`; `macos` tracks
+  `origin/macos`. Keep the fork's `main` synchronized by pushing local `main` to
+  `origin/main` after its fast-forward update.
 
 ## Required integration sequence
 
@@ -19,7 +20,7 @@ Before merging any work branch into `macos`, synchronize with the original repo,
 even if it was fetched earlier in the task. Start with a clean working tree
 (commit the work first); do not discard unrelated changes.
 
-With the future fork remotes configured:
+With these fork remotes:
 
 ```sh
 git fetch upstream
@@ -35,8 +36,6 @@ git merge --squash <work-branch>
 git commit
 ```
 
-While `origin` still points to the original, substitute `git fetch origin main`
-and `git merge --ff-only origin/main` for the first fetch and main update.
 If `main` cannot fast-forward, investigate the divergence rather than resetting
 or rewriting it. Resolve and validate upstream integration before proceeding.
 
