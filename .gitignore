@@ -72,6 +72,7 @@ Thumbs.db
 # nothing is exposed by accident either.
 *.md
 !/README.md
+!/AGENTS.md
 # The attribution and third-party notice: it has to reach the remote to do its job.
 !/NOTICE.md
 

@@ -9,6 +9,13 @@ species encyclopedia.
 
 Made by Bahuckel (CMDR FALrenica). Not affiliated with Frontier Developments.
 
+This branch adds a **macOS / CrossOver port**, with browser and Electron releases
+and no HUD overlays. See [macOS setup and builds](#macos--crossover-local-port).
+The original project's download links below are upstream Windows/Linux releases;
+there is no published Mac download yet. Our integration branch is `macos`; `main`
+tracks the original repository. Contributors and agents should follow
+[the branch and integration workflow](AGENTS.md).
+
 ## Download
 
 Windows x64, no installer. Nothing is written to Program Files and nothing is registered with
@@ -31,21 +38,21 @@ finds a Proton journal folder and serves the app on Ubuntu 24.04; the HUD window
 not been seen over the game yet. If you try it, an issue saying what worked and what did not —
 distro, desktop, X11 or Wayland — is the most useful thing you can send.
 
-|                                                                                                                                         |                                                                                          |
-| --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **[AppImage — launcher + HUD](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.8-zip/EDExoCompare-1.2.8-x86_64.AppImage)** | The same app as on Windows: launcher window, tray, HUD overlays. One file, x86_64.       |
-| **[Browser build — .tar.gz](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.8-zip/EDExoCompare-1.2.8-linux-x64.tar.gz)** | No Electron. The app and the HUD pages open in your browser. For anything the AppImage cannot run on. |
+|                                                                                                                                            |                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| **[AppImage — launcher + HUD](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.8-zip/EDExoCompare-1.2.8-x86_64.AppImage)** | The same app as on Windows: launcher window, tray, HUD overlays. One file, x86_64.                    |
+| **[Browser build — .tar.gz](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.8-zip/EDExoCompare-1.2.8-linux-x64.tar.gz)**  | No Electron. The app and the HUD pages open in your browser. For anything the AppImage cannot run on. |
 
 **AppImage:** `chmod +x EDExoCompare-1.2.8-x86_64.AppImage`, then run it. It needs FUSE 2:
 
-| Distro                                            | Command                                   |
-| ------------------------------------------------- | ----------------------------------------- |
-| Ubuntu 24.04+, Mint 22+, Debian 13+               | `sudo apt install libfuse2t64`            |
-| Ubuntu 22.04, Mint 21, Pop!\_OS 22.04, Debian 12  | `sudo apt install libfuse2`               |
-| Fedora, Nobara                                    | `sudo dnf install fuse-libs`              |
-| Bazzite, Silverblue (read-only)                   | `rpm-ostree install fuse-libs`, reboot    |
-| openSUSE                                          | `sudo zypper install libfuse2`            |
-| Arch, CachyOS, Manjaro                            | `sudo pacman -S --needed fuse2`           |
+| Distro                                           | Command                                |
+| ------------------------------------------------ | -------------------------------------- |
+| Ubuntu 24.04+, Mint 22+, Debian 13+              | `sudo apt install libfuse2t64`         |
+| Ubuntu 22.04, Mint 21, Pop!\_OS 22.04, Debian 12 | `sudo apt install libfuse2`            |
+| Fedora, Nobara                                   | `sudo dnf install fuse-libs`           |
+| Bazzite, Silverblue (read-only)                  | `rpm-ostree install fuse-libs`, reboot |
+| openSUSE                                         | `sudo zypper install libfuse2`         |
+| Arch, CachyOS, Manjaro                           | `sudo pacman -S --needed fuse2`        |
 
 Without FUSE, `./EDExoCompare-1.2.8-x86_64.AppImage --appimage-extract-and-run` works too.
 
@@ -174,24 +181,45 @@ Every request is listed in the [privacy policy](public/legal/privacy.html), whic
 
 ### macOS / CrossOver (local port)
 
-Use Node 24 LTS (`.nvmrc` pins the major), then `npm ci`.
-Start Elite Dangerous in CrossOver before starting this app.
+#### Run from source
+
+Use Node 24 LTS, at least 24.15 (`.nvmrc` pins the major), and install the locked
+dependencies with `npm ci`. Start Elite Dangerous in CrossOver before starting
+this app; the port reads the journals the game writes inside its bottle.
 
 ```sh
+npm ci
 npm run build
-npm run start:client           # local browser UI at http://127.0.0.1:7111
+npm run start:client           # browser UI at http://127.0.0.1:7111
+```
+
+For development, `npm run dev` runs Vite at port 5173 and the API at port 7111.
+`npm run electron:dev:mac` builds and opens the native launcher, which can open
+the main app in a browser or an Electron window.
+
+#### Build local releases
+
+Run packaging on a Mac. The default target is the build machine's architecture;
+both scripts accept `--arch arm64` or `--arch x64`.
+
+```sh
 npm run dist:mac               # self-contained browser release for this Mac's architecture
 npm run dist:mac -- --arch x64 # optional Intel release, built on macOS
-npm run electron:dev:mac       # optional native launcher and app window, without overlays
 npm run dist:mac:electron      # optional .app in dist/electron-out-mac
-npm run test:e2e:mac           # extracted browser archive + live journal smoke test (Chrome)
-npm run test:electron:mac      # packaged Electron launcher, main window and shutdown smoke test
 ```
 
 The browser release is under `dist/mac/` as a folder and `.tar.gz`. It embeds Node 24;
 users do not need Node installed. Double-click `edexo-client.command` in the extracted
 folder, and keep its Terminal window open; Ctrl+C stops the server. Settings and
 backups are available at `http://127.0.0.1:7111/launcher.html`.
+
+The Electron release is `dist/electron-out-mac/mac-arm64/EDExoCompare.app` on
+Apple Silicon (`mac/EDExoCompare.app` for Intel). Open the `.app` to use the native
+launcher. Both releases include the web app, species data, and SQLite WASM assets.
+The browser release uses maintained `@yao-pkg/pkg` packaging; Electron uses its
+own runtime and `electron-builder`.
+
+#### Journals and settings
 
 The default journal folder is:
 
@@ -203,6 +231,13 @@ For a different bottle, use **Journal folder** in the launcher or set
 `ED_JOURNAL_DIR="/absolute/path/to/journals"`. Settings live in
 `~/Library/Application Support/ED Exo Compare`.
 
+Journal selection takes precedence in this order: `ED_JOURNAL_DIR`, the saved
+launcher selection, then the CrossOver default. The selected folder must contain
+the game's `Journal.*.log` files. Journal updates are watched while the app runs;
+`Status.json` continues to supply live main-app telemetry.
+
+#### Supported behavior and limitations
+
 The macOS experience excludes HUD overlays, their controls, and game-process/focus
 checks. Journals and `Status.json` still update the main app. Automatic departure
 backups rely on journal `Shutdown` events; crash/process-exit detection is excluded.
@@ -212,6 +247,29 @@ These are local test builds. Browser executables use ad-hoc signing; the Electro
 `.app` is not prepared for public distribution. Developer ID signing and notarization
 should be configured before publishing a Mac download. Existing Windows/Linux
 overlay functionality is retained for those platforms.
+
+Apple Silicon browser and packaged Electron releases have passed automated smoke
+tests and initial manual testing. Intel packaging is supported but has not been
+validated on an Intel Mac. These builds retain the upstream version number;
+they are local port artifacts, not an upstream release.
+
+#### Verify changes
+
+```sh
+npm test
+npm run typecheck              # client, server, and tests
+npm run lint
+npm run dist:mac
+npm run test:e2e:mac            # requires installed Google Chrome; uses synthetic journals
+npm run dist:mac:electron
+npm run test:electron:mac       # currently targets the packaged arm64 app
+```
+
+The browser test extracts the archive into a temporary path with spaces and
+checks live journal updates and HUD omission. The Electron smoke test checks the
+launcher, main window, and clean shutdown using a temporary profile and journals.
+
+### Windows / upstream development
 
 The packaged app is a small launcher window; the app itself opens in your browser.
 
@@ -250,7 +308,7 @@ Pass `--local` (or `--host 127.0.0.1`) to bind to this PC only, and no key is us
 ```
 npm test               # vitest over the pure logic (matching, payouts, layout, cache encoding)
 npm run lint
-npm run typecheck      # client + shared
+npm run typecheck      # client + shared, server, and tests
 npm run typecheck:server
 npm run typecheck:tests
 npm run format
