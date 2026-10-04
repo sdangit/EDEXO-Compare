@@ -18,7 +18,6 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { execFileSync } = require("child_process");
 const { WINDOW_MIN, createWindowState, enableZoom } = require("./windowState.cjs");
 const { childWindowKind, galaxyWindowBounds } = require("./childWindows.cjs");
 const {
@@ -26,10 +25,14 @@ const {
   hudPathFrom,
   hudWidthFrom,
   hudHeightFrom,
-  HUD_TOGGLE_SHORTCUT,
 } = require("./hudWindows.cjs");
 const { createTrayControl } = require("./tray.cjs");
-const { watchForeground, isGameOrOwn } = require("./foregroundWatch.cjs");
+const { createKeybinds } = require("./keybinds.cjs");
+const updater = require("./updater.cjs");
+const { watchForeground, isGameOrOwn, isGame } = require("./foregroundWatch.cjs");
+const { guardWindowNavigation, restrictPermissions } = require("./windowGuards.cjs");
+/** The app's own origin once the server listens (windowGuards.cjs). */
+const ownBase = () => (runtime ? runtime.getLocalBaseUrl() : null);
 /** The foreground watcher (foregroundWatch.cjs), started with the HUDs. */
 let foreground = null;
 
@@ -93,6 +96,7 @@ const huds = createHudWindows({
   getRuntime: () => runtime,
   getDiag: () => diag,
   preloadPath: path.join(__dirname, "preload.cjs"),
+  guardWindow: (win) => guardWindowNavigation(win, ownBase, shell),
   onChange: () => {
     trayControl.refresh();
     // The launcher's Shown / Hidden buttons follow the hotkey and the tray as well as their own clicks.
@@ -104,6 +108,7 @@ const huds = createHudWindows({
           count: huds.count(),
           gameAway: l.gameAway,
           focusAway: l.focusAway && l.hideUnfocused,
+          moving: l.moving,
         });
       } catch {
         /* the launcher reloading */
@@ -120,31 +125,27 @@ function showLauncher() {
 }
 
 /** The tray (tray.cjs): the launcher, the HUD toggle, the UI in the browser, quit. */
+/*
+  Key binds (owner, 2026-10-02): the HUD toggle and previous / next body tab, set in the launcher
+  (electron/keybinds.cjs). The body keys go through the server to every app page.
+*/
+const keybinds = createKeybinds({
+  globalShortcut,
+  fs,
+  filePath: () => path.join(path.dirname(huds.layoutPath()), "edexo-keybinds.json"),
+  handlers: {
+    hudToggle: () => huds.toggleVisibility(),
+    bodyPrev: () => runtime?.uiCommand?.({ cmd: "bodyTab", dir: -1 }),
+    bodyNext: () => runtime?.uiCommand?.({ cmd: "bodyTab", dir: 1 }),
+  },
+});
+
 const trayControl = createTrayControl({
   showLauncher,
   huds,
   getUiUrl: () => (runtime ? `${runtime.getLocalBaseUrl()}/` : null),
+  hudShortcut: () => keybinds.bindFor("hudToggle"),
 });
-
-/** Windows only: kill other processes with same image name (stray Electron/CLI copies). */
-function killSiblingEdexoProcesses() {
-  if (process.platform !== "win32") return;
-  try {
-    const exe = path.basename(process.execPath).replace(/'/g, "''");
-    const myPid = process.pid;
-    execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        `Get-CimInstance Win32_Process -Filter "Name='${exe}'" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne ${myPid} } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-      ],
-      { stdio: "ignore", windowsHide: true },
-    );
-  } catch {
-    /* ignore */
-  }
-}
 
 /*
   "App window" (owner, 2026-09-26): the exobiology UI in its own window.
@@ -280,11 +281,20 @@ function openAppUiWindow(iconForChild) {
 }
 
 /*
-  Minimise to tray (owner, 2026-09-28): an option in the launcher, on Windows and Linux, remembered in
-  window-state.json. On by default where a tray exists — what minimising always did on Windows. A
-  system with no tray (GNOME without the AppIndicator extension) greys it out: hiding the launcher
-  there would leave nothing to bring it back with.
+  Close to tray (owner, 2026-10-01; was "Minimise to tray" from 2026-09-28): an option in the
+  launcher, on Windows and Linux, remembered in window-state.json as `closeToTray`. A system with no
+  tray (GNOME without the AppIndicator extension) greys it out: hiding the launcher there would leave
+  nothing to bring it back with.
+
+  The X hides the launcher in the tray, the way Discord does; minimise is always an ordinary minimise
+  to the taskbar. A guild tester minimised the launcher, did not know what "the tray" was, and took
+  the app for crashed; the minimise button that made a window vanish was the confusing part. Off
+  unless the commander turns it on; the old `minimiseToTray` key meant something else and is ignored.
+  Quitting goes through the tray menu (or any app.quit), which sets `appQuitting` first.
 */
+let appQuitting = false;
+/** Once per run: the first close to the tray says where the app went. */
+let closeToTrayExplained = false;
 let linuxTrayHost = null;
 let hotkeyRegistered = null;
 
@@ -299,14 +309,14 @@ function trayAvailability() {
   return { available: true };
 }
 
-function minimiseToTray() {
-  return readWindowStates().minimiseToTray !== false;
+function closeToTray() {
+  return readWindowStates().closeToTray === true;
 }
 
-function setMinimiseToTray(on) {
+function setCloseToTray(on) {
   try {
     const all = readWindowStates();
-    all.minimiseToTray = on;
+    all.closeToTray = on;
     fs.mkdirSync(path.dirname(windowStatePath()), { recursive: true });
     fs.writeFileSync(windowStatePath(), JSON.stringify(all, null, 2), "utf8");
   } catch (e) {
@@ -327,15 +337,23 @@ function registerFootOverlayIpc(iconForChild) {
 
   ipcMain.handle("edexo:open-app-window", () => openAppUiWindow(iconForChild));
 
-  ipcMain.handle("edexo:get-tray-pref", () => ({ enabled: minimiseToTray(), ...trayAvailability() }));
+  ipcMain.handle("edexo:get-tray-pref", () => ({ enabled: closeToTray(), ...trayAvailability() }));
   ipcMain.handle("edexo:set-tray-pref", (_evt, opts) => {
-    setMinimiseToTray(!!(opts && typeof opts === "object" && opts.enabled));
-    return { enabled: minimiseToTray(), ...trayAvailability() };
+    setCloseToTray(!!(opts && typeof opts === "object" && opts.enabled));
+    return { enabled: closeToTray(), ...trayAvailability() };
   });
   ipcMain.handle("edexo:hotkey-status", () => ({
-    shortcut: HUD_TOGGLE_SHORTCUT,
+    shortcut: keybinds.bindFor("hudToggle"),
     registered: hotkeyRegistered,
   }));
+  ipcMain.handle("edexo:get-keybinds", () => keybinds.get());
+  ipcMain.handle("edexo:pause-keybinds", (_evt, opts) => keybinds.pause(!!(opts && typeof opts === "object" && opts.on)));
+  ipcMain.handle("edexo:set-keybinds", (_evt, next) => {
+    const r = keybinds.set(next && typeof next === "object" ? next : {});
+    hotkeyRegistered = keybinds.statusFor("hudToggle") === "ok";
+    trayControl.refresh();
+    return r;
+  });
 
   ipcMain.handle("edexo:open-hud-overlay", async (_evt, opts) =>
     huds.request(hudPathFrom(opts), hudWidthFrom(opts), hudHeightFrom(opts), iconForChild, "open"),
@@ -416,10 +434,27 @@ function registerFootOverlayIpc(iconForChild) {
     });
     return { path: r.canceled || !r.filePaths[0] ? null : r.filePaths[0] };
   });
+  /*
+    "Download & Install": the server has the newer release downloaded and checked; it goes in on the
+    way out (will-quit), and the new copy starts. With a backup running, quitting asks first, and
+    "Keep the app open" calls this off like a plain restart.
+  */
+  ipcMain.handle("edexo:install-update", (evt) => {
+    if (!mainWindow || evt.sender !== mainWindow.webContents) return { ok: false };
+    const staged = runtime && typeof runtime.stagedUpdate === "function" ? runtime.stagedUpdate() : null;
+    if (!selfUpdateFormValue || !staged) return { ok: false, error: "No downloaded update is waiting." };
+    installUpdateOnQuit = staged;
+    relaunchOnQuit = false;
+    app.quit();
+    return { ok: true };
+  });
   ipcMain.handle("edexo:relaunch", (evt) => {
     if (!mainWindow || evt.sender !== mainWindow.webContents) return { ok: false };
-    const portable = process.env.PORTABLE_EXECUTABLE_FILE;
-    app.relaunch(portable ? { execPath: portable, args: process.argv.slice(1) } : undefined);
+    /*
+      Armed here, registered in will-quit (combined plan 1.6c): with a backup running, quitting asks
+      first, and "Keep the app open" used to leave the relaunch armed for the next ordinary quit.
+    */
+    relaunchOnQuit = true;
     app.quit();
     return { ok: true };
   });
@@ -434,6 +469,16 @@ function registerFootOverlayIpc(iconForChild) {
   ipcMain.handle("edexo:resize-hud-overlay", (evt, opts) =>
     huds.resizeFromPage(BrowserWindow.fromWebContents(evt.sender), opts),
   );
+  // Free move: the launcher starts and ends placing; a HUD page reports its drag (only HUD windows
+  // in placing mode are listened to, see hudWindows.dragFromPage).
+  ipcMain.handle("edexo:set-hud-move-mode", (_evt, opts) => ({
+    moving: huds.setMoveMode(!!(opts && typeof opts === "object" && opts.on === true)),
+  }));
+  ipcMain.handle("edexo:hud-drag", (evt, opts) => {
+    const phase = opts && typeof opts === "object" ? opts.phase : null;
+    if (!["start", "move", "end", "done"].includes(phase)) return { ok: false };
+    return huds.dragFromPage(BrowserWindow.fromWebContents(evt.sender), phase);
+  });
 
   ipcMain.handle("edexo:toggle-foot-overlay", async () => {
     try {
@@ -462,6 +507,18 @@ async function start() {
 
   applyPackagedResourcesEnv();
 
+  /*
+    Self-update (owner, 2026-10-02): only a packaged copy this file knows how to swap — the portable
+    exe, the program folder, the AppImage (updater.cjs). The server downloads only when told so here.
+    The copy the last update moved aside goes once this one has started (below).
+  */
+  selfUpdateFormValue = updater.selfUpdateForm({
+    isPackaged: app.isPackaged || process.env.EDEXO_ELECTRON_PACKAGED === "1",
+  });
+  if (selfUpdateFormValue) {
+    process.env.EDEXO_SELF_UPDATE = "1";
+  }
+
   const bundle = serverBundlePath();
   if (!fs.existsSync(bundle)) {
     const detail = [
@@ -488,7 +545,7 @@ async function start() {
     reapplySpeciesDataDirDiscoveryFromDisk,
     linuxProbes,
   } = require(bundle);
-  // GNOME without the AppIndicator extension has no tray: asked once, for "Minimise to tray".
+  // GNOME without the AppIndicator extension has no tray: asked once, for "Close to tray".
   if (process.platform === "linux" && linuxProbes && typeof linuxProbes.trayHost === "function") {
     try {
       linuxTrayHost = linuxProbes.trayHost();
@@ -515,6 +572,19 @@ async function start() {
   const mode = detectMode();
   runtime = await startEdexoFromElectronMode(mode);
   diag?.mark("server started");
+  /*
+    The copy the last update moved aside (EDExoCompare.exe.old, or the program folder's .old) goes once
+    this one is up and serving (owner, 2026-10-02): every update would otherwise leave a few hundred MB
+    behind for a commander who starts the app from a shortcut and never looks in the folder. Not
+    before: if the new copy cannot start, the old one is still there to go back to.
+  */
+  if (selfUpdateFormValue) {
+    const form = selfUpdateFormValue;
+    void runtime.ready.then(
+      () => updater.removeOldCopy(form),
+      () => {},
+    );
+  }
 
   const res = process.resourcesPath;
   let winIcon;
@@ -586,14 +656,11 @@ async function start() {
 
   huds.loadLayout();
   huds.watchDisplays();
-  try {
-    hotkeyRegistered = globalShortcut.register(HUD_TOGGLE_SHORTCUT, () => huds.toggleVisibility());
-    if (!hotkeyRegistered) {
-      console.warn("[edexo-compare] could not register", HUD_TOGGLE_SHORTCUT, "(taken by another app)");
-    }
-  } catch (e) {
-    hotkeyRegistered = false;
-    console.warn("[edexo-compare] global shortcut failed:", e);
+  keybinds.load();
+  const kbStatus = keybinds.apply();
+  hotkeyRegistered = kbStatus.hudToggle === "ok";
+  for (const [k, st] of Object.entries(kbStatus)) {
+    if (st === "taken") console.warn("[edexo-compare] could not register", keybinds.bindFor(k), `(${k}; taken by another app)`);
   }
 
   const preloadPath = path.join(__dirname, "preload.cjs");
@@ -633,6 +700,7 @@ async function start() {
     },
   });
   diag?.watchWindow(mainWindow, "launcher");
+  guardWindowNavigation(mainWindow, ownBase, shell);
   if (launcherSaved?.maximized) mainWindow.maximize();
   trackWindowState("launcher", mainWindow);
   enableZoom(mainWindow);
@@ -655,7 +723,12 @@ async function start() {
   {
     const own = [path.basename(process.execPath, ".exe").toLowerCase(), "electron"];
     let hideTimer = null;
-    foreground = watchForeground((name) => {
+    foreground = watchForeground((name, at) => {
+      huds.log(`foreground ${name || "(unreadable)"}${at ? ` at ${at.x},${at.y}` : ""}`);
+      // The game in front: its monitor is where the corner stack goes (hudWindows setGamePoint).
+      if (isGame(name) && at) huds.setGamePoint(at);
+      // The game just came to the front (the watcher reports changes only): put the HUDs back on top.
+      if (isGame(name)) huds.raiseVisible();
       if (isGameOrOwn(name, own)) {
         if (hideTimer) clearTimeout(hideTimer);
         hideTimer = null;
@@ -670,20 +743,38 @@ async function start() {
     });
   }
   void huds.restore(winIcon);
-  mainWindow.on("minimize", (e) => {
-    // With "Minimise to tray" on (and a tray to come back from), the window goes to the tray and the
-    // HUDs stay where they are. Otherwise an ordinary minimise, to the taskbar.
-    if (!minimiseToTray() || !trayAvailability().available) return;
-    e.preventDefault();
-    mainWindow.hide();
-  });
   mainWindow.on("close", (e) => {
+    // With "Close to tray" on (and a tray to come back from), the X hides the launcher in the tray;
+    // the server, the HUDs and the app window carry on. Quitting (tray menu) closes it for real.
+    if (!appQuitting && closeToTray() && trayAvailability().available) {
+      e.preventDefault();
+      mainWindow.hide();
+      if (!closeToTrayExplained) {
+        closeToTrayExplained = true;
+        trayControl.notify(
+          "ED Exo Compare is still running",
+          "It is in the tray (the arrow next to the clock). Click its icon to bring the launcher back, or right-click it to quit.",
+        );
+      }
+      return;
+    }
     // A backup being written would be thrown away (owner, 2026-09-29): ask first.
     if (holdExitForBackup(e)) return;
     huds.destroyAll();
     trayControl.destroy();
     // The launcher is still the app: closing it closes the app window too, as it always quit.
     if (appUiWindow && !appUiWindow.isDestroyed()) appUiWindow.close();
+  });
+  /*
+    Windows logoff or shutdown ends the app without before-quit (combined plan 1.6d), so the clean
+    shutdown never ran and the on-foot catalog's last second was lost. Flush what is buffered now.
+  */
+  mainWindow.on("session-end", () => {
+    try {
+      if (runtime && typeof runtime.flushNow === "function") runtime.flushNow();
+    } catch {
+      /* the session is ending either way */
+    }
   });
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -726,7 +817,41 @@ if (process.platform === "win32") {
   }
 }
 
+/*
+  One copy (owner, 2026-10-01). A tester's launcher was hidden in the tray; starting the app again
+  ran a second copy that never showed a window. Now a second start hands over to the running copy,
+  which brings its launcher back — from the tray, from the taskbar, or from behind other windows —
+  and the second copy quits.
+
+  A deliberate second copy still works: `--port` (the documented way to run one beside another) or
+  an isolated profile (`EDEXO_USER_DATA_DIR`) skip the lock.
+*/
+const separateCopy = process.argv.includes("--port") || !!process.env.EDEXO_USER_DATA_DIR;
+let gotSingleInstanceLock = true;
+if (!separateCopy) {
+  gotSingleInstanceLock = app.requestSingleInstanceLock();
+  if (!gotSingleInstanceLock) {
+    // exit, not quit: this copy has nothing to close, and before-quit is the running copy's business.
+    app.exit(0);
+  } else {
+    app.on("second-instance", () => {
+      // Still starting (no launcher yet): it shows itself when it is made.
+      showLauncher();
+    });
+  }
+}
+
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return;
+  // Every session the windows use: the launcher's, the app window's, the HUDs' (windowGuards.cjs).
+  try {
+    const { session } = require("electron");
+    for (const ses of [session.defaultSession, session.fromPartition(APP_WINDOW_PARTITION), session.fromPartition("persist:hud")]) {
+      restrictPermissions(ses);
+    }
+  } catch (e) {
+    console.warn("[edexo-compare] could not restrict permissions:", e);
+  }
   void start().catch((e) => {
     console.error(e);
     try {
@@ -762,6 +887,47 @@ app.on("window-all-closed", () => {
   (its half-written file is cleared at the next start).
 */
 let exitAllowed = false;
+/** "Restart now" asked for a relaunch; done in will-quit, once the quit is really going ahead. */
+let relaunchOnQuit = false;
+/** "Download & Install" asked for this staged update to go in; installed in will-quit. */
+let installUpdateOnQuit = null;
+/** This copy's self-update form (updater.cjs), or null where it cannot replace itself. */
+let selfUpdateFormValue = null;
+
+function relaunchAsUsual() {
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE;
+  app.relaunch(portable ? { execPath: portable, args: process.argv.slice(1) } : undefined);
+}
+
+app.on("will-quit", () => {
+  if (installUpdateOnQuit) {
+    const staged = installUpdateOnQuit;
+    installUpdateOnQuit = null;
+    try {
+      // From the update folder, not resources: the portable stub deletes its unpacked copy on exit.
+      const scriptPath = path.join(staged.dir, "update-apply.ps1");
+      if (process.platform === "win32") {
+        fs.copyFileSync(path.join(process.resourcesPath, "edexo", "update-apply.ps1"), scriptPath);
+      }
+      const r = updater.installOnQuit(staged, {
+        form: selfUpdateFormValue,
+        scriptPath,
+        logPath: path.join(staged.dir, "update.log"),
+        // The portable launcher stub waits for this process; its exe is the file being replaced.
+        pids: [process.pid, selfUpdateFormValue === "portable" ? process.ppid : 0],
+      });
+      if (r.how === "relaunch") app.relaunch({ execPath: r.execPath, args: process.argv.slice(1) });
+      else if (r.how === "none") relaunchAsUsual();
+    } catch (e) {
+      console.error("[edexo-compare] update install failed, restarting the installed copy:", e);
+      relaunchAsUsual();
+    }
+    return;
+  }
+  if (!relaunchOnQuit) return;
+  relaunchOnQuit = false;
+  relaunchAsUsual();
+});
 let exitAsking = false;
 let exitWhenBackupDone = false;
 
@@ -788,6 +954,11 @@ function holdExitForBackup(e) {
   };
   void (parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts)).then(({ response }) => {
     exitAsking = false;
+    // "Keep the app open": a "Restart now" that started this quit is called off with it.
+    if (response === 1) {
+      relaunchOnQuit = false;
+      installUpdateOnQuit = null;
+    }
     if (response === 2) {
       exitAllowed = true;
       app.quit();
@@ -804,6 +975,8 @@ function holdExitForBackup(e) {
 
 app.on("before-quit", (e) => {
   if (holdExitForBackup(e)) return;
+  // From here the launcher's X closes it for real, whatever "Close to tray" says.
+  appQuitting = true;
   diag?.stop("quit");
   try {
     globalShortcut.unregisterAll();
@@ -816,5 +989,4 @@ app.on("before-quit", (e) => {
   if (runtime && typeof runtime.shutdown === "function") {
     void runtime.shutdown();
   }
-  killSiblingEdexoProcesses();
 });

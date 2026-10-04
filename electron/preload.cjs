@@ -33,12 +33,26 @@ contextBridge.exposeInMainWorld("edexoElectron", {
   setHudLayout: (opts) => ipcRenderer.invoke("edexo:set-hud-layout", opts),
   /** Hide/show every HUD window; same as the global shortcut. @param {{ hidden?: boolean }} [opts] */
   toggleHudVisibility: (opts) => ipcRenderer.invoke("edexo:toggle-hud-visibility", opts),
-  /** Minimise to tray: `{ enabled, available, reason? }` (owner, 2026-09-28). */
+  /** Free move: start or end placing the HUDs. @param {{ on: boolean }} opts @returns {Promise<{ moving: boolean }>} */
+  setHudMoveMode: (opts) => ipcRenderer.invoke("edexo:set-hud-move-mode", opts),
+  /** A HUD page's drag while placing: "start", "move", "end", or "done" to finish placing. */
+  hudDrag: (phase) => ipcRenderer.invoke("edexo:hud-drag", { phase }),
+  /** HUD pages: placing mode on or off (`{ on }`). */
+  onHudMoveMode: (cb) => {
+    ipcRenderer.on("edexo:hud-move-mode", (_evt, v) => cb(v));
+  },
+  /** Close to tray: `{ enabled, available, reason? }` (owner, 2026-09-28; close, not minimise, since 2026-10-01). */
   getTrayPref: () => ipcRenderer.invoke("edexo:get-tray-pref"),
   /** @param {{ enabled: boolean }} opts */
   setTrayPref: (opts) => ipcRenderer.invoke("edexo:set-tray-pref", opts),
   /** Whether the HUD hotkey could be registered: `{ shortcut, registered }`. */
   getHotkeyStatus: () => ipcRenderer.invoke("edexo:hotkey-status"),
+  /** Key binds: `{ binds, status, actions }` (electron/keybinds.cjs). Launcher only. */
+  getKeybinds: () => ipcRenderer.invoke("edexo:get-keybinds"),
+  /** @param {Record<string, string | null>} next "" turns a bind off, null puts the default back. */
+  setKeybinds: (next) => ipcRenderer.invoke("edexo:set-keybinds", next),
+  /** While a new bind is being recorded the current ones are released (`{ on: true }`), then restored. */
+  pauseKeybinds: (opts) => ipcRenderer.invoke("edexo:pause-keybinds", opts),
   /** HUDs shown or hidden, however it was changed (hotkey, tray, launcher): `{ hidden, count }`. */
   onHudVisibility: (cb) => {
     ipcRenderer.on("edexo:hud-visibility", (_evt, v) => cb(v));
@@ -76,6 +90,8 @@ contextBridge.exposeInMainWorld("edexoElectron", {
   pickFolder: (opts) => ipcRenderer.invoke("edexo:pick-folder", opts),
   /** Close and start the app again (a staged restore is applied at start). Launcher only. */
   relaunch: () => ipcRenderer.invoke("edexo:relaunch"),
+  // "Download & Install": installs the downloaded, checked update on the way out (electron/updater.cjs).
+  installUpdate: () => ipcRenderer.invoke("edexo:install-update"),
   /** Launcher → every HUD window, as a setting changes (the HUDs have their own session). */
   pushHudPrefs: (prefs) => ipcRenderer.send("edexo:push-hud-prefs", prefs),
   /** HUD side of {@link pushHudPrefs}. */

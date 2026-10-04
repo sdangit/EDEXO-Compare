@@ -17,7 +17,8 @@
   /* the palette comes from tokens.css (shared with the launcher and the app); these are HUD-only */
   --hud-bg: rgba(18, 9, 2, 0.42); /* the panel fill: mostly the game showing through */
   --hud-bg-2: rgba(40, 18, 3, 0.3);
-  --chamfer: 11px;
+  /* In rem, like everything that should grow with the HUD scale (16 px at 100 %; plan 2.1, Fable C12). */
+  --chamfer: 0.6875rem;
 }
 
 * {
@@ -37,7 +38,7 @@ body {
 .shell {
   position: relative;
   width: 100%;
-  padding: 3px 4px 5px 3px; /* room for the corner brackets that sit outside the panel */
+  padding: 0.1875rem 0.25rem 0.3125rem 0.1875rem; /* room for the corner brackets outside the panel */
   transition:
     opacity 0.35s ease,
     transform 0.35s ease;
@@ -62,7 +63,6 @@ body {
   );
   isolation: isolate;
   filter: drop-shadow(0 0 5px rgba(255, 138, 31, 0.25));
-  animation: hudFlicker 7s steps(1, end) infinite;
 }
 /*
   The chrome on its own layer (owner, 2026-09-14): the frame gradient here, the fill under the
@@ -84,7 +84,17 @@ body {
   opacity: var(--hud-bg-opacity, 1);
   pointer-events: none;
 }
+/*
+  A dark shadow under every glyph (a hard one down-right and a faint halo), whatever the opacity slider says (plan 2.1, Fable C11): the text's
+  only edge was a glow of its own colour, and over an ice world or a bright star pale orange on a faded
+  plate was unreadable. Listed after the glows, so they are drawn over it: the outline first, the
+  glow kept vivid (owner, 2026-10-02: in front, the outline dulled the colours).
+*/
+:root {
+  --hud-outline: 1px 1px 0 rgba(0, 0, 0, 0.65), 0 0 2px rgba(0, 0, 0, 0.35);
+}
 .panel__body {
+  text-shadow: var(--hud-outline);
   position: relative;
   clip-path: polygon(
     0 0,
@@ -123,7 +133,8 @@ body {
   left: 0;
   right: 0;
   height: 28%;
-  top: -30%;
+  top: 0;
+  transform: translateY(-110%);
   pointer-events: none;
   background: linear-gradient(180deg, transparent, rgba(255, 170, 90, 0.07) 50%, transparent);
   animation: hudSweep 9s linear infinite;
@@ -138,8 +149,8 @@ body {
 .shell::after {
   content: "";
   position: absolute;
-  width: 14px;
-  height: 14px;
+  width: 0.875rem;
+  height: 0.875rem;
   pointer-events: none;
   border: 1.5px solid var(--hud);
   opacity: 0.9;
@@ -196,14 +207,14 @@ body {
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--hud);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
   white-space: nowrap;
 }
 .hud-title::before {
   content: "";
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 0.375rem;
+  height: 0.375rem;
   margin: 0 0.45rem 1px 0;
   background: var(--hud);
   transform: rotate(45deg);
@@ -225,7 +236,7 @@ body {
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--hud-hi);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
   margin-bottom: 0.28rem;
 }
 .row {
@@ -261,7 +272,7 @@ body {
 .row--muted .k,
 .row--muted {
   color: var(--hud-dim);
-  text-shadow: none;
+  text-shadow: var(--hud-outline);
 }
 .row--rule {
   margin-top: 0.38rem;
@@ -272,7 +283,7 @@ body {
 .row--total .v {
   font-size: 0.92rem;
   color: var(--hud-hi);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
 }
 /* Candidate rows: rarity letter (tier colour) and the new-codex tag. */
 .hud-list .rar,
@@ -288,8 +299,15 @@ body {
   border: 1px solid currentColor;
   color: #4fd0ff;
 }
+/*
+  FCX (owner, 2026-10-01): gold alone would sink into an amber or orange HUD, so the same dark chip
+  as the app's body tabs: dark ground, gold edge, gold letters, whatever the HUD colour.
+*/
 .hud-list .cxnew--first {
   color: #f5c96a;
+  background: #07060a;
+  border-color: #f5c96a;
+  text-shadow: 0 0 4px rgba(245, 184, 61, 0.5), var(--hud-outline);
 }
 /* Compact overlays: explanations go, readings and warnings stay (theme.js `hud-compact`). */
 .hud-compact .hud-explain {
@@ -320,7 +338,7 @@ body {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--hud-hi);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
 }
 
 /* badges in the game's three colours */
@@ -338,11 +356,11 @@ body {
 }
 .pill.ok {
   color: var(--ok);
-  text-shadow: 0 0 6px var(--ok-dim);
+  text-shadow: 0 0 6px var(--ok-dim), var(--hud-outline);
 }
 .pill.bad {
   color: var(--bad);
-  text-shadow: 0 0 6px rgba(255, 90, 60, 0.5);
+  text-shadow: 0 0 6px rgba(255, 90, 60, 0.5), var(--hud-outline);
 }
 
 /* ---- the tracker: radar left, the run's numbers right; folds shut away from a surface ------------ */
@@ -399,7 +417,7 @@ body {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--hud-hi);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
   transition:
     max-height 0.45s ease 0.25s,
     opacity 0.45s ease 0.25s;
@@ -456,11 +474,11 @@ body {
 }
 .fact .v.yes {
   color: var(--hud-hi);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
 }
 .fact .v.tgt {
   color: var(--hud-hi);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
 }
 .fact .v.tgt::after {
   content: "TARGET";
@@ -471,7 +489,7 @@ body {
   padding: 0 0.3rem;
   border: 1px solid var(--hud-dim);
   color: var(--hud);
-  text-shadow: none;
+  text-shadow: var(--hud-outline);
   clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px);
 }
 /* scan progress after the species: the run in progress, a finished one, or a species merely seen */
@@ -488,11 +506,11 @@ body {
 }
 .prog--live {
   color: var(--bio);
-  text-shadow: 0 0 6px rgba(123, 224, 123, 0.5);
+  text-shadow: 0 0 6px rgba(123, 224, 123, 0.5), var(--hud-outline);
 }
 .prog--done {
   color: var(--ok);
-  text-shadow: 0 0 6px var(--ok-dim);
+  text-shadow: 0 0 6px var(--ok-dim), var(--hud-outline);
 }
 .prog--seen {
   color: var(--hud-hi);
@@ -504,16 +522,21 @@ body {
 .hud-list li.has-done::before {
   background: var(--ok);
 }
+/* No scroll: the overlay windows are click-through, so a scrolled list was a cut one. The sections
+   show a few rows and a "+N more" line (core.js listRowLimit); the window grows to fit. */
 .hud-list {
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 14.5rem;
-  overflow-y: auto;
-  scrollbar-width: none;
 }
-.hud-list::-webkit-scrollbar {
-  display: none;
+.hud-list li.more {
+  justify-content: center;
+  color: var(--hud);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+}
+.hud-list li.more::before {
+  content: none;
 }
 .hud-list li {
   display: flex;
@@ -600,7 +623,7 @@ body {
   font-weight: 700;
   font-size: 0.92rem;
   color: var(--hud-hi);
-  text-shadow: var(--hud-glow);
+  text-shadow: var(--hud-glow), var(--hud-outline);
 }
 .fss-line .nums small {
   font-size: 0.6rem;
@@ -612,7 +635,7 @@ body {
 }
 .hud-bar {
   position: relative;
-  height: 6px;
+  height: 0.375rem;
   margin-top: 0.42rem;
   background: var(--hud-ghost);
   clip-path: polygon(3px 0, 100% 0, calc(100% - 3px) 100%, 0 100%);
@@ -645,7 +668,6 @@ body {
   --hud-bg-2: rgba(8, 40, 60, 0.3);
   --hud-glow: 0 0 8px rgba(79, 208, 255, 0.55);
   filter: drop-shadow(0 0 9px rgba(79, 208, 255, 0.35));
-  animation: hudPulseOk 1.2s ease-in-out infinite alternate;
 }
 .panel.panel--warn {
   --hud: var(--bad);
@@ -657,6 +679,7 @@ body {
 .shell.shell--ok::before,
 .shell.shell--ok::after {
   border-color: var(--ok);
+  animation: hudPulseOk 1.2s ease-in-out infinite alternate;
 }
 .shell.shell--warn::before,
 .shell.shell--warn::after {
@@ -887,47 +910,27 @@ body {
 }
 
 /* ---- motion ----------------------------------------------------------------------------------------- */
+/* Moved, not re-laid-out: `transform` is composited, `top` repainted the panel every frame of every
+   HUD window over the game (plan 2.1, Fable C11). The band is 28 % of the panel tall, so -110 % to
+   400 % of its own height is the old -30 % to 110 % of the panel. */
 @keyframes hudSweep {
   0% {
-    top: -30%;
+    transform: translateY(-110%);
   }
   70% {
-    top: 110%;
+    transform: translateY(400%);
   }
   100% {
-    top: 110%;
+    transform: translateY(400%);
   }
 }
-@keyframes hudFlicker {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  37% {
-    opacity: 1;
-  }
-  38% {
-    opacity: 0.93;
-  }
-  39% {
-    opacity: 1;
-  }
-  71% {
-    opacity: 1;
-  }
-  72% {
-    opacity: 0.96;
-  }
-  73% {
-    opacity: 1;
-  }
-}
+/* The finished section's pulse: the corner brackets' opacity, not an animated blur over the panel. */
 @keyframes hudPulseOk {
   from {
-    filter: drop-shadow(0 0 5px rgba(79, 208, 255, 0.25));
+    opacity: 0.45;
   }
   to {
-    filter: drop-shadow(0 0 14px rgba(79, 208, 255, 0.6));
+    opacity: 1;
   }
 }
 @keyframes hudRadarSweep {
@@ -939,10 +942,10 @@ body {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .panel,
   .panel__body::after,
   .minimap-sweep,
-  .panel.panel--ok {
+  .shell.shell--ok::before,
+  .shell.shell--ok::after {
     animation: none;
   }
 }
@@ -1003,7 +1006,7 @@ body {
 */
 .hop__sep--first {
   color: var(--ok);
-  text-shadow: 0 0 6px rgba(79, 208, 255, 0.7);
+  text-shadow: 0 0 6px rgba(79, 208, 255, 0.7), var(--hud-outline);
 }
 /* No answer from EDSM yet, or it could not be reached — neither "visited" nor "unvisited". */
 .hop__sep--unknown {

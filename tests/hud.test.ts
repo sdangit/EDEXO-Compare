@@ -30,6 +30,8 @@ type HudApi = {
   onCue?: (kind: string) => unknown;
   /** Fed the overlay payload each frame; it decides whether a cue has just become due. */
   cueFromOverlay: (eo: unknown) => void;
+  /** Free move's placing frame (electron/hudWindows.cjs sends `edexo:hud-move-mode`). */
+  setMoveMode: (on: boolean) => void;
 };
 
 const loadHud = () => loadHudModule<HudApi>();
@@ -71,6 +73,17 @@ describe("HUD candidates", () => {
     expect(rows.some((t) => t?.includes("3/3"))).toBe(true);
   });
 
+  it("shows the first nine rows and says how many more the app has (the window cannot scroll)", () => {
+    const many = ["Aleoida", "Bacterium", "Cactoida", "Clypeus", "Concha", "Electricae", "Fonticulua", "Frutexa", "Fungoida", "Osseus", "Stratum", "Tubus"];
+    HUD.render({
+      exoOverlayFocusBodyKey: "1:2",
+      bodies: [body("1:2", "A 2", many.map((g) => match(g, "x", 1_000_000)))],
+    });
+    const rows = [...document.querySelectorAll(".hud-list li")];
+    expect(rows).toHaveLength(10);
+    expect(rows.at(-1)?.textContent).toBe("+3 more — all of them in the app");
+  });
+
   it("capitalises the species and shows the live run's progress only for the active species", () => {
     HUD.render({
       exoOverlayFocusBodyKey: "1:2",
@@ -90,6 +103,60 @@ describe("HUD candidates", () => {
     const rows = [...document.querySelectorAll(".hud-list li")].map((li) => li.textContent ?? "");
     expect(rows.find((t) => t.includes("Tussock"))).toContain("Tussock Propagito2/3");
     expect(rows.find((t) => t.includes("Bacterium"))).not.toContain("/3");
+  });
+
+  it("marks a new codex entry CX and a first one for the region FCX, as the app's body tabs do", () => {
+    HUD.render({
+      exoOverlayFocusBodyKey: "1:2",
+      bodies: [
+        body("1:2", "A 2", [
+          match("Tussock", "propagito", 1_000_000, { codexNew: true }),
+          match("Bacterium", "cerbrus", 1_689_800, { codexNew: true, codexFirst: true }),
+          match("Stratum", "tectonicas", 19_010_800),
+        ]),
+      ],
+    });
+    const mark = (genus: string) =>
+      [...document.querySelectorAll(".hud-list li")].find((li) => li.textContent?.includes(genus))?.querySelector(".cxnew");
+    expect(mark("Tussock")?.textContent).toBe("CX");
+    expect(mark("Tussock")?.className).toBe("cxnew");
+    expect(mark("Bacterium")?.textContent).toBe("FCX");
+    expect(mark("Bacterium")?.className).toBe("cxnew cxnew--first");
+    expect(mark("Stratum")).toBeNull();
+  });
+
+  /** The solver names genera by data folder; the rows must follow its order, not the delivered one. */
+  it("lists rows in the solver's genus order, matched by data folder", () => {
+    HUD.render({
+      exoOverlayFocusBodyKey: "1:2",
+      bodies: [
+        {
+          ...body("1:2", "A 2", [
+            match("Bacterium", "cerbrus", 1, { entry: { genus: "Bacterium", genusDataDir: "bacterium", displayName: "Bacterium cerbrus" } }),
+            match("Brain Trees", "roseum", 1, { entry: { genus: "Brain Trees", genusDataDir: "brain-tree", displayName: "Roseum Brain Tree" } }),
+          ]),
+          genusLikelihoods: [{ genus: "brain-tree" }, { genus: "bacterium" }],
+        },
+      ],
+    });
+    const rows = [...document.querySelectorAll(".hud-list li")].map((li) => li.textContent ?? "");
+    expect(rows[0]).toContain("Brain Trees");
+    expect(rows[1]).toContain("Bacterium");
+  });
+
+  /** Seen live 2026-10-01: the HUD printed 12,934,900 CR beside the app's 64.7 M ×5 for the same row. */
+  it("prices a row as the app does: ×5 unwalked, ×1 walked, the list price tagged while unknown", () => {
+    const priceOf = (footfall: string | undefined) => {
+      HUD.render({
+        exoOverlayFocusBodyKey: "1:2",
+        bodies: [{ ...body("1:2", "A 2", [match("Stratum", "tectonicas", 1_000_000)]), footfall }],
+      });
+      return document.querySelector(".hud-list li .cr")?.textContent;
+    };
+    expect(priceOf("unwalked")).toBe((5_000_000).toLocaleString() + " CR ×5");
+    expect(priceOf("walked")).toBe((1_000_000).toLocaleString() + " CR ×1");
+    expect(priceOf("unknown")).toBe((1_000_000).toLocaleString() + " CR ×1 ?");
+    expect(priceOf(undefined)).toBe((1_000_000).toLocaleString() + " CR ×1 ?");
   });
 
   it("prefers the targeted body from Status.json and tags it", () => {
@@ -138,6 +205,31 @@ describe("HUD tracker", () => {
     });
     expect(document.querySelector(".trk")?.className).not.toContain("trk--away");
     expect(document.querySelector('[data-f="status"]')?.textContent).toBe("On foot");
+  });
+
+  /** Owner, 2026-10-02: the Log names the species, so the payout shows from the first scan. */
+  it("shows the payout estimate from the first scan, with the walk guidance still under it", () => {
+    const run = (sampleCount: number) => {
+      HUD.render({
+        exoMinimap: { headingDeg: 0, radiusM: 500, minSampleDistanceM: 200, marks: [] },
+        exoOrganicOverlay: {
+          visible: true,
+          phase: "tracking",
+          sampleCount,
+          nearestSampleMeetsMin: true,
+          minSampleDistanceM: 200,
+          speciesDisplay: "Tussock propagito",
+          payNewCodex: 5_000_000,
+          payLoggedCodex: 1_000_000,
+        },
+      });
+      return document.querySelector('[data-f="pay"]')?.textContent ?? "";
+    };
+    expect(run(0)).toBe("—");
+    expect(run(1)).toContain("new");
+    expect(run(1)).toContain("logged");
+    expect(document.querySelector(".trk")?.textContent).toContain("from first sample before second");
+    expect(run(2)).toContain("logged");
   });
 
   it("draws the walk-this-way arc only when the second sample would be too close", () => {
@@ -420,6 +512,17 @@ describe("HUD merged panel", () => {
     expect(document.querySelector('[data-section="fss"]')?.className).toContain("hud-section--ok");
     expect(document.querySelector(".fss-line .honk")?.textContent).toBe("Honk: Yes");
   });
+  it("keeps an apostrophe or a quote in a system name inside the markup", async () => {
+    const HUD = await loadHud();
+    HUD.mount(["fss"], { noTimers: true });
+    for (const name of ["Barnard's Star", 'Carrier "Nine" Q7X-12T']) {
+      HUD.render({ dScanBodies: { systemName: name, found: 3, total: 9, complete: false, honked: true }, exoMinimap: null });
+      const sys = document.querySelector(".fss-line .sys");
+      expect(sys?.textContent).toBe(name);
+      expect(sys?.getAttribute("title")).toBe(name);
+      expect(document.querySelector(".fss-line .honk")?.textContent).toBe("Honk: Yes");
+    }
+  });
 });
 
 describe("only when relevant (guild tester report, 2026-09-30)", () => {
@@ -490,6 +593,35 @@ describe("only when relevant (guild tester report, 2026-09-30)", () => {
       expect(document.querySelector(".shell")?.classList.contains("shell--idle")).toBe(true);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+/** Free move (owner, 2026-10-02): the frame a HUD is dragged by while placing. */
+describe("HUD placing frame", () => {
+  it("draws the frame, reports the drag, and Done ends placing", async () => {
+    const calls: string[] = [];
+    (window as unknown as { edexoElectron?: unknown }).edexoElectron = {
+      hudDrag: (phase: string) => {
+        calls.push(phase);
+        return Promise.resolve({ ok: true });
+      },
+    };
+    try {
+      const HUD = await loadHud();
+      HUD.mount(["distance"], { noTimers: true });
+      HUD.setMoveMode(true);
+      HUD.setMoveMode(true);
+      expect(document.querySelectorAll(".hud-move")).toHaveLength(1);
+      const frame = document.querySelector(".hud-move") as HTMLElement;
+      frame.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      frame.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      (document.querySelector(".hud-move-done") as HTMLButtonElement).click();
+      expect(calls).toEqual(["start", "end", "done"]);
+      HUD.setMoveMode(false);
+      expect(document.querySelector(".hud-move")).toBeNull();
+    } finally {
+      delete (window as unknown as { edexoElectron?: unknown }).edexoElectron;
     }
   });
 });

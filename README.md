@@ -23,8 +23,8 @@ Windows; everything the app saves lives in `%LOCALAPPDATA%\ED Exo Compare\`.
 
 |                                                                                                                |                                                                       |
 | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **[Portable — one file](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.8/EDExoCompare.exe)** | Download and run. Unpacks itself somewhere temporary each time.       |
-| **[Program folder — .zip](https://github.com/bahuckel/EDEXO-Compare/releases/tag/v1.2.8-zip)**                 | Extract and keep. Starts faster, and includes the two console builds. |
+| **[Portable — one file](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.10/EDExoCompare.exe)** | Download and run. Unpacks itself somewhere temporary each time.       |
+| **[Program folder — .zip](https://github.com/bahuckel/EDEXO-Compare/releases/tag/v1.2.10-zip)**                 | Extract and keep. Starts faster, and includes the two console builds. |
 
 Both are the same version and the same code — [all releases](https://github.com/bahuckel/EDEXO-Compare/releases).
 
@@ -38,12 +38,12 @@ finds a Proton journal folder and serves the app on Ubuntu 24.04; the HUD window
 not been seen over the game yet. If you try it, an issue saying what worked and what did not —
 distro, desktop, X11 or Wayland — is the most useful thing you can send.
 
-|                                                                                                                                            |                                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| **[AppImage — launcher + HUD](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.8-zip/EDExoCompare-1.2.8-x86_64.AppImage)** | The same app as on Windows: launcher window, tray, HUD overlays. One file, x86_64.                    |
-| **[Browser build — .tar.gz](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.8-zip/EDExoCompare-1.2.8-linux-x64.tar.gz)**  | No Electron. The app and the HUD pages open in your browser. For anything the AppImage cannot run on. |
+|                                                                                                                                         |                                                                                          |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **[AppImage — launcher + HUD](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.10-zip/EDExoCompare-1.2.10-x86_64.AppImage)** | The same app as on Windows: launcher window, tray, HUD overlays. One file, x86_64.       |
+| **[Browser build — .tar.gz](https://github.com/bahuckel/EDEXO-Compare/releases/download/v1.2.10-zip/EDExoCompare-1.2.10-linux-x64.tar.gz)** | No Electron. The app and the HUD pages open in your browser. For anything the AppImage cannot run on. |
 
-**AppImage:** `chmod +x EDExoCompare-1.2.8-x86_64.AppImage`, then run it. It needs FUSE 2:
+**AppImage:** `chmod +x EDExoCompare-1.2.10-x86_64.AppImage`, then run it. It needs FUSE 2:
 
 | Distro                                           | Command                                |
 | ------------------------------------------------ | -------------------------------------- |
@@ -54,13 +54,13 @@ distro, desktop, X11 or Wayland — is the most useful thing you can send.
 | openSUSE                                         | `sudo zypper install libfuse2`         |
 | Arch, CachyOS, Manjaro                           | `sudo pacman -S --needed fuse2`        |
 
-Without FUSE, `./EDExoCompare-1.2.8-x86_64.AppImage --appimage-extract-and-run` works too.
+Without FUSE, `./EDExoCompare-1.2.10-x86_64.AppImage --appimage-extract-and-run` works too.
 
 On start the launcher checks your desktop and lists anything the HUD needs that is missing, with the
 install command for your distro: XWayland on a Wayland session, a compositor on a bare window
 manager (the HUD is see-through only with one), the AppIndicator extension for the tray on GNOME.
 
-**Browser build:** `tar xzf EDExoCompare-1.2.8-linux-x64.tar.gz`, then `./edexo-client.sh` in the
+**Browser build:** `tar xzf EDExoCompare-1.2.10-linux-x64.tar.gz`, then `./edexo-client.sh` in the
 folder it makes. Its `README.txt` has the rest.
 
 **Both:** the journals are found inside the game's Proton or Wine prefix — every Steam library
@@ -107,7 +107,7 @@ systems come from other commanders' records, so first footfall is most likely go
 miss log. That log is the reason recall went from 93.2 % to 97.1 %: it is read, not just recorded.
 
 **On a second screen.** Open `?screen=triage` on a phone or tablet for a read-only triage view that
-updates as you jump.
+updates as you jump. In the desktop app, turn on **LAN access** in Network settings first.
 
 **Backups.** The launcher's Backups tile zips your journals, the app's own data (settings, on-foot
 scans, surface marks, the miss log) and your exomastery and codex downloads — when you leave the game,
@@ -289,6 +289,11 @@ Point it at your journal folder from the launcher (**Journal folder**) if it is 
 | ---------------------- | ---------------- | -------------------------------------------- |
 | `npm run start:client` | `127.0.0.1:7111` | this PC only                                 |
 | `npm run start:server` | `0.0.0.0:7111`   | this PC **and every device on your network** |
+| desktop app            | `127.0.0.1:7111` | this PC; with **LAN access** on, `0.0.0.0:7111` and your network too |
+
+The desktop app (`.exe`, AppImage) has a **LAN access** switch in the launcher's **Network
+settings**: off for a new install, so only this PC can open it; on for an install that already had
+it. It applies after a restart.
 
 Server mode exists so you can put the app on a second monitor, a tablet or a phone. It also means
 the mutating endpoints (settings, exobiology reset, which system you are viewing) are reachable from
@@ -383,7 +388,7 @@ Three parts, three licences:
   folder and the data tables generated into the code: credit the sources, no commercial use, share
   alike. Part of it is derived from [EDAstro](https://edastro.com)'s content, which carries this
   licence, so the data carries it too. Details, and the EDAstro-derived files, in
-  [`data/LICENSE-DATA.txt`](data/LICENSE-DATA.txt). Releases 1.1.0–1.2.8 shipped those files under
+  [`data/LICENSE-DATA.txt`](data/LICENSE-DATA.txt). Releases 1.1.0–1.2.10 shipped those files under
   the MIT notice by mistake; the notice applies to them as well.
 - **Photographs — Frontier's.** They are screenshots of Elite Dangerous; the game and its artwork
   belong to Frontier Developments and are under Frontier's terms, not either licence here.

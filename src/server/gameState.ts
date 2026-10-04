@@ -353,6 +353,8 @@ function organicLockGenusKey(lock: OrganicGenusLock): string {
 }
 
 /** All moons of the same planet as `sourceBodyId` (excludes self), using merged `Scan` parents and/or orbit map. */
+const EMPTY_ORBIT_PARENTS: ReadonlyMap<number, number> = new Map();
+
 function siblingMoonBodyIdsUnified(
   store: GameStateStore,
   systemAddress: number,
@@ -366,14 +368,11 @@ function siblingMoonBodyIdsUnified(
   if (parent == null) return [];
 
   const out = new Set<number>();
-  const prefix = `${systemAddress}:`;
   for (const rec of store.liveScansInSystem(systemAddress)) {
     if (directParentPlanetId(rec.parents) === parent) out.add(rec.bodyId);
   }
-  for (const [bk, p] of store.orbitParentPlanetByBody) {
-    if (!bk.startsWith(prefix) || p !== parent) continue;
-    const bid = Number(bk.slice(prefix.length));
-    if (Number.isFinite(bid)) out.add(bid);
+  for (const [bid, p] of store.orbitParentsInSystem(systemAddress)) {
+    if (p === parent) out.add(bid);
   }
   out.delete(sourceBodyId);
   return [...out];
@@ -861,6 +860,35 @@ export class GameStateStore {
   }
 
   /**
+   * An `Analyse` put back on the body its run was taken on (plan 2.4, Fable S4).
+   *
+   * The game no longer makes the commander wait for the analysis: board and fly off, and `Analyse`
+   * fires wherever the ship is by then, naming that body (owner, 2026-09-22). `Log` and `Sample` are
+   * always written at the plant. So an `Analyse` for a species with no open run on its own body, while
+   * exactly one run of that species elsewhere has both its samples, belongs to that run. Anything else — its own run
+   * open, none open, two open — leaves the line as the game wrote it. On the owner's 395 runs (journals,
+   * 2026-10-02) every `Analyse` followed `Log, Sample, Sample` on its own body, so this changes nothing
+   * there. Call it before `apply()`, which closes the run.
+   */
+  ownBodyForAnalyse(line: JournalLine): JournalLine {
+    if (line.event !== "ScanOrganic" || line.ScanType !== "Analyse") return line;
+    const sa = line.SystemAddress;
+    const body = line.Body;
+    if (typeof sa !== "number" || typeof body !== "number") return line;
+    const speciesKey = speciesKeyFromOrganicJournal(line);
+    if (this.organicRunStartedAt.has(`${bodyKey(sa, body)}::${speciesKey}`)) return line;
+    const suffix = `::${speciesKey}`;
+    // A run ready for its analysis: both samples in. A plant logged and left elsewhere is not one.
+    const open = [...this.organicRunStartedAt.keys()].filter(
+      (k) => k.endsWith(suffix) && this.organicAnalyseByKey.get(k)?.count === 2,
+    );
+    if (open.length !== 1) return line;
+    const [runSa, runBody] = open[0]!.slice(0, -suffix.length).split(":").map(Number);
+    if (!Number.isFinite(runSa) || !Number.isFinite(runBody)) return line;
+    return { ...line, SystemAddress: runSa, Body: runBody } as JournalLine;
+  }
+
+  /**
    * How often the two live files are re-read, in milliseconds. Both were compiled-in constants.
    *
    * Kept on the store rather than in the timer closures so one place answers "what is it now" for
@@ -1237,9 +1265,54 @@ export class GameStateStore {
     sold: Map<number, ExplorationScanRecord[]>;
   } | null = null;
 
+  private scanIndexKey(): string {
+    return `${this.explorationScansRevision}:${this.explorationScans.size}:${this.soldExplorationScans.size}`;
+  }
+
+  /** Whether the index matches the maps right now. Taken before a write, so the write can patch it. */
+  private scanIndexIsFresh(): boolean {
+    return this.scanIndexMemo !== null && this.scanIndexMemo.key === this.scanIndexKey();
+  }
+
+  /**
+   * Patch the index after writes that were made while it was fresh, instead of rebuilding it.
+   *
+   * Start-up hang report (guild tester, 2026-10-01; plan F): every `Scan` moves the revision, and the
+   * next moon `Scan` asks for its siblings — so a journal replay rebuilt the index over every record in
+   * the store once per moon. Quadratic: 24 s of a frozen app on a cold start with the owner's history,
+   * minutes with a longer one. A write touches one body, so it patches one system's list: a new array
+   * (callers may hold the old one), the record replaced where it was or appended, which is the order a
+   * rebuild over the maps' insertion order gives. A stale index is left for the next read to rebuild.
+   */
+  private patchScanIndex(
+    wasFresh: boolean,
+    ops: ReadonlyArray<{ kind: "live" | "sold"; rec: ExplorationScanRecord; drop?: boolean }>,
+  ): void {
+    const memo = this.scanIndexMemo;
+    if (!wasFresh || !memo) return;
+    for (const { kind, rec, drop } of ops) {
+      const lists = kind === "live" ? memo.live : memo.sold;
+      const prev = lists.get(rec.systemAddress) ?? [];
+      const at = prev.findIndex((r) => r.bodyId === rec.bodyId);
+      let next: ExplorationScanRecord[];
+      if (drop) {
+        if (at < 0) continue;
+        next = prev.filter((_, i) => i !== at);
+      } else if (at >= 0) {
+        next = prev.slice();
+        next[at] = rec;
+      } else {
+        next = [...prev, rec];
+      }
+      if (next.length) lists.set(rec.systemAddress, next);
+      else lists.delete(rec.systemAddress);
+    }
+    memo.key = this.scanIndexKey();
+  }
+
   private scanIndex() {
     // The sizes too: a write that forgot the revision (a test, a future path) must not read stale.
-    const key = `${this.explorationScansRevision}:${this.explorationScans.size}:${this.soldExplorationScans.size}`;
+    const key = this.scanIndexKey();
     if (this.scanIndexMemo?.key === key) return this.scanIndexMemo;
     const group = (m: Map<string, ExplorationScanRecord>) => {
       const out = new Map<number, ExplorationScanRecord[]>();
@@ -1256,6 +1329,56 @@ export class GameStateStore {
       sold: group(this.soldExplorationScans),
     };
     return this.scanIndexMemo;
+  }
+
+  /**
+   * `orbitParentPlanetByBody` by system (plan F, 2026-10-01): the sibling-moon lookup walked every
+   * body in the store for each moon `Scan`. Same scheme as the scan index: a revision plus the size,
+   * patched on the `Scan` path, rebuilt after anything else.
+   */
+  private orbitParentRevision = 0;
+  private orbitParentMemo: { key: string; bySystem: Map<number, Map<number, number>> } | null = null;
+
+  private orbitParentKey(): string {
+    return `${this.orbitParentRevision}:${this.orbitParentPlanetByBody.size}`;
+  }
+
+  /** Moon body id -> its parent planet's body id, for one system. Read-only. */
+  orbitParentsInSystem(systemAddress: number): ReadonlyMap<number, number> {
+    const key = this.orbitParentKey();
+    if (this.orbitParentMemo?.key !== key) {
+      const bySystem = new Map<number, Map<number, number>>();
+      for (const [bk, p] of this.orbitParentPlanetByBody) {
+        const i = bk.indexOf(":");
+        const sys = Number(bk.slice(0, i));
+        const bid = Number(bk.slice(i + 1));
+        if (!Number.isFinite(sys) || !Number.isFinite(bid)) continue;
+        let m = bySystem.get(sys);
+        if (!m) bySystem.set(sys, (m = new Map()));
+        m.set(bid, p);
+      }
+      this.orbitParentMemo = { key, bySystem };
+    }
+    return this.orbitParentMemo.bySystem.get(systemAddress) ?? EMPTY_ORBIT_PARENTS;
+  }
+
+  /** Set (or clear, with null) one moon's parent, keeping the per-system index in step. */
+  private setOrbitParent(systemAddress: number, bodyId: number, parent: number | null): void {
+    const k = bodyKey(systemAddress, bodyId);
+    const fresh = this.orbitParentMemo !== null && this.orbitParentMemo.key === this.orbitParentKey();
+    if (parent != null) this.orbitParentPlanetByBody.set(k, parent);
+    else this.orbitParentPlanetByBody.delete(k);
+    this.orbitParentRevision += 1;
+    if (!fresh || !this.orbitParentMemo) return;
+    let m = this.orbitParentMemo.bySystem.get(systemAddress);
+    if (parent != null) {
+      if (!m) this.orbitParentMemo.bySystem.set(systemAddress, (m = new Map()));
+      m.set(bodyId, parent);
+    } else if (m) {
+      m.delete(bodyId);
+      if (!m.size) this.orbitParentMemo.bySystem.delete(systemAddress);
+    }
+    this.orbitParentMemo.key = this.orbitParentKey();
   }
 
   /** This system's live (unsold) scan records. Read-only: the store owns them. */
@@ -1370,7 +1493,19 @@ export class GameStateStore {
 
   setFootTravelOdometerEnabled(value: boolean): void {
     this.footTravelOdometerEnabled = value;
-    if (!value) this.resetFootTravelRuntime({ clearPersistedFile: true });
+    /*
+      Off resets the odometer and nothing else. It used to reset the foot session and delete the
+      saved sample run, and the settings file applies this at every start: with the odometer off
+      (his setting) a restart mid-run deleted the plant positions just before they were read back,
+      and the HUD lost the first sample's distance (owner, 2026-10-02).
+    */
+    if (!value) {
+      this.footTravelOdometerTracking = false;
+      this.footTravelDistanceMeters = 0;
+      this.footTravelPrevLat = null;
+      this.footTravelPrevLon = null;
+      this.footTravelLastPlanetRadiusM = null;
+    }
   }
 
   /**
@@ -1501,12 +1636,15 @@ export class GameStateStore {
    */
   resetAll(): void {
     this.bodies.clear();
+    this.bodyKeysBySystem = null;
+    this.confirmedVariantsRevision += 1;
     this.explorationScans.clear();
     this.soldExplorationScans.clear();
     this.soldBodyKeys.clear();
     this.explorationScansRevision += 1;
     this.edsmExplorationByKey.clear();
     this.commanderName = null;
+    this.commanderFid = null;
     this.currentSystem = null;
     this.currentSystemAddress = null;
     this.commanderPos = null;
@@ -1540,6 +1678,7 @@ export class GameStateStore {
     this.soldOrganicBySystem.clear();
     this.fssDiscoveryScanBySystem.clear();
     this.orbitParentPlanetByBody.clear();
+    this.orbitParentRevision += 1;
     this.dssMappedBodyKeys.clear();
     this.archivedDssMappedBodyKeys.clear();
     this.dssFirstMapperEligibleByBodyKey.clear();
@@ -1565,9 +1704,28 @@ export class GameStateStore {
     this.liveNavRoute = null;
     this.lastLiveNavRoutePushKey = null;
     this.fsdTarget = null;
+    this.lastJumpTarget = null;
     this.resetFootTravelRuntime();
     this.exoOrganicTracker = null;
     this.exoOrganicLastFix = null;
+  }
+
+  /**
+   * A live journal line: `apply`, then what only the present may do.
+   *
+   * Leaving a system closes its prediction records. The conditions at each plant live only in the
+   * radar's own marks, and a body is not finished with until the commander has gone: hopping to orbit
+   * and back down is one visit. Leaving — a jump, a carrier jump, a `Location` somewhere else — is the
+   * moment a record can be given its ground truth and sealed. Live lines only (plan 2.4, O-19): a
+   * replay walking years of history used to seal a record the commander was still working on, the
+   * first time the history left that system on an older visit.
+   */
+  applyLive(line: JournalLine): void {
+    const leaving = this.currentSystemAddress;
+    this.apply(line);
+    if (leaving !== null && this.currentSystemAddress !== leaving) {
+      finalisePredictionsForSystem(leaving, this.surfaceSampleMarks);
+    }
   }
 
   /** Remember a system name from the journal (for the system browser). */
@@ -1624,18 +1782,6 @@ export class GameStateStore {
 
   /** Commander location after FSD/carrier jump — does not delete other systems’ bodies. */
   resetSystem(starSystem: string, systemAddress: number): void {
-    /*
-      Leaving is what closes a prediction record.
-
-      The conditions at each plant live only in the radar's own marks, and a body is not finished
-      with until the commander has gone: hopping to orbit and back down is one visit. Jumping away
-      is the moment the record can be given its ground truth and sealed. Done here rather than on the
-      journal line so a carrier jump closes them too.
-    */
-    const leaving = this.currentSystemAddress;
-    if (leaving !== null && leaving !== systemAddress) {
-      finalisePredictionsForSystem(leaving, this.surfaceSampleMarks);
-    }
     this.rememberVisitedSystem(starSystem, systemAddress);
     this.currentSystem = starSystem;
     this.currentSystemAddress = systemAddress;
@@ -1721,8 +1867,10 @@ export class GameStateStore {
     setNum("ascendingNode", line.AscendingNode);
     setNum("meanAnomaly", line.MeanAnomaly);
 
+    const fresh = this.scanIndexIsFresh();
     this.explorationScans.set(k, rec);
     this.explorationScansRevision += 1;
+    this.patchScanIndex(fresh, [{ kind: "live", rec }]);
     this.edsmExplorationByKey.delete(k);
   }
 
@@ -1776,6 +1924,7 @@ export class GameStateStore {
 
     setStr("scanType", line.ScanType);
     rec.playerScanned = prev?.playerScanned === true || line.ScanType !== "NavBeaconDetail";
+    if (prev?.fssResolved === true || line.ScanType === "Detailed") rec.fssResolved = true;
     setStr("bodyType", line.BodyType);
     setStr("planetClass", line.PlanetClass);
     setStr("starType", line.StarType);
@@ -1894,15 +2043,16 @@ export class GameStateStore {
       }
     }
 
+    const fresh = this.scanIndexIsFresh();
     this.explorationScans.set(k, rec);
     this.explorationScansRevision += 1;
     this.edsmExplorationByKey.delete(k);
     // Scanned again after the sale: the live row is the better copy of the same physics.
-    this.soldExplorationScans.delete(k);
+    const wasSold = this.soldExplorationScans.delete(k);
+    this.patchScanIndex(fresh, wasSold ? [{ kind: "live", rec }, { kind: "sold", rec, drop: true }] : [{ kind: "live", rec }]);
 
     const moonOf = directParentPlanetId(rec.parents);
-    if (moonOf != null) this.orbitParentPlanetByBody.set(k, moonOf);
-    else this.orbitParentPlanetByBody.delete(k);
+    this.setOrbitParent(systemAddress, bodyId, moonOf);
 
     const inCurrentSystem = this.currentSystemAddress !== null && systemAddress === this.currentSystemAddress;
     if (moonOf != null && inCurrentSystem) {
@@ -2095,31 +2245,14 @@ export class GameStateStore {
 
       if (event === "Touchdown") return this.onTouchdown(line, ts);
 
-      if (event === "StartJump" || event === "SupercruiseEntry" || event === "FSDJump") {
-        /*
-          Leaving the body. The game drops a half-collected sample the moment the ship leaves the
-          planet, and the HUD should fold with it rather than keep showing a radar for ground that
-          is no longer underfoot — the owner saw the tracker stay open through a jump. `Status.json`
-          cannot tell us this on its own: it keeps reporting a latitude from orbit. No `return`:
-          `FSDJump` has its own handling below.
-        */
-        this.overlayTouchdownBodyKey = null;
-        if (this.exoOrganicTracker) {
-          this.exoOrganicTracker = null;
-          clearPersistedOrganicSampleSession(getProjectRoot());
-        }
+      if (event === "StartJump" || event === "SupercruiseEntry") {
+        this.leaveBody();
         if (event === "StartJump" && line.JumpType === "Hyperspace") {
           const starSystem = typeof line.StarSystem === "string" ? line.StarSystem : "";
           const systemAddress = typeof line.SystemAddress === "number" ? line.SystemAddress : 0;
           const starClass = typeof line.StarClass === "string" ? line.StarClass : "";
           if (starSystem)
             this.lastJumpTarget = { starSystem, systemAddress, starClass, at: ts, arrived: false };
-        }
-        if (event === "FSDJump" && this.lastJumpTarget) {
-          const addr = typeof line.SystemAddress === "number" ? line.SystemAddress : null;
-          if (addr === this.lastJumpTarget.systemAddress || addr == null) {
-            this.lastJumpTarget = { ...this.lastJumpTarget, arrived: true };
-          }
         }
       }
 
@@ -2188,10 +2321,27 @@ export class GameStateStore {
     return;
   }
 
+  /**
+   * Leaving the body. The game drops a half-collected sample the moment the ship leaves the planet, and
+   * the HUD should fold with it rather than keep showing a radar for ground that is no longer underfoot
+   * — the owner saw the tracker stay open through a jump. `Status.json` cannot tell us this on its own:
+   * it keeps reporting a latitude from orbit.
+   */
+  private leaveBody(): void {
+    this.overlayTouchdownBodyKey = null;
+    if (this.exoOrganicTracker) {
+      this.exoOrganicTracker = null;
+      clearPersistedOrganicSampleSession(getProjectRoot());
+    }
+  }
+
   /** `FSDJump` / `CarrierJump` — one of apply()'s event handlers. */
   private onFSDJumpEtc(line: JournalLine, ts: string, event: string): void {
     const sys = line.StarSystem as string;
     const addr = line.SystemAddress as number;
+    // Both leave the body: a carrier jump never reached the wipe in apply(), which ran after this
+    // handler had returned (plan 2.4, Fable S3).
+    this.leaveBody();
     if (event === "FSDJump" && typeof addr === "number") {
       // The next-jump card: the target is reached (held for a minute), the nav lock is spent.
       if (
@@ -2233,7 +2383,18 @@ export class GameStateStore {
     if (sys && typeof addr === "number") {
       this.setPositionFromLine(line);
       this.notePopulation(line, ts);
-      this.setLocation(sys, addr);
+      /*
+        In another system it is an arrival, as a jump is (plan 2.4, Fable S9): a respawn, a rescue or a
+        relog after a carrier move lands here with no FSDJump. Let go of the system the app was pointed
+        at and close the one left, or the tabs stay on the old place. A relog where the commander
+        already was changes nothing.
+      */
+      if (this.currentSystemAddress !== null && this.currentSystemAddress !== addr) {
+        this.viewingSystemAddress = null;
+        this.resetSystem(sys, addr);
+      } else {
+        this.setLocation(sys, addr);
+      }
     }
     return;
   }
@@ -2328,6 +2489,7 @@ export class GameStateStore {
     else if (existing.source === "codex") existing.at = ts;
     if (lock.variantLocalised && !codexBody.confirmedVariants.includes(lock.variantLocalised)) {
       codexBody.confirmedVariants.push(lock.variantLocalised);
+      this.confirmedVariantsRevision += 1;
     }
     return;
   }
@@ -2705,7 +2867,8 @@ export class GameStateStore {
   }
 
   /** `ScanOrganic` — one of apply()'s event handlers. */
-  private onScanOrganic(line: JournalLine, ts: string): void {
+  private onScanOrganic(written: JournalLine, ts: string): void {
+    const line = this.ownBodyForAnalyse(written);
     const systemAddress = line.SystemAddress as number;
     const bodyId = line.Body as number;
     const variant = (line.Variant_Localised as string | undefined)?.trim() ?? "";
@@ -2850,7 +3013,10 @@ export class GameStateStore {
       upsertFootOrganicLock(b.organicGenusLocks, lock, scanType ?? "", ts);
     }
 
-    if (variant && !b.confirmedVariants.includes(variant)) b.confirmedVariants.push(variant);
+    if (variant && !b.confirmedVariants.includes(variant)) {
+      b.confirmedVariants.push(variant);
+      this.confirmedVariantsRevision += 1;
+    }
     this.propagateExoAmongSimilarMoons(bodyId, systemAddress, ts, "organic");
     return;
   }
@@ -2904,9 +3070,7 @@ export class GameStateStore {
   private onDied(): void {
     // Unsold cartographic data is lost with the ship. The physics stays in the archive, and the
     // bodies are not marked sold: scanning them again earns the data back.
-    for (const addr of new Set([...this.explorationScans.values()].map((r) => r.systemAddress))) {
-      this.clearExplorationDataForSystem(addr, false);
-    }
+    this.clearExplorationDataForSystems(new Set([...this.explorationScans.values()].map((r) => r.systemAddress)), false);
     this.organicAnalyseByKey.clear();
     this.pendingOrganicSales = [];
     this.exoOrganicLastFix = null;
@@ -2958,17 +3122,29 @@ export class GameStateStore {
   }
 
 
-  /** Resolve `StarSystem` name from journal to address (visited list or merged exploration rows). */
-  private findSystemAddressByStarSystemName(name: string): number | null {
-    const n = name.trim().toLowerCase();
-    if (!n) return null;
-    for (const [addr, sys] of this.visitedSystems) {
-      if (sys.trim().toLowerCase() === n) return addr;
-    }
-    for (const [, rec] of this.explorationScans) {
-      if (rec.starSystem?.trim().toLowerCase() === n) return rec.systemAddress;
-    }
-    return null;
+  /**
+   * Resolve journal `StarSystem` names to addresses (visited list first, then merged exploration rows),
+   * for one sale. Built once per sale, not walked per sold system: each name used to lowercase every
+   * system the commander ever visited (plan 2.3, Opus 21).
+   */
+  private systemAddressesByName(): (name: string) => number | null {
+    let map: Map<string, number> | null = null;
+    return (name) => {
+      const n = name.trim().toLowerCase();
+      if (!n) return null;
+      if (!map) {
+        map = new Map();
+        for (const [addr, sys] of this.visitedSystems) {
+          const k = sys.trim().toLowerCase();
+          if (!map.has(k)) map.set(k, addr);
+        }
+        for (const rec of this.explorationScans.values()) {
+          const k = rec.starSystem?.trim().toLowerCase();
+          if (k && !map.has(k)) map.set(k, rec.systemAddress);
+        }
+      }
+      return map.get(n) ?? null;
+    };
   }
 
   /**
@@ -2976,37 +3152,59 @@ export class GameStateStore {
    * or after death with `sold = false` — the data is gone either way, but only sold bodies stay out of
    * the unsold total when scanned again.
    */
-  private clearExplorationDataForSystem(systemAddress: number, sold = true): void {
-    const prefix = `${systemAddress}:`;
-    for (const [k, rec] of [...this.explorationScans.entries()]) {
-      if (k.startsWith(prefix)) {
+  private clearExplorationDataForSystems(systemAddresses: Iterable<number>, sold = true): void {
+    const systems = new Set(systemAddresses);
+    if (systems.size === 0) return;
+    for (const systemAddress of systems) {
+      const prefix = `${systemAddress}:`;
+      const fresh = this.scanIndexIsFresh();
+      const moved: { kind: "live" | "sold"; rec: ExplorationScanRecord; drop?: boolean }[] = [];
+      // The system's own rows from the index when it is fresh, not a walk over every record.
+      const rows = fresh
+        ? [...this.liveScansInSystem(systemAddress)].map((r) => [bodyKey(r.systemAddress, r.bodyId), r] as const)
+        : [...this.explorationScans.entries()].filter(([k]) => k.startsWith(prefix));
+      for (const [k, rec] of rows) {
         if (sold) this.soldBodyKeys.add(k);
         // The value is sold; the physics is not. See soldExplorationScans.
         this.soldExplorationScans.set(k, rec);
         this.explorationScans.delete(k);
         this.explorationScansRevision += 1;
+        moved.push({ kind: "sold", rec }, { kind: "live", rec, drop: true });
+      }
+      this.patchScanIndex(fresh, moved);
+      this.fssAllBodiesCompleteSystems.delete(systemAddress);
+      this.fssAllBodiesFoundCountBySystem.delete(systemAddress);
+      this.fssDiscoveryScanBySystem.delete(systemAddress);
+      const moons = this.orbitParentsInSystem(systemAddress);
+      if (moons.size) {
+        for (const bid of [...moons.keys()]) this.orbitParentPlanetByBody.delete(bodyKey(systemAddress, bid));
+        this.orbitParentRevision += 1;
+        // The index was fresh (just read): drop the system from it rather than rebuild it.
+        const memo = this.orbitParentMemo!;
+        memo.bySystem.delete(systemAddress);
+        memo.key = this.orbitParentKey();
       }
     }
+    /*
+      The body-keyed sets, walked once for the whole sale (plan 2.3, Opus 21). They hold every body the
+      commander ever mapped or resolved, and were walked once per sold system: a 50-system sale walked
+      each of them 50 times.
+    */
+    const inSold = (k: string) => systems.has(Number(k.slice(0, k.indexOf(":"))));
     for (const k of [...this.dssMappedBodyKeys]) {
-      if (k.startsWith(prefix)) {
+      if (inSold(k)) {
         this.dssMappedBodyKeys.delete(k);
         this.archivedDssMappedBodyKeys.add(k);
       }
     }
     for (const k of [...this.dssFirstMapperEligibleByBodyKey.keys()]) {
-      if (k.startsWith(prefix)) this.dssFirstMapperEligibleByBodyKey.delete(k);
+      if (inSold(k)) this.dssFirstMapperEligibleByBodyKey.delete(k);
     }
     for (const k of [...this.dssMappingEfficientByBodyKey.keys()]) {
-      if (k.startsWith(prefix)) this.dssMappingEfficientByBodyKey.delete(k);
+      if (inSold(k)) this.dssMappingEfficientByBodyKey.delete(k);
     }
     for (const k of [...this.fssBodySignalsBodyKeys]) {
-      if (k.startsWith(prefix)) this.fssBodySignalsBodyKeys.delete(k);
-    }
-    this.fssAllBodiesCompleteSystems.delete(systemAddress);
-    this.fssAllBodiesFoundCountBySystem.delete(systemAddress);
-    this.fssDiscoveryScanBySystem.delete(systemAddress);
-    for (const k of [...this.orbitParentPlanetByBody.keys()]) {
-      if (k.startsWith(prefix)) this.orbitParentPlanetByBody.delete(k);
+      if (inSold(k)) this.fssBodySignalsBodyKeys.delete(k);
     }
   }
 
@@ -3046,17 +3244,18 @@ export class GameStateStore {
     const ts = typeof line.timestamp === "string" ? line.timestamp : "";
 
     const rows: { addr: number; bodies: number }[] = [];
+    const byName = this.systemAddressesByName();
     for (const item of listed) {
       let addr: number | null = null;
       let bodies = 0;
       if (typeof item === "string") {
-        addr = this.findSystemAddressByStarSystemName(item);
+        addr = byName(item);
       } else if (item && typeof item === "object") {
         const o = item as Record<string, unknown>;
         if (typeof o.SystemAddress === "number" && Number.isFinite(o.SystemAddress)) addr = o.SystemAddress;
         else {
           const nm = o.SystemName ?? o.StarSystem ?? o.System;
-          if (typeof nm === "string") addr = this.findSystemAddressByStarSystemName(nm);
+          if (typeof nm === "string") addr = byName(nm);
         }
         const n = Number(o.NumBodies);
         if (Number.isFinite(n) && n > 0) bodies = n;
@@ -3075,42 +3274,48 @@ export class GameStateStore {
   /** `SellExplorationData.Systems` — string names and/or objects with SystemAddress / SystemName. */
   private clearExplorationForSoldSystems(systems: unknown): void {
     if (!Array.isArray(systems)) return;
+    const byName = this.systemAddressesByName();
+    const sold: number[] = [];
     for (const item of systems) {
       if (typeof item === "string") {
-        const addr = this.findSystemAddressByStarSystemName(item);
-        if (addr != null) this.clearExplorationDataForSystem(addr);
+        const addr = byName(item);
+        if (addr != null) sold.push(addr);
         continue;
       }
       if (!item || typeof item !== "object") continue;
       const o = item as Record<string, unknown>;
       if (typeof o.SystemAddress === "number" && Number.isFinite(o.SystemAddress)) {
-        this.clearExplorationDataForSystem(o.SystemAddress);
+        sold.push(o.SystemAddress);
         continue;
       }
       const nm = o.SystemName ?? o.StarSystem ?? o.System;
       if (typeof nm === "string") {
-        const addr = this.findSystemAddressByStarSystemName(nm);
-        if (addr != null) this.clearExplorationDataForSystem(addr);
+        const addr = byName(nm);
+        if (addr != null) sold.push(addr);
       }
     }
+    this.clearExplorationDataForSystems(sold);
   }
 
   /** `MultiSellExplorationData.Discovered` — { SystemName, NumBodies }[] (optional SystemAddress). */
   private clearExplorationForSoldSystemsMulti(discovered: unknown): void {
     if (!Array.isArray(discovered)) return;
+    const byName = this.systemAddressesByName();
+    const sold: number[] = [];
     for (const item of discovered) {
       if (!item || typeof item !== "object") continue;
       const o = item as Record<string, unknown>;
       if (typeof o.SystemAddress === "number" && Number.isFinite(o.SystemAddress)) {
-        this.clearExplorationDataForSystem(o.SystemAddress);
+        sold.push(o.SystemAddress);
         continue;
       }
       const nm = o.SystemName;
       if (typeof nm === "string") {
-        const addr = this.findSystemAddressByStarSystemName(nm);
-        if (addr != null) this.clearExplorationDataForSystem(addr);
+        const addr = byName(nm);
+        if (addr != null) sold.push(addr);
       }
     }
+    this.clearExplorationDataForSystems(sold);
   }
 
   /**
@@ -3261,8 +3466,41 @@ export class GameStateStore {
     return this.remoteSystems.has(systemAddress) && this.journalBioBodies(systemAddress).length === 0;
   }
 
+  /*
+    Body keys per system, so the refresh looks at one system's bodies instead of filtering every bio
+    body ever seen (~2 ms a snapshot on his journals, profiled 2026-10-01). Bodies are only ever
+    added, or all cleared: the index is rebuilt when the count moves and dropped on clear/load.
+    Keys, not objects, so a body replaced in the map is still read fresh.
+  */
+  private bodyKeysBySystem: Map<number, string[]> | null = null;
+  /**
+   * Bumped whenever a body gains a confirmed colour variant, or the bodies are cleared or loaded:
+   * the colour-outlier sweep (snapshot.ts) skips its pass over every body when this has not moved.
+   */
+  confirmedVariantsRevision = 0;
+  private bodyKeysIndexedAt = -1;
+
+  private bodyKeysIn(systemAddress: number): readonly string[] {
+    if (!this.bodyKeysBySystem || this.bodyKeysIndexedAt !== this.bodies.size) {
+      const idx = new Map<number, string[]>();
+      for (const [k, b] of this.bodies) {
+        const list = idx.get(b.systemAddress);
+        if (list) list.push(k);
+        else idx.set(b.systemAddress, [k]);
+      }
+      this.bodyKeysBySystem = idx;
+      this.bodyKeysIndexedAt = this.bodies.size;
+    }
+    return this.bodyKeysBySystem.get(systemAddress) ?? [];
+  }
+
   private journalBioBodies(focus: number): BodyExoState[] {
-    return [...this.bodies.values()].filter((b) => {
+    const inSystem: BodyExoState[] = [];
+    for (const k of this.bodyKeysIn(focus)) {
+      const b = this.bodies.get(k);
+      if (b) inSystem.push(b);
+    }
+    return inSystem.filter((b) => {
       if (b.systemAddress !== focus) return false;
       /** FSS `Biological` count 0: omit from bio body list even when DSS listed genera. */
       if (b.biologicalSignals === 0) return false;
@@ -3398,6 +3636,10 @@ export class GameStateStore {
       firstFootfallBodies: [...this.firstFootfallBodies],
       codexLoggedSpecies: [...this.codexLoggedSpecies],
       codexRegionLogged: [...this.codexRegionLogged],
+      codexRegionBySystem: [...this.codexRegionBySystem.entries()],
+      organicRunStartedAt: [...this.organicRunStartedAt.entries()],
+      fsdTarget: this.fsdTarget,
+      lastJumpTarget: this.lastJumpTarget,
       codexMapLogged: [...this.codexMapLogged],
       codexSightings: [...this.codexSightings],
       achievementDone: [...this.achievementDone],
@@ -3466,6 +3708,8 @@ export class GameStateStore {
     for (const [addr, name] of data.visitedSystems) this.visitedSystems.set(addr, name);
     this.visitedSystemNames = null;
     for (const [k, v] of data.bodies) this.bodies.set(k, v);
+    this.bodyKeysBySystem = null;
+    this.confirmedVariantsRevision += 1;
     for (const [k, v] of data.explorationScans) this.explorationScans.set(k, v);
     for (const [k, v] of data.soldExplorationScans ?? []) this.soldExplorationScans.set(k, v);
     for (const k of data.soldBodyKeys ?? []) this.soldBodyKeys.add(k);
@@ -3476,6 +3720,7 @@ export class GameStateStore {
     for (const [k, v] of data.dssFirstMapperEligibleByBodyKey) this.dssFirstMapperEligibleByBodyKey.set(k, v);
     for (const [k, v] of data.dssMappingEfficientByBodyKey) this.dssMappingEfficientByBodyKey.set(k, v);
     for (const [k, v] of data.orbitParentPlanetByBody) this.orbitParentPlanetByBody.set(k, v);
+    this.orbitParentRevision += 1;
     this.footJournalContextBuffer.length = 0;
     this.footJournalContextBuffer.push(...data.footJournalContextBuffer);
     for (const [k, v] of data.organicAnalyseByKey) this.organicAnalyseByKey.set(k, v);
@@ -3486,6 +3731,10 @@ export class GameStateStore {
     for (const k of data.firstFootfallBodies) this.firstFootfallBodies.add(k);
     for (const k of data.codexLoggedSpecies ?? []) this.codexLoggedSpecies.add(k);
     for (const k of data.codexRegionLogged ?? []) this.codexRegionLogged.add(k);
+    for (const [k, r] of data.codexRegionBySystem ?? []) this.codexRegionBySystem.set(k, r);
+    for (const [k, t] of data.organicRunStartedAt ?? []) this.organicRunStartedAt.set(k, t);
+    this.fsdTarget = data.fsdTarget ?? null;
+    this.lastJumpTarget = data.lastJumpTarget ?? null;
     for (const k of data.codexMapLogged ?? []) this.codexMapLogged.add(k);
     for (const [k, t] of data.codexSightings ?? []) this.codexSightings.set(k, t);
     for (const [k, t] of data.achievementDone ?? []) this.achievementDone.set(k, t);

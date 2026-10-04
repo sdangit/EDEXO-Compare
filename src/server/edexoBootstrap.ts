@@ -14,8 +14,16 @@ import {
   ownCodexBackupKeys,
 } from "./sharedExomastery.js";
 import { ownFootEntriesWithBackups } from "./footScannedCatalog.js";
-import { existsSync, watchFile, unwatchFile, writeFileSync, readFileSync, promises as fsp, watch, statSync } from "node:fs";
-import type { AppSnapshot, AppStatusDTO, ExoLiveDTO, ImportDumpStatusDTO, JournalBootProgressDTO, JournalLine } from "../shared/types.js";
+import { existsSync, watchFile, unwatchFile, writeFileSync, readFileSync, readdirSync, watch, statSync } from "node:fs";
+import type {
+  AppSnapshot,
+  AppStatusDTO,
+  ExoLiveDTO,
+  ImportDumpStatusDTO,
+  JournalBootProgressDTO,
+  JournalLine,
+  UiCommand,
+} from "../shared/types.js";
 import { journalHistoryCutoffUtcMs } from "../shared/journalHistoryPreset.js";
 import { clampStatusPollMs, pollRatesDto } from "../shared/pollRates.js";
 import { radarRadiusDto } from "../shared/radarRadius.js";
@@ -34,11 +42,14 @@ import {
   readJournalFromOffset,
   listJournalFilesChronological,
   type JournalListFilterOpts,
+  type JournalTailSeed,
   type JournalWatcherHandle,
 } from "./journalWatcher.js";
 import { scanJournalsForStatistics } from "./statisticsScan.js";
 import { createHttpServer, getLanIPv4s } from "./httpServer.js";
 import { describeUserDataMigration, migrateLegacyUserData } from "./userDataMigration.js";
+import { readLanAccess, resolveLanAccess } from "./launcherPrefs.js";
+import { isLoopbackHostName } from "./lanAuth.js";
 import { applyPendingRestore } from "./backup.js";
 import { createBackupService } from "./backupService.js";
 import { APP_VERSION } from "./appVersion.js";
@@ -120,7 +131,8 @@ import { loadBioIndex } from "./bioIndex.js";
 import { mySystemDetail, mySystemsDto, sessionRouteDto } from "./galaxyMine.js";
 import { commanderSectorsDto } from "./galaxySectorTiers.js";
 import { runEdsmCatchUp, type EdsmCatchUpScope } from "./edsmCatchUp.js";
-import { createUpdateChecker } from "./updateCheck.js";
+import { createUpdateChecker, currentReleaseForm } from "./updateCheck.js";
+import { createAppUpdater, resolveUpdateDir } from "./appUpdater.js";
 import { fetchRemoteSystem, readRemoteSystemsCache, writeRemoteSystemToCache } from "./remoteSystems.js";
 import { parseHost, parsePort } from "./cliOptions.js";
 import type { CliOptions } from "./cliOptions.js";
@@ -164,6 +176,15 @@ export type EdexoRuntime = {
   gameRunning: () => boolean | null;
   getLocalBaseUrl: () => string;
   openMainAppInBrowser: () => void;
+  /** Write what is buffered, synchronously: Windows logoff/shutdown gives no time for shutdown(). */
+  flushNow: () => void;
+  /** Tell the app pages to do something the commander asked for with a key bind. */
+  uiCommand: (cmd: UiCommand) => void;
+  /**
+   * The downloaded, checked update waiting for a restart, and the folder it sits in; null when there
+   * is none (appUpdater.ts). Electron installs it on the way out (electron/updater.cjs).
+   */
+  stagedUpdate: () => { version: string; form: string; file: string; dir: string } | null;
 };
 
 /**
@@ -194,6 +215,15 @@ function reloadSpeciesDerivedCaches(): void {
   clearAchievementsCache();
 }
 
+/** The journal folder is there and can be listed (a drive not mounted yet is not an empty folder). */
+function journalFolderIsReadable(dir: string): boolean {
+  try {
+    return statSync(dir).isDirectory() && Array.isArray(readdirSync(dir));
+  } catch {
+    return false;
+  }
+}
+
 export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   assertResourceLayout();
   startPerfReporter();
@@ -210,6 +240,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
   const projectRoot = getProjectRoot();
   const updateChecker = createUpdateChecker();
+  const appUpdater = createAppUpdater({ newerAsset: () => updateChecker.newerAsset(), form: currentReleaseForm() });
 
   let journalDir = resolveInitialJournalDir(projectRoot);
   let journalPath: string | null = null;
@@ -276,7 +307,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
    * wide gets an access key. A loopback bind gets none — there is nothing there a local process
    * could not already do.
    */
-  const lanExposed = bindHost === "0.0.0.0";
+  // Any address but this PC's own is the network, and needs the key: `--host 192.168.0.6` or `--host ::`
+  // used to run with no key at all because only 0.0.0.0 counted (combined plan 1.4).
+  const lanExposed = !isLoopbackHostName(bindHost);
   const lanKey = lanExposed ? loadOrCreateLanKey(resolveLanKeyPath()) : null;
   const lanUrlsWithKey = (): string[] => getLanIPv4s(port).map((u) => lanUrlWithKey(u, lanKey));
 
@@ -383,12 +416,13 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         journalBootProgress,
         sessionLog.toDto(),
       );
-      snap.notices = notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
+      // Neither while the history replays: the boot screen covers both (plan 2.3, Opus 20).
+      snap.notices = snap.journalBoot ? undefined : notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
       {
         // The NSP card (2026-09-30): what he saw, what EDAstro has, else a guess from the neighbourhood.
         const addr = store.viewingSystemAddress ?? store.currentSystemAddress ?? null;
         snap.nspOutlook =
-          addr == null
+          addr == null || snap.journalBoot
             ? null
             : perfTime("snap.nspOutlook", () =>
                 nspOutlook({
@@ -585,6 +619,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       port,
       lanUrls: lanExposed ? lanUrlsWithKey() : [],
       lanKeyRequired: lanKey != null,
+      lanAccess: cli.lanToggle ? { saved: readLanAccess() ?? lanExposed, active: lanExposed } : null,
       journalDir,
       journalDirConfiguredOk,
       journalPath,
@@ -959,26 +994,46 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     edsmAutoFetcher.onArrivedInSystem(systemAddress, systemName);
   }
 
+  /*
+    Status.json and NavRoute.json for the live lines, read once per batch (plan 2.3, O-22 + F-8.2). A
+    honk writes dozens of Scan lines in one go, they arrive in one tail chunk and are applied in one
+    synchronous loop, and each line read both files from disk again. Forgotten on the next turn of the
+    event loop, so the next chunk reads them fresh.
+  */
+  let sideFiles: { status: string | null; route: ReturnType<typeof readLiveNavRouteWaypoints> } | null = null;
+  function liveSideFiles() {
+    if (!sideFiles) {
+      let status: string | null = null;
+      try {
+        status = readFileSync(path.join(journalDir, "Status.json"), "utf8");
+      } catch {
+        status = null;
+      }
+      sideFiles = { status, route: readLiveNavRouteWaypoints() };
+      setImmediate(() => {
+        sideFiles = null;
+      });
+    }
+    return sideFiles;
+  }
+
   function createLiveJournalLine(): (line: JournalLine) => void {
     return (line: JournalLine) => {
       try {
         // Before the store applies it: a body the store already has is a re-scan, not a find.
         notices.observe(line, noticesContext);
-        store.apply(line);
+        // Read before apply() closes the run: the tracker files an Analyse under the run's body too.
+        const ownLine = store.ownBodyForAnalyse(line);
+        store.applyLive(line);
         // Live lines only. The historical replay calls store.apply directly, which is what keeps a
         // first run from asking EDSM about every system the commander has ever visited.
         maybeAutoFetchOnArrival(line);
         canonnUploader.offer(line);
         eddnUploader.offer(line);
-        store.applyLiveNavRoute(readLiveNavRouteWaypoints());
-        let statusRaw: string | null = null;
-        try {
-          statusRaw = readFileSync(path.join(journalDir, "Status.json"), "utf8");
-        } catch {
-          statusRaw = null;
-        }
-        const footFix = statusRaw ? parseStatusJsonFootFix(statusRaw) : null;
-        ingestExoOrganicJournalLine(store, line, footFix, projectRoot, getCachedSpeciesDatabase());
+        const side = liveSideFiles();
+        store.applyLiveNavRoute(side.route);
+        const footFix = side.status ? parseStatusJsonFootFix(side.status) : null;
+        ingestExoOrganicJournalLine(store, ownLine, footFix, projectRoot, getCachedSpeciesDatabase());
         sessionLog.record(line, store, getCachedPrices());
         backupService.onJournalLine(typeof line.event === "string" ? line.event : undefined);
         gamePresence.onJournalLine(typeof line.event === "string" ? line.event : undefined);
@@ -1028,20 +1083,42 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
    * promise instead of starting a rival: they all want the same thing, which is a store that has
    * finished merging.
    */
-  let resyncInFlight: Promise<void> | null = null;
+  let resyncInFlight: { inputs: string; run: Promise<JournalTailSeed | null> } | null = null;
 
-  function resyncAllJournalFiles(): Promise<void> {
-    if (resyncInFlight) return resyncInFlight;
+  /** What a resync reads: the folder and the history window. A run for other inputs is not shared. */
+  const resyncInputs = (): string => `${path.normalize(journalDir)}|${store.journalHistoryPreset}`;
+
+  /**
+   * Resolves with where the live tail must start in the newest journal: the byte the replay reached
+   * (combined plan 1.1b), so the watcher neither skips nor repeats what the game wrote meanwhile.
+   */
+  function resyncAllJournalFiles(): Promise<JournalTailSeed | null> {
+    if (resyncInFlight) {
+      if (resyncInFlight.inputs === resyncInputs()) return resyncInFlight.run;
+      /*
+        The folder or the history window changed after the running resync listed its files (combined
+        plan 1.2). Joining it would leave the store merged from the old set, and its cache saved under
+        the new preset: wait for it, then run again for what is asked now.
+      */
+      return resyncInFlight.run.catch(() => null).then(() => resyncAllJournalFiles());
+    }
     // The EDDN sender learns the session from the newest file after every re-merge: a rotation
     // replays the new file's Fileheader and LoadGame here, where the live tail never sees them.
     const run = resyncAllJournalFilesInner()
       .then(primeEddnFromNewestJournal)
+      .then((): JournalTailSeed | null => (journalPath !== null ? { path: journalPath, size: journalSeedBytes } : null))
       .finally(() => {
-        resyncInFlight = null;
+        if (resyncInFlight?.run === run) resyncInFlight = null;
       });
-    resyncInFlight = run;
+    resyncInFlight = { inputs: resyncInputs(), run };
     return run;
   }
+
+  /** Let the event loop run (the launcher, the tray, HTTP) between the long steps of a start. */
+  const nextTurn = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  /** Where the live tail starts in the newest journal: the byte the last resync reached (1.1b). */
+  let journalSeedBytes = 0;
 
   async function resyncAllJournalFilesInner(): Promise<void> {
     bootStart();
@@ -1061,7 +1138,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     if (files.length === 0) {
       journalPath = null;
       journalBootProgress = null;
-      removeJournalMergeCache(projectRoot);
+      // Only a folder that is really there and empty: a journal drive not mounted yet must not cost
+      // the cache, and a full replay, at the next start (combined plan 1.2).
+      if (journalFolderIsReadable(journalDir)) removeJournalMergeCache(projectRoot);
       refreshLiveHudFromJournalDir();
       pushFlush();
       return;
@@ -1077,11 +1156,38 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     };
     pushFlush();
     const manifest = await buildJournalFileManifest(files);
+    /*
+      Where reading stopped, per file (combined plan 1.1b). The manifest's sizes are taken before the
+      replay, and the newest journal can grow while it runs: the cache must record the byte the replay
+      actually reached, and the live tail must start there, or lines are applied twice or never.
+    */
+    const consumed = new Map<string, number>();
+    /*
+      One bad line must not end the merge (combined plan 1.2): a throw here used to abort the replay,
+      and the pipeline never reached its watcher, so nothing live arrived until a restart. The live
+      path already catches per line.
+    */
+    let replayErrors = 0;
+    const applyReplayLine = (line: JournalLine): void => {
+      try {
+        store.apply(line);
+      } catch (e) {
+        replayErrors += 1;
+        if (replayErrors <= 3) console.error("[edexo-compare] journal line skipped in replay:", line.event, e);
+      }
+    };
+    const settleManifest = (): void => {
+      for (let i = 0; i < files.length; i++) {
+        const end = consumed.get(files[i]!);
+        if (end !== undefined) manifest[i] = { ...manifest[i]!, size: end };
+      }
+      journalSeedBytes = manifest[manifest.length - 1]!.size;
+    };
     bootMark("manifest");
     const cacheResult =
       process.env.EDEXO_DISABLE_JOURNAL_CACHE === "1"
         ? { hit: false as const }
-        : tryPrepareJournalCacheLoad(
+        : await tryPrepareJournalCacheLoad(
             projectRoot,
             journalDirNorm,
             files,
@@ -1104,8 +1210,11 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
        * empty store and then save that over a good cache.
        */
       bootMark("cache read");
+      // A turn between the steps of a start (plan F): the windows run on this thread too.
+      await nextTurn();
       const hydrated = store.hydrateJournalMergePayload(cacheResult.payload);
       bootMark("hydrate");
+      await nextTurn();
       if (!hydrated) {
         // Leave the store as `resyncAllJournalFiles` found it and fall through to the full replay.
         store.resetAll();
@@ -1126,9 +1235,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
           pushFlush();
           for (const step of cacheResult.steps) {
             if (step.kind === "tail") {
-              await readJournalFromOffset(step.path, step.startByte, (line) => store.apply(line));
+              consumed.set(step.path, await readJournalFromOffset(step.path, step.startByte, applyReplayLine));
             } else {
-              await readJournalFull(step.path, (line) => store.apply(line));
+              consumed.set(step.path, await readJournalFull(step.path, applyReplayLine));
             }
             stepsDone += 1;
             journalBootProgress = {
@@ -1153,6 +1262,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         }
         await backfillCommanderPosition(store, files);
         bootMark("position backfill");
+        settleManifest();
         journalPath = files[files.length - 1]!;
         store.resetFootTravelRuntime();
         loadOrganicSampleSessionFromDisk(projectRoot, store, getCachedSpeciesDatabase());
@@ -1161,7 +1271,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         pushFlush();
         bootMark("session + first push");
         if (cacheResult.steps.length > 0 || cacheResult.loadedFromLegacy) {
-          saveJournalMergeCache(journalDirNorm, manifest, store, projectRoot, store.journalHistoryPreset);
+          await saveJournalMergeCache(journalDirNorm, manifest, store, projectRoot, store.journalHistoryPreset);
           bootMark("cache save");
         }
         bootReport("cache");
@@ -1195,7 +1305,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     pushFlush();
     bootMergeLastFlush = Date.now();
     for (let i = 0; i < files.length; i++) {
-      await readJournalFull(files[i]!, (line) => store.apply(line));
+      consumed.set(files[i]!, await readJournalFull(files[i]!, applyReplayLine));
       const done = i + 1;
       const pct = 15 + Math.floor((80 * done) / files.length);
       journalBootProgress = {
@@ -1207,23 +1317,39 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       };
       pushMergeProgress();
     }
+    settleManifest();
     journalPath = files[files.length - 1]!;
     store.resetFootTravelRuntime();
     loadOrganicSampleSessionFromDisk(projectRoot, store, getCachedSpeciesDatabase());
     journalBootProgress = null;
     refreshLiveHudFromJournalDir();
     pushFlush();
-    saveJournalMergeCache(journalDirNorm, manifest, store, projectRoot, store.journalHistoryPreset);
+    await saveJournalMergeCache(journalDirNorm, manifest, store, projectRoot, store.journalHistoryPreset);
   }
 
-  async function restartJournalPipeline(): Promise<void> {
+  /*
+    Restarts run one at a time (combined plan 1.2). Boot, a journal-folder change and a history-window
+    change all restart the pipeline, and since the replay yields to the event loop the launcher can ask
+    for one while another runs: both saw no watcher, both started one, and every live line was applied
+    twice.
+  */
+  let pipelineChain: Promise<void> = Promise.resolve();
+
+  function restartJournalPipeline(): Promise<void> {
+    const run = pipelineChain.then(restartJournalPipelineNow, restartJournalPipelineNow);
+    pipelineChain = run.catch(() => undefined);
+    return run;
+  }
+
+  async function restartJournalPipelineNow(): Promise<void> {
     if (watcher) {
       await watcher.close();
       watcher = null;
     }
-    await resyncAllJournalFiles();
-    const seed =
-      journalPath !== null ? { path: journalPath, size: (await fsp.stat(journalPath)).size } : null;
+    // The byte the replay reached in the newest journal (1.1b), not its size now: lines written since
+    // are the watcher's to apply.
+    const seed = await resyncAllJournalFiles();
+    if (watcher) await (watcher as JournalWatcherHandle).close();
     watcher = startJournalWatcher(
       journalDir,
       createLiveJournalLine(),
@@ -1366,6 +1492,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     server,
     broadcast: broadcastFn,
     broadcastExoLive,
+    broadcastUiCommand,
     listening,
     closeConnections,
   } = createHttpServer({
@@ -1672,7 +1799,11 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         getCachedSpeciesDatabase().species.map((e) => [e.id, regionalRarity(projectRoot, name, e.id)] as const),
       ),
     getFeederStatus: () => buildFeederStatus(projectRoot, getCachedSpeciesDatabase()),
-    getUpdateInfo: (force) => updateChecker.check(force),
+    getUpdateInfo: async (force) => ({ ...(await updateChecker.check(force)), download: appUpdater.status() }),
+    startUpdateDownload: () => {
+      void appUpdater.start();
+      return appUpdater.status();
+    },
     openUpdatePage: () => {
       const url = updateChecker.updatePageUrl();
       if (!url) return { ok: false, error: "No newer version known." };
@@ -1903,6 +2034,12 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     whenBackupDone: () => backupService.whenIdle(),
     onGameRunning: (cb) => gamePresence.onChange(cb),
     gameRunning: () => gamePresence.running(),
+    flushNow: () => flushFootScannedCatalog(),
+    uiCommand: (cmd) => broadcastUiCommand(cmd),
+    stagedUpdate: () => {
+      const st = appUpdater.staged();
+      return st ? { version: st.version, form: st.form, file: st.file, dir: resolveUpdateDir() } : null;
+    },
   };
 }
 
@@ -1922,12 +2059,22 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 export function electronRuntimeOptions(
   mode: "server" | "client",
   argv: readonly string[],
+  /** The launcher's "LAN access" switch (launcherPrefs.ts); only server mode listens on the network. */
+  lanAccess: boolean,
 ): { bindHost: string; port: number } {
-  const explicitHost = argv.includes("--host") || argv.includes("--lan");
+  const explicitHost = electronHostIsExplicit(argv);
   return {
-    bindHost: explicitHost ? parseHost([...argv]) : mode === "server" ? "0.0.0.0" : "127.0.0.1",
+    bindHost: explicitHost
+      ? parseHost([...argv])
+      : mode === "server" && lanAccess
+        ? "0.0.0.0"
+        : "127.0.0.1",
     port: parsePort([...argv]),
   };
+}
+
+function electronHostIsExplicit(argv: readonly string[]): boolean {
+  return argv.includes("--host") || argv.includes("--lan");
 }
 
 export async function startEdexoFromElectronMode(
@@ -1935,10 +2082,13 @@ export async function startEdexoFromElectronMode(
   argv: readonly string[] = process.argv,
 ): Promise<EdexoRuntime> {
   process.env.EDEXO_ELECTRON = "1";
+  // The switch decides only when nothing on the command line already has.
+  const lanToggle = mode === "server" && !electronHostIsExplicit(argv);
   return startEdexo({
-    ...electronRuntimeOptions(mode, argv),
+    ...electronRuntimeOptions(mode, argv, lanToggle ? resolveLanAccess() : false),
     shouldOpenMainUI: false,
     quietConsole: true,
     useShellLauncher: false,
+    lanToggle,
   });
 }

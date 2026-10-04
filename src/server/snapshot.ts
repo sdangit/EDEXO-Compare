@@ -118,7 +118,11 @@ import {
   attachPresenceProbability,
   demoteBelowPresenceFloor,
   markSampledDespiteUnlikely,
+  PRESENCE_FLOOR_PCT,
 } from "./presenceFloors.js";
+import { applyGenusBodySplit } from "./genusBodySplit.js";
+import { applyGenusPrior, vetoUnseenGenera } from "./genusPrior.js";
+import { autoScanOnlyBodies } from "./autoScanOnly.js";
 import {
   firstFootfallLookupFor,
   buildJournalSystems,
@@ -557,7 +561,13 @@ function colourPredictionMissed(
  */
 const colourSweepSeen = new Map<string, number>();
 
+/** The store revision each store was last swept at: no new confirmed colour, no pass over every body. */
+const colourSweptAt = new WeakMap<GameStateStore, number>();
+
 export function sweepColourOutliers(store: GameStateStore, db: SpeciesDatabase): number {
+  // ~2 ms a snapshot on his journals for a pass that almost never finds anything (2026-10-01).
+  if (colourSweptAt.get(store) === store.confirmedVariantsRevision) return 0;
+  colourSweptAt.set(store, store.confirmedVariantsRevision);
   const pending = [...store.bodies.values()]
     .filter((b) => (b.confirmedVariants?.length ?? 0) > (colourSweepSeen.get(b.key) ?? 0))
     .sort((a, b) => a.systemAddress - b.systemAddress);
@@ -595,8 +605,9 @@ export function sweepColourOutliers(store: GameStateStore, db: SpeciesDatabase):
 }
 
 /** Test seam. */
-export function resetColourSweepForTests(): void {
+export function resetColourSweepForTests(store?: GameStateStore): void {
   colourSweepSeen.clear();
+  if (store) colourSweptAt.delete(store);
 }
 
 /**
@@ -827,6 +838,36 @@ function computeBody(
   return value;
 }
 
+/**
+ * A body the ship only AutoScanned (autoScanOnly.ts), computed as if the FSS had found one biological
+ * signal — the least a body with life can have — so the chances, the genus prior and the floors work
+ * as they do for any body (owner, 2026-10-02: "fake assign the bio signal = 1 to autoscanned bodies
+ * and drop them if nothing would spawn there"). Null when nothing would be shown there: no tab. The
+ * assumed signal is never shown — the state keeps its unknown count and the tab says "AutoScanned only
+ * - FSS required".
+ */
+export function computeAutoScanOnlyBody(
+  b: BodyExoState,
+  store: GameStateStore,
+  db: SpeciesDatabase = cachedDb,
+  prices: PriceIndex = cachedPrices,
+): BodyComputed | null {
+  const computed = computeBody({ ...b, key: `${b.key}#autoscan`, biologicalSignals: 1 }, db, prices, store);
+  /*
+    "Would anything spawn here" counts a candidate only on its own merits: not one pulled back to fill
+    the signal count (that rule trusts the game's count, and this count is assumed), and not one kept
+    only because a list may not be empty while it sits under the presence floor.
+  */
+  const stands = computed.matches.some(
+    (m) =>
+      !m.unlikely &&
+      m.restoredForSignalCount !== true &&
+      (m.presenceProbabilityPercent == null || m.presenceProbabilityPercent >= PRESENCE_FLOOR_PCT),
+  );
+  if (!stands) return null;
+  return { ...computed, state: b };
+}
+
 function computeBodyUncached(
   b: BodyExoState,
   db: SpeciesDatabase,
@@ -884,6 +925,7 @@ function computeBodyUncached(
     matchContext: speciesMatchCtx,
     spatialCatalogue: loadSpatialCatalogue(root),
     biologicalSignals: b.biologicalSignals,
+    signalCountAssumed: b.autoScanOnly === true,
   });
   const scanForExo = mergedScan;
   const bodyScanDetail = buildBodyScanExomasteryDetail(mergedScan, explorationRec);
@@ -981,8 +1023,22 @@ function computeBodyUncached(
     matches = markExomasteryZeroHabitatMatches(matches);
   }
   attachPresenceProbability(matches, b, scanForExo, explorationRec, journalHost, root, store);
+  // Which species of a genus, where the ranking model cannot tell them apart (Phase A.6).
+  applyGenusBodySplit(
+    matches,
+    scanForExo,
+    speciesMatchCtx?.regionName ?? null,
+    root,
+    new Set(collectResolvedOrganicLockSpeciesIds(b.organicGenusLocks, db)),
+  );
   // After the ranking, because the floor is a rule about the ranking's own output.
   demoteBelowPresenceFloor(matches, b, db);
+  /*
+    Before a DSS (Phase A.8, owner 2026-10-02): the dump's genus frequencies on bodies like this one
+    re-weight the chances of what the floor left, and hide only a genus such bodies almost never carry.
+  */
+  applyGenusPrior(matches, b, scanForExo, speciesMatchCtx, root);
+  vetoUnseenGenera(matches, b, scanForExo, speciesMatchCtx, root, new Set(collectResolvedOrganicLockSpeciesIds(b.organicGenusLocks, db)));
   markSampledDespiteUnlikely(matches, b, db);
   /*
     The collection marker: species where both the corpus and this commander are short of bodies.
@@ -1240,10 +1296,18 @@ export function buildSnapshot(
   // Whose shared-exomastery files are this commander's own backups (§S), before any body is computed.
   setOwnCommander({ name: store.commanderName, fid: commanderIdHash(store.commanderFid) });
   if (!bootLoading) syncRarity(store, db);
-  const { credits: organicDataValueCredits, pendingSamples: organicPendingSampleCount } =
-    organicDataValuation(store, cachedPrices);
+  /*
+    Not while the history replays (plan 2.3, Opus 20): every progress push walked every scan and every
+    sample of a store that changes between pushes, so the memo never held — for totals the boot screen
+    covers. Zero until the replay is done.
+  */
+  const { credits: organicDataValueCredits, pendingSamples: organicPendingSampleCount } = bootLoading
+    ? { credits: 0, pendingSamples: 0 }
+    : organicDataValuation(store, cachedPrices);
   // One walk of every scan, not two: the total is the breakdown's own total (code review §E).
-  const exploreBreakdown = explorationDataValueBreakdown(store);
+  const exploreBreakdown = bootLoading
+    ? { totalCredits: 0, fssScanCount: 0, fssValueCredits: 0, dssScanCount: 0, dssValueCredits: 0 }
+    : explorationDataValueBreakdown(store);
   const explorationScanDataValueCredits = exploreBreakdown.totalCredits;
   const organicPendingLines = bootLoading ? [] : buildOrganicPendingLines(store, db, cachedPrices);
   // Logged colours anywhere in the journals, not only in the system in view (see the function).
@@ -1261,6 +1325,13 @@ export function buildSnapshot(
   const fssAllBodiesFoundNoBio = bootLoading
     ? false
     : focusAddr != null && store.fssAllBodiesCompleteSystems.has(focusAddr) && bodies.length === 0;
+  // Landable bodies the ship only AutoScanned: their biology is unknown until the FSS (autoScanOnly.ts).
+  if (!bootLoading && focusAddr != null && !store.isShowingRemoteSystem(focusAddr)) {
+    for (const b of autoScanOnlyBodies(store, focusAddr)) {
+      const c = computeAutoScanOnlyBody(b, store, db, cachedPrices);
+      if (c) bodies.push(c);
+    }
+  }
 
   const journalSystems = bootLoading ? [] : perfTime("snap.journalSystems", () => buildJournalSystems(store));
   const viewingSystemName = bootLoading ? null : resolveViewingSystemName(store, store.viewingSystemAddress);

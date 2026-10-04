@@ -17,8 +17,12 @@ const MAX_HUD_OVERLAYS = 8; // was 3; the owner wants every HUD selectable at on
 const HUD_STACK_GAP = 6;
 /** Ctrl+Alt+H hides and shows every HUD window at once (menus, screenshots), checked free by the owner. */
 const HUD_TOGGLE_SHORTCUT = "Control+Alt+H";
-/** How often the visible HUDs re-assert the top of the z-order. See {@link keepHudsOnTop}. */
-const HUD_KEEP_ON_TOP_MS = 4000;
+/**
+ * How often the visible HUDs re-assert the top of the z-order: a safety net. The main raise is the
+ * moment the game comes to the front ({@link raiseVisible}, from the foreground watcher); every 4 s
+ * was eight SetWindowPos calls on the game's thread, around the clock (plan 2.1, Fable C10).
+ */
+const HUD_KEEP_ON_TOP_MS = 15_000;
 
 /*
   An overlay window is transparent, so any height it has beyond its content reads as empty space
@@ -28,7 +32,11 @@ const HUD_KEEP_ON_TOP_MS = 4000;
   sized before the radar existed.
 */
 const HUD_MIN_HEIGHT = 90;
-const HUD_MAX_HEIGHT = 900;
+/*
+  A sanity cap on what a page may ask for; the real one is the screen it is on (relayout). It was 900,
+  which cut the merged HUD at a large scale on a 4K screen with no sign of it (plan 2.1, Fable C12).
+*/
+const HUD_MAX_HEIGHT = 2400;
 
 /*
   One reading of an overlay request, shared by the IPC handlers and the HTTP bridge.
@@ -47,14 +55,22 @@ function hudPathFrom(opts, fallback = HUD_DEFAULT_PATH) {
   return raw.startsWith("/") ? raw : `/${raw}`;
 }
 
+/*
+  Bounded (combined plan 1.7): these come from the launcher and, with LAN access on, from paired
+  devices through /api/hud/overlay/*, and the width is saved in hud-layout.json. An absurd one made
+  every HUD that wide, after a restart too.
+*/
+const HUD_MIN_WIDTH = 200;
+const HUD_MAX_WIDTH = 1600;
+
 function hudWidthFrom(opts) {
   const n = Number(opts && typeof opts === "object" ? opts.width : NaN);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : HUD_DEFAULT_WIDTH;
+  return Number.isFinite(n) && n > 0 ? Math.max(HUD_MIN_WIDTH, Math.min(HUD_MAX_WIDTH, Math.floor(n))) : HUD_DEFAULT_WIDTH;
 }
 
 function hudHeightFrom(opts) {
   const n = Number(opts && typeof opts === "object" ? opts.height : NaN);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : HUD_DEFAULT_HEIGHT;
+  return Number.isFinite(n) && n > 0 ? Math.max(HUD_MIN_HEIGHT, Math.min(HUD_MAX_HEIGHT, Math.floor(n))) : HUD_DEFAULT_HEIGHT;
 }
 
 /** The slot identity: the page, not its query string (the merged HUD changes sections via the query). */
@@ -85,8 +101,19 @@ function createHudWindows(deps) {
     aside), first = outermost (top of a top-anchored stack, bottom of a bottom-anchored one). Pages not
     in the list follow in the order they were opened.
   */
-  let hudLayout = { corner: "tr", order: [] };
+  let hudLayout = { corner: "tr", order: [], freeOn: false, free: null };
   let hudHidden = false;
+  /*
+    Free move (owner, 2026-10-02: "place the HUD anywhere on any screen"). With `freeOn` the stack
+    hangs from `free` instead of a corner: `{ x, y, bottom }` in screen coordinates (DIP), the
+    stack's left edge and its top edge, or its bottom edge when `bottom` (dropped in the lower half
+    of a screen, so it grows upwards there). `free` is kept while `freeOn` is off, so switching back
+    finds the old spot. `moving` is the placing mode: the windows take the mouse, show a frame and
+    follow a drag; never saved, and it shows the HUDs whatever hides them.
+  */
+  let moving = false;
+  /** The drag in progress: the cursor and the stack's top-left when it started. */
+  let drag = null;
   /*
     The game is not running (journal Shutdown, or no EliteDangerous64 process): the overlays step
     aside. Kept apart from `hudHidden`, which is the commander's own choice (the hotkey) and is saved;
@@ -101,7 +128,15 @@ function createHudWindows(deps) {
   */
   let focusAway = false;
   let hideUnfocused = true;
-  const hiddenNow = () => hudHidden || gameAway || (hideUnfocused && focusAway);
+  /*
+    Whether Elite runs, as last told (null: not known yet). Unlike `gameAway` the hotkey does not clear
+    it. "Hide when Elite is not in front" only means something while there is an Elite to be in front:
+    with the game closed and the HUD shown by hand, it hid the HUD whenever anything else was clicked
+    (owner, 2026-10-02: "appears-disappears", hud-events.log).
+  */
+  let gameRunning = null;
+  const hiddenNow = () =>
+    !moving && (hudHidden || gameAway || (hideUnfocused && focusAway && gameRunning !== false));
   /*
     A window whose page has nothing to show right now ("Only when relevant", guild tester report,
     2026-09-30): hidden and left out of the stack, so the others close up. The page says so through
@@ -109,7 +144,34 @@ function createHudWindows(deps) {
     comes back on its own the moment its page has something again.
   */
   const isIdle = (s) => s.idle === true;
+  /*
+    What the HUD windows did and why, one line each, in hud-events.log beside the layout file (owner,
+    2026-10-02: "the HUD still appears-disappears every ~4 sec", which nothing here does on a timer).
+    Transitions only — shown, hidden, the away states, idle pages, the window in front — so a quiet
+    session writes nothing. Restarted past 256 KB.
+  */
+  let hudLogPath = null;
+  function hudLog(what) {
+    try {
+      if (!hudLogPath) hudLogPath = path.join(path.dirname(hudLayoutPath()), "hud-events.log");
+      try {
+        if (fs.statSync(hudLogPath).size > 256 * 1024) fs.rmSync(hudLogPath, { force: true });
+      } catch {
+        /* not there yet */
+      }
+      fs.appendFileSync(hudLogPath, `${new Date().toISOString()} ${what}\n`);
+    } catch {
+      /* a log must never be why a HUD misbehaves */
+    }
+  }
+  const slotName = (win) => hudOverlayStack.find((s) => s.win === win)?.pathname ?? "?";
+
   function hideWin(win) {
+    try {
+      if (win.isVisible()) hudLog(`hide ${slotName(win)}`);
+    } catch {
+      /* the log is a bystander */
+    }
     try {
       win.hide();
     } catch {
@@ -307,7 +369,12 @@ function createHudWindows(deps) {
     const order = Array.isArray(next.order)
       ? next.order.filter((k) => typeof k === "string").slice(0, 16)
       : hudLayout.order;
-    hudLayout = { corner, order };
+    const freeOn = typeof next.freeOn === "boolean" ? next.freeOn : hudLayout.freeOn;
+    const free = next.free === null ? null : (freePointFrom(next.free) ?? hudLayout.free);
+    hudLayout = { corner, order, freeOn, free };
+    // Switched on with no spot saved yet: it stays where it is now instead of jumping.
+    if (freeOn && !free) hudLayout.free = currentStackPoint();
+    if (!freeOn && moving) setMoveMode(false);
     if (typeof next.hideUnfocused === "boolean" && next.hideUnfocused !== hideUnfocused) {
       hideUnfocused = next.hideUnfocused;
       applyAway();
@@ -368,13 +435,26 @@ function createHudWindows(deps) {
    */
   function raiseHudWindow(win) {
     if (!win || win.isDestroyed()) return;
+    let visible = false;
     try {
-      win.showInactive();
+      visible = win.isVisible();
     } catch {
+      /* treat as hidden */
+    }
+    /*
+      Shown only when it is not: showing a window that is already up repaints it, and coming back to
+      the game ran this several times in a row — the owner saw the HUD blink 3-4 times (2026-10-02).
+    */
+    if (!visible) {
+      hudLog(`show ${slotName(win)}`);
       try {
-        win.show();
+        win.showInactive();
       } catch {
-        return;
+        try {
+          win.show();
+        } catch {
+          return;
+        }
       }
     }
     // `screen-saver` is the highest level Electron offers; `floating` is the fallback for a platform
@@ -419,14 +499,260 @@ function createHudWindows(deps) {
     }, HUD_KEEP_ON_TOP_MS);
     if (typeof hudKeepOnTopTimer.unref === "function") hudKeepOnTopTimer.unref();
   }
+  /** Raise every visible HUD now: the game has just come to the front and may have covered them. */
+  let raisedAt = 0;
+  function raiseVisible() {
+    if (hiddenNow()) return;
+    // Coming back to the game raises them through applyAway already; once is enough.
+    if (Date.now() - raisedAt < 400) return;
+    raisedAt = Date.now();
+    for (const s of hudOverlayStack) if (s.win && !s.win.isDestroyed() && !isIdle(s)) raiseHudWindow(s.win);
+  }
   function stopKeepingHudsOnTop() {
     if (!hudKeepOnTopTimer) return;
     clearInterval(hudKeepOnTopTimer);
     hudKeepOnTopTimer = null;
   }
 
+  /** A saved free spot, or null when it is not one (a hand-edited file). */
+  function freePointFrom(v) {
+    if (!v || typeof v !== "object") return null;
+    const x = Number(v.x);
+    const y = Number(v.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 1e5 || Math.abs(y) > 1e5) return null;
+    return { x: Math.round(x), y: Math.round(y), bottom: v.bottom === true };
+  }
+
+  /** The visible stack in its order, and the column width. */
+  /*
+    The height a window should have: what its page last reported (`resizeFromPage`), else what it was
+    opened with. Never read back from the window to be set again. On a monitor whose scaling differs
+    from the primary's, Windows can land a set size scaled by the ratio of the two; read back and set
+    on every relayout, that scaled it again each time — a commander's merged HUD grew to the height of
+    his second screen, and unmerged the windows piled on top of each other (2026-10-02).
+  */
+  function slotHeight(slot) {
+    if (Number.isFinite(slot.height) && slot.height > 0) return slot.height;
+    try {
+      return slot.win.getSize()[1];
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Put a window at a rect, and say how tall it really is. If the size did not take (the mixed-scaling
+   * case above), it is asked once more: the window is on that monitor now, and a second set lands.
+   * Whatever it ends up as, the caller spaces the next window by the larger of the two, so a window
+   * that came out taller still never covers the one below it.
+   */
+  function placeWindow(win, rect) {
+    // Already there: no setBounds, which repaints a transparent window over the game even when it
+    // changes nothing (the blinks on coming back to the game, 2026-10-02).
+    try {
+      const b0 = win.getBounds();
+      if (b0.x === rect.x && b0.y === rect.y && b0.width === rect.width && b0.height === rect.height) return rect.height;
+    } catch {
+      /* set it */
+    }
+    win.setBounds({ ...rect, animate: false });
+    let actual = rect.height;
+    try {
+      const b = win.getBounds();
+      if (Math.abs(b.width - rect.width) > 2 || Math.abs(b.height - rect.height) > 2) {
+        win.setBounds({ ...rect, animate: false });
+      }
+      actual = win.getBounds().height;
+    } catch {
+      /* a window going away */
+    }
+    return Math.max(rect.height, actual);
+  }
+
+  function orderedStack() {
+    hudOverlayStack = hudOverlayStack.filter((s) => s.win && !s.win.isDestroyed());
+    const rank = (s) => {
+      const i = hudLayout.order.indexOf(s.key);
+      return i < 0 ? 1000 + hudOverlayStack.indexOf(s) : i;
+    };
+    const ordered = hudOverlayStack
+      .filter((s) => !isIdle(s))
+      .sort((a, b) => rank(a) - rank(b));
+    const w = Math.round((Math.max(0, ...hudOverlayStack.map((s) => s.width || 0)) || 404) * hudScale);
+    return { ordered, w };
+  }
+
+  /** Where the stack's top-left is now (its highest window's corner), as a free spot. */
+  function currentStackPoint() {
+    const { ordered } = orderedStack();
+    let top = null;
+    for (const s of ordered) {
+      try {
+        const b = s.win.getBounds();
+        if (!top || b.y < top.y) top = { x: b.x, y: b.y };
+      } catch {
+        /* a window going away */
+      }
+    }
+    if (top) return { x: top.x, y: top.y, bottom: false };
+    const wa = screen.getPrimaryDisplay().workArea;
+    return { x: wa.x + 14, y: wa.y + 14, bottom: false };
+  }
+
+  /**
+   * The free-move stack: hung from its saved spot, top to bottom in the chosen order, on the screen
+   * nearest that spot and clamped into it. A monitor unplugged or a resolution changed brings it
+   * back onto a screen that exists rather than leaving it somewhere nobody can reach.
+   */
+  function relayoutFreeStack() {
+    const { ordered, w } = orderedStack();
+    const f = hudLayout.free || currentStackPoint();
+    const probe = { x: Math.round(f.x + w / 2), y: f.bottom ? f.y - 1 : f.y };
+    let area;
+    try {
+      area = screen.getDisplayNearestPoint(probe).bounds;
+    } catch {
+      area = screen.getPrimaryDisplay().workArea;
+    }
+    // No window taller than the screen it is on (a 768 px monitor is shorter than HUD_MAX_HEIGHT).
+    const sizes = ordered.map((s) => {
+      const h = slotHeight(s);
+      return h == null ? null : Math.min(h, area.height);
+    });
+    const total = sizes.reduce((a, h) => a + (h ?? 0), 0) + HUD_STACK_GAP * Math.max(0, ordered.length - 1);
+    const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const x = fit(f.x, area.x, Math.max(area.x, area.x + area.width - w));
+    let y = fit(f.bottom ? f.y - total : f.y, area.y, Math.max(area.y, area.y + area.height - total));
+    ordered.forEach((slot, i) => {
+      const h = sizes[i];
+      if (h == null) return;
+      let used = h;
+      try {
+        used = placeWindow(slot.win, { x, y, width: w, height: h });
+      } catch {
+        /* ignore */
+      }
+      y += used + HUD_STACK_GAP;
+    });
+  }
+
+  /**
+   * Placing mode on or off. On: every HUD shows (whatever hides them), takes the mouse and draws its
+   * "drag to place" frame; off: back to click-through, and the hidden / away states apply again.
+   */
+  function setMoveMode(on) {
+    const next = on === true && hudLayout.freeOn;
+    if (next === moving) return moving;
+    hudLog(`placing ${next ? "on" : "off"}`);
+    moving = next;
+    drag = null;
+    for (const s of hudOverlayStack) {
+      if (!s.win || s.win.isDestroyed()) continue;
+      try {
+        s.win.setIgnoreMouseEvents(!moving);
+      } catch {
+        /* ignore */
+      }
+      try {
+        s.win.webContents.send("edexo:hud-move-mode", { on: moving });
+      } catch {
+        /* a window closing mid-send */
+      }
+    }
+    applyAway();
+    return moving;
+  }
+
+  /**
+   * A drag from a HUD page in placing mode. The cursor is read here (`getCursorScreenPoint`, DIP on
+   * every monitor) rather than taken from the page, whose coordinates are in its own window's scale.
+   * The stack follows the cursor; on release the spot is saved, by its bottom edge when it was
+   * dropped in the lower half of a screen.
+   */
+  let dragMoves = 0;
+  function dragFromPage(win, phase) {
+    if (phase !== "move") hudLog(`drag ${phase}${moving ? "" : " (not placing)"}${hudOverlayStack.some((s) => s.win === win) ? "" : " (not a HUD window)"}`);
+    if (!moving || !hudOverlayStack.some((s) => s.win === win)) return { ok: false };
+    if (phase === "done") {
+      setMoveMode(false);
+      deps.onChange();
+      return { ok: true };
+    }
+    let cur;
+    try {
+      cur = screen.getCursorScreenPoint();
+    } catch {
+      return { ok: false };
+    }
+    if (phase === "start") {
+      const p = currentStackPoint();
+      drag = { cx: cur.x, cy: cur.y, x: p.x, y: p.y };
+      dragMoves = 0;
+      hudLog(`drag from cursor ${cur.x},${cur.y}, stack at ${p.x},${p.y}`);
+      return { ok: true };
+    }
+    if (!drag) return { ok: false };
+    hudLayout.free = { x: drag.x + cur.x - drag.cx, y: drag.y + cur.y - drag.cy, bottom: false };
+    relayoutFreeStack();
+    if (phase === "move") dragMoves += 1;
+    if (phase === "end") {
+      hudLog(`drag end after ${dragMoves} moves: cursor ${cur.x},${cur.y}, asked ${hudLayout.free.x},${hudLayout.free.y}`);
+      drag = null;
+      const top = currentStackPoint();
+      let bottomEdge = top.y;
+      for (const s of orderedStack().ordered) {
+        try {
+          const b = s.win.getBounds();
+          bottomEdge = Math.max(bottomEdge, b.y + (slotHeight(s) ?? b.height));
+        } catch {
+          /* ignore */
+        }
+      }
+      let area = null;
+      try {
+        area = screen.getDisplayNearestPoint({ x: top.x, y: top.y }).bounds;
+      } catch {
+        /* no display API: keep the top edge */
+      }
+      const lower = area ? (top.y + bottomEdge) / 2 > area.y + area.height / 2 : false;
+      hudLayout.free = lower ? { x: top.x, y: bottomEdge, bottom: true } : top;
+      persistHudFile();
+      deps.onChange();
+    }
+    return { ok: true };
+  }
+
+  /*
+    The monitor the game is on, from the foreground watcher (a point in screen pixels; main.cjs). The
+    corner stack used to go to the primary monitor whatever the game was on, so with Elite on a second
+    screen the HUD sat on the other one (plan 2.1, Fable C12). Free move keeps the spot it was given.
+  */
+  let gamePoint = null;
+  function setGamePoint(p) {
+    const next = p && Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : null;
+    if ((next && gamePoint && next.x === gamePoint.x && next.y === gamePoint.y) || (!next && !gamePoint)) return;
+    gamePoint = next;
+    if (!hudLayout.freeOn) scheduleHudRelayout();
+  }
+  function stackDisplay() {
+    if (gamePoint) {
+      try {
+        const dip = typeof screen.screenToDipPoint === "function" ? screen.screenToDipPoint(gamePoint) : gamePoint;
+        const d = screen.getDisplayNearestPoint(dip);
+        if (d && d.workArea) return d;
+      } catch {
+        /* the primary, as before */
+      }
+    }
+    return screen.getPrimaryDisplay();
+  }
+
   function relayoutHudStack() {
-    const d = screen.getPrimaryDisplay();
+    if (hudLayout.freeOn) {
+      relayoutFreeStack();
+      return;
+    }
+    const d = stackDisplay();
     const wa = d.workArea;
     const margin = 14;
     hudOverlayStack = hudOverlayStack.filter((s) => s.win && !s.win.isDestroyed());
@@ -452,26 +778,22 @@ function createHudWindows(deps) {
     */
     const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     for (const slot of ordered) {
-      let sz;
-      try {
-        sz = slot.win.getSize();
-      } catch {
-        continue;
-      }
-      const h = sz[1];
+      const full = slotHeight(slot);
+      if (full == null) continue;
+      const h = Math.min(full, wa.height);
       if (atBottom) y -= h;
+      let used = h;
       try {
-        slot.win.setBounds({
+        used = placeWindow(slot.win, {
           x: fit(x, wa.x, Math.max(wa.x, wa.x + wa.width - w)),
           y: fit(y, wa.y, Math.max(wa.y, wa.y + wa.height - h)),
           width: w,
           height: h,
-          animate: false,
         });
       } catch {
         /* ignore */
       }
-      y = atBottom ? y - HUD_STACK_GAP : y + h + HUD_STACK_GAP;
+      y = atBottom ? y - HUD_STACK_GAP : y + used + HUD_STACK_GAP;
     }
   }
 
@@ -588,7 +910,14 @@ function createHudWindows(deps) {
    */
   function setGameAway(away) {
     const next = away === true;
-    if (gameAway === next) return;
+    // Recorded even when the away state already says so: the hotkey may have cleared that.
+    const wasRunning = gameRunning;
+    gameRunning = !next;
+    if (gameAway === next) {
+      if (wasRunning !== gameRunning) applyAway();
+      return;
+    }
+    hudLog(`game ${next ? "not running" : "running"}`);
     gameAway = next;
     applyAway();
   }
@@ -597,6 +926,7 @@ function createHudWindows(deps) {
   function setFocusAway(away) {
     const next = away === true;
     if (focusAway === next) return;
+    hudLog(`focus ${next ? "away from the game" : "back on the game"}`);
     const before = hiddenNow();
     focusAway = next;
     if (hiddenNow() !== before) applyAway();
@@ -610,6 +940,7 @@ function createHudWindows(deps) {
       if (hiddenNow() || isIdle(s)) hideWin(s.win);
       else raiseHudWindow(s.win);
     }
+    if (!hiddenNow()) raisedAt = Date.now();
     if (hiddenNow()) stopKeepingHudsOnTop();
     else {
       keepHudsOnTop();
@@ -642,6 +973,9 @@ function createHudWindows(deps) {
       titleBarStyle: "hidden",
       backgroundColor: "#00000000",
       webPreferences: {
+        // A transparent window over a fullscreen game can be judged hidden, and Chromium then slows its
+        // timers to once a second: the tracker's distance and the radar froze (plan 2.1, Fable C10).
+        backgroundThrottling: false,
       // No spell-check: Electron can fetch its dictionaries from Google (owner, 2026-09-29).
       spellcheck: false,
         nodeIntegration: false,
@@ -666,6 +1000,7 @@ function createHudWindows(deps) {
       },
     });
     deps.getDiag()?.watchWindow(win, "hud");
+    if (typeof deps.guardWindow === "function") deps.guardWindow(win);
 
     try {
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -702,9 +1037,17 @@ function createHudWindows(deps) {
     win.webContents.on("did-finish-load", () => {
       if (!win || win.isDestroyed()) return;
       try {
-        win.setIgnoreMouseEvents(true);
+        win.setIgnoreMouseEvents(!moving);
       } catch {
         /* ignore */
+      }
+      // A window opened (or a page reloaded) while placing gets the frame too.
+      if (moving) {
+        try {
+          win.webContents.send("edexo:hud-move-mode", { on: true });
+        } catch {
+          /* ignore */
+        }
       }
     });
 
@@ -879,10 +1222,13 @@ function createHudWindows(deps) {
    */
   function resizeFromPage(win, opts) {
     if (!win || win.isDestroyed()) return { ok: false };
+    // Only a HUD window sizes itself this way: the app or galaxy window could be squeezed to 90 px.
+    if (!hudOverlayStack.some((s) => s.win === win)) return { ok: false };
     const idle = opts && typeof opts === "object" ? opts.idle : undefined;
     if (typeof idle === "boolean") {
       const slot = hudOverlayStack.find((s) => s.win === win);
       if (slot && isIdle(slot) !== idle) {
+        hudLog(`${idle ? "idle" : "relevant"} ${slot.pathname}`);
         slot.idle = idle;
         if (idle) hideWin(win);
         else if (!hiddenNow()) raiseHudWindow(win);
@@ -906,10 +1252,11 @@ function createHudWindows(deps) {
       }
     }
     try {
-      const [w, h] = win.getSize();
-      // A pixel or two of jitter from a font metric must not start a resize loop.
-      if (!scaleChanged && Math.abs(h - height) <= 2) return { ok: true };
-      win.setBounds({ ...win.getBounds(), width: w, height }, false);
+      const slot = hudOverlayStack.find((s) => s.win === win);
+      // A pixel or two of jitter from a font metric must not start a resize loop. Compared with the
+      // height asked for last, not the window's: on a monitor at another scaling those differ for good.
+      if (!scaleChanged && slot && Math.abs(slotHeight(slot) - height) <= 2) return { ok: true };
+      if (slot) slot.height = height;
       relayoutHudStack();
       return { ok: true };
     } catch {
@@ -928,9 +1275,18 @@ function createHudWindows(deps) {
       gameAway,
       focusAway,
       hideUnfocused,
+      moving,
       count: hudOverlayStack.filter((s) => s.win && !s.win.isDestroyed()).length,
       shortcut: HUD_TOGGLE_SHORTCUT,
     }),
+    /** Free move's placing mode (only while free move is on). Returns whether it is on. */
+    setMoveMode: (on) => {
+      const r = setMoveMode(on);
+      deps.onChange();
+      return r;
+    },
+    isMoving: () => moving,
+    dragFromPage,
     setLayout: (next) => ({
       ...setHudLayout(next || {}, true),
       hidden: hudHidden,
@@ -949,6 +1305,11 @@ function createHudWindows(deps) {
     destroyAll: destroyAllHudOverlays,
     pushPrefs,
     resizeFromPage,
+    /** Where the game's window is (screen pixels), so the corner stack goes to its monitor. */
+    setGamePoint,
+    raiseVisible,
+    /** One line in hud-events.log (main.cjs adds the foreground window's changes). */
+    log: hudLog,
     /** Boot: where the layout file lives once the server bundle is loaded, then read it. */
     setLayoutPathResolver(fn) {
       resolveHudLayoutPathFromBundle = typeof fn === "function" ? fn : null;

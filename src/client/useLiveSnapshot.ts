@@ -3,6 +3,9 @@ import type { AppSnapshot } from "@shared/types";
 import { perfSnapshotCommitted, perfSnapshotReceived } from "./perf";
 import { reuseUnchanged } from "./snapshotMerge";
 
+/** The window event a key-bind command arrives as (`detail`: a `UiCommand`). */
+export const UI_COMMAND_EVENT = "edexo-ui-command";
+
 function websocketUrl(): string {
   const p = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${p}//${window.location.host}/ws`;
@@ -15,6 +18,10 @@ function websocketUrl(): string {
  * the whole snapshot every 10 s regardless).
  */
 const HTTP_STATE_BACKUP_MS = 10_000;
+
+/** Reconnect waits: 1.1 s first, doubling to 10 s while the socket keeps failing (plan 2.2, F-9.3). */
+const RECONNECT_FIRST_MS = 1_100;
+const RECONNECT_MAX_MS = 10_000;
 
 /**
  * "Last snapshot at" as a tiny external store rather than a prop.
@@ -54,6 +61,7 @@ export function useLiveSnapshot(): {
   useEffect(() => {
     let cancelled = false;
     let ws: WebSocket | null = null;
+    let reconnectMs = RECONNECT_FIRST_MS;
 
     const clearReconnect = () => {
       if (reconnectRef.current != null) {
@@ -67,6 +75,12 @@ export function useLiveSnapshot(): {
      * `useMemo`/`React.memo` only invalidate for data that actually moved.
      */
     let lastRev: number | null = null;
+    /*
+      The revision of what is on screen. A full fetch asked before a push can answer after it (plan 2.2,
+      O-17): applied, it put older data back on screen and moved `lastRev` back. It is dropped when its
+      revision is below this. Forgotten when the socket drops — a restarted server counts from 0 again.
+    */
+    let shownRev: number | null = null;
     /*
       A push leaves out the big fields that did not change since the one before and names them in
       `unchanged` (UI review P1); they are taken from the snapshot already held. The socket's first
@@ -111,13 +125,15 @@ export function useLiveSnapshot(): {
 
     const fetchFull = () =>
       void fetch("/api/state", { cache: "no-store" })
-        .then((r) => {
-          const rev = Number(r.headers.get("X-Edexo-Rev"));
-          if (Number.isFinite(rev)) lastRev = rev;
-          return r.text();
+        .then(async (r) => {
+          const header = r.headers.get("X-Edexo-Rev");
+          const rev = header == null ? NaN : Number(header);
+          return { rev: Number.isFinite(rev) ? rev : null, t: await r.text() };
         })
-        .then((t) => {
+        .then(({ rev, t }) => {
           if (cancelled) return;
+          if (rev != null && shownRev != null && rev < shownRev) return;
+          if (rev != null) lastRev = shownRev = rev;
           perfSnapshotReceived(t.length);
           applyPayload(JSON.parse(t) as AppSnapshot);
         })
@@ -131,12 +147,17 @@ export function useLiveSnapshot(): {
       if (cancelled) return;
       clearReconnect();
       ws = new WebSocket(websocketUrl());
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        reconnectMs = RECONNECT_FIRST_MS;
+        setConnected(true);
+      };
       ws.onerror = () => setConnected(false);
       ws.onclose = () => {
         setConnected(false);
+        shownRev = null;
         if (!cancelled) {
-          reconnectRef.current = setTimeout(connect, 1100);
+          reconnectRef.current = setTimeout(connect, reconnectMs);
+          reconnectMs = Math.min(RECONNECT_MAX_MS, reconnectMs * 2);
         }
       };
       ws.onmessage = (ev) => {
@@ -145,12 +166,15 @@ export function useLiveSnapshot(): {
           const msg = JSON.parse(raw);
           if (msg.type === "state") {
             perfSnapshotReceived(raw.length);
-            if (typeof msg.rev === "number") lastRev = msg.rev;
+            if (typeof msg.rev === "number") lastRev = shownRev = msg.rev;
             applyPayload(
               msg.payload as AppSnapshot,
               Array.isArray(msg.unchanged) ? (msg.unchanged as string[]) : undefined,
               msg.bodiesDelta && Array.isArray(msg.bodiesDelta.keys) ? msg.bodiesDelta : undefined,
             );
+          } else if (msg.type === "uiCommand" && msg.payload) {
+            // A key bind pressed in the game (Electron's global keys, via the server): App.tsx acts on it.
+            window.dispatchEvent(new CustomEvent(UI_COMMAND_EVENT, { detail: msg.payload }));
           }
         } catch {
           /* ignore */

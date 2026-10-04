@@ -21,13 +21,13 @@ import {
 } from "./ui/icons";
 import { useValueFlash } from "./ui/useValueFlash";
 import { fmtCrExact, fmtCrShort } from "./credits";
-import { lazy, memo, Suspense, useEffect, useRef, useState, ReactNode } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { useFdevServerStatus } from "./useFdevServerStatus";
 import type { EncyclopediaSpawnCompare } from "./EncyclopediaModal";
 import { DScanBodiesBadge } from "./DScanBodiesBadge";
 import type { AppSnapshot, FootScannedEntry, NotableBodyInfo } from "@shared/types";
 import { useFeederStatus } from "./FeederStatusPanel";
-import { DataValueBreakdownModal, FeederModal, MyExobiologyModal, SessionLogModal } from "./AppModals";
 import { ExoDataAlertsHeaderHub } from "./ExoDataAlertsHub";
 import { NoticesBell } from "./NoticesBell";
 import { measurePopoverSide, type PopoverSide } from "./ui/popoverSide";
@@ -43,6 +43,10 @@ import {
   StatisticsModal,
   FirstDiscoveryBacklogModal,
   ModalLoading,
+  MyExobiologyModal,
+  DataValueBreakdownModal,
+  SessionLogModal,
+  FeederModal,
 } from "./SharedModals";
 import { EDEXO_HEADER_TRAY_LS, readLsBool, writeLsBool } from "./lsPrefs";
 import {
@@ -71,11 +75,14 @@ function LiveSnapshotFreshness({ connected }: { connected: boolean }) {
   const lastAt = useLastStateAt();
   const [, setTick] = useState(0);
   // Minutes only (owner, 2026-09-30: a seconds counter was distracting), so a slow tick will do.
+  // One interval while connected, not a new one for every push (plan 2.2, Fable C6): a push re-renders
+  // this anyway, and the tick reads the latest time when it fires.
+  const hasLast = lastAt != null;
   useEffect(() => {
-    if (!connected || lastAt == null) return;
+    if (!connected || !hasLast) return;
     const id = window.setInterval(() => setTick((t) => t + 1), 15_000);
     return () => clearInterval(id);
-  }, [connected, lastAt]);
+  }, [connected, hasLast]);
 
   if (!connected || lastAt == null) return null;
 
@@ -91,6 +98,187 @@ function LiveSnapshotFreshness({ connected }: { connected: boolean }) {
     </span>
   );
 }
+
+const NO_FOOT_ENTRIES: FootScannedEntry[] = [];
+
+type MenuOpeners = Record<
+  | "setMyExoOpen"
+  | "setBacklogOpen"
+  | "setCarriersOpen"
+  | "setPoiOpen"
+  | "setBoxelOpen"
+  | "setBookmarksOpen"
+  | "setStatsOpen"
+  | "setFeederOpen"
+  | "setEncyclopediaOpen"
+  | "setAchievementsOpen"
+  | "setSessionOpen"
+  | "setOptionsOpen",
+  (v: boolean) => void
+>;
+
+/**
+ * The menu's entries, apart from the header (plan 2.2, Fable C5): the header takes the whole
+ * snapshot and renders on every push — ten a second in flight — and with it went twelve buttons,
+ * thirteen tooltips and twelve icons that never change. Its props are the feeder flag and the
+ * panels' setters, which are stable, so it renders when the feeder appears and not otherwise.
+ */
+const AppMenuEntries = memo(function AppMenuEntries({
+  feederAvailable,
+  open,
+}: {
+  feederAvailable: boolean;
+  open: MenuOpeners;
+}) {
+  return (
+    <>
+      {/*
+        The panel behind this icon stopped being only exobiology: it now carries every system,
+        body and star in the merged journals beside the foot-confirmed species. The menu is
+        icons and tooltips, so the tooltip is the only place the name lives — leaving it as "My
+        exobiology" made three new tabs unfindable.
+      */}
+      <Tooltip text="My discoveries — every system, body and star you have scanned, plus the species you confirmed on foot.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setMyExoOpen(true)}
+          aria-label="My discoveries"
+        >
+          <IconExobiology />
+        </button>
+      </Tooltip>
+      <Tooltip text="Unfinished business — biology you found first and never collected, still worth 5x.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setBacklogOpen(true)}
+          aria-label="Unfinished business"
+        >
+          <IconBacklog />
+        </button>
+      </Tooltip>
+      {/*
+        Carriers is in the menu rather than the app bar because it is a thing the commander goes
+        looking for — where do I sell a full sample bag — not something they watch. The panel
+        holds no data until they press its button.
+      */}
+      <Tooltip text="Carriers — fleet carriers near you, from EDAstro. Downloads on request; positions are last sightings.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setCarriersOpen(true)}
+          aria-label="Carriers"
+        >
+          <IconCarrier />
+        </button>
+      </Tooltip>
+      <Tooltip text="Points of interest — the Galactic Exploration Catalog near you, from EDAstro. Downloads on request.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setPoiOpen(true)}
+          aria-label="Points of interest"
+        >
+          <IconPoi />
+        </button>
+      </Tooltip>
+      <Tooltip text="Boxel — every system of one boxel, which you have flown, what is recorded there, and the next one to fly.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setBoxelOpen(true)}
+          aria-label="Boxel"
+        >
+          <IconBoxel />
+        </button>
+      </Tooltip>
+      <Tooltip text="Bookmarks — systems you marked with the ☆ beside a system's name, with tags and notes.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setBookmarksOpen(true)}
+          aria-label="Bookmarks"
+        >
+          <IconBookmark />
+        </button>
+      </Tooltip>
+      <Tooltip text="Statistics — income by source, activity and balances, over 24 h to all time.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setStatsOpen(true)}
+          aria-label="Statistics"
+        >
+          <IconStats />
+        </button>
+      </Tooltip>
+      {feederAvailable ? (
+        <Tooltip text="Data feeder — the corpus behind the rankings, and whether any profile is behind it.">
+          <button
+            type="button"
+            className="appbar-icon-btn"
+            onClick={() => open.setFeederOpen(true)}
+            aria-label="Data feeder"
+          >
+            <IconFeeder />
+          </button>
+        </Tooltip>
+      ) : null}
+      <Tooltip text="Galaxy map — 5.3 million systems with recorded biology, your own travels, search and codex, in 3D. Opens in its own window.">
+        <a
+          className="appbar-icon-btn"
+          href="?screen=galaxy"
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Galaxy map"
+        >
+          <IconGalaxy />
+        </a>
+      </Tooltip>
+      <Tooltip text="Encyclopedia — every species, its requirements, and what you have found.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setEncyclopediaOpen(true)}
+          aria-label="Encyclopedia"
+        >
+          <IconEncyclopedia />
+        </button>
+      </Tooltip>
+      <Tooltip text="Achievements — every plant variant by galaxy, genus, rarity and region, Bronze / Silver / Gold; track one to mark its plants.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setAchievementsOpen(true)}
+          aria-label="Achievements"
+        >
+          <IconAchievements />
+        </button>
+      </Tooltip>
+      <Tooltip text="Session log — tonight's systems, landings, species analysed and sales; copy as Markdown.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setSessionOpen(true)}
+          aria-label="Session log"
+        >
+          <IconSession />
+        </button>
+      </Tooltip>
+      <Tooltip text="Options — journal service info, map tier thresholds, reset.">
+        <button
+          type="button"
+          className="appbar-icon-btn"
+          onClick={() => open.setOptionsOpen(true)}
+          aria-label="Options"
+        >
+          <IconOptions />
+        </button>
+      </Tooltip>
+    </>
+  );
+});
 
 export const HeaderBar = memo(function HeaderBar({
   snap,
@@ -164,11 +352,36 @@ export const HeaderBar = memo(function HeaderBar({
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [boxelOpen, setBoxelOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  // The menu's panel openers, one object for the header's life (useState setters never change).
+  const menuOpeners: MenuOpeners = useMemo(
+    () => ({
+      setMyExoOpen,
+      setBacklogOpen,
+      setCarriersOpen,
+      setPoiOpen,
+      setBoxelOpen,
+      setBookmarksOpen,
+      setStatsOpen,
+      setFeederOpen,
+      setEncyclopediaOpen,
+      setAchievementsOpen,
+      setSessionOpen,
+      setOptionsOpen,
+    }),
+    [],
+  );
   const [notableQuick, setNotableQuick] = useState<{
     notable: NotableBodyInfo;
     x: number;
     y: number;
   } | null>(null);
+  // My discoveries re-sorted its whole table on every push while open: a new onClose rebuilt its columns.
+  const closeMyExo = useCallback(() => setMyExoOpen(false), []);
+  // One function for the header's life, so the system card's memo holds (snapSlice.ts).
+  const openNotableQuick = useCallback((n: NotableBodyInfo, ev: ReactMouseEvent) => {
+    ev.stopPropagation();
+    setNotableQuick({ notable: n, x: ev.clientX, y: ev.clientY });
+  }, []);
   // Notable tabs in the body strip open the same quick facts (App.tsx, BodyTabStrip.tsx).
   useEffect(() => {
     const on = (ev: Event) => {
@@ -365,150 +578,7 @@ export const HeaderBar = memo(function HeaderBar({
                 role="menu"
                 onClick={() => setMenuOpen(false)}
               >
-                {/*
-            The panel behind this icon stopped being only exobiology: it now carries every system,
-            body and star in the merged journals beside the foot-confirmed species. The menu is
-            icons and tooltips, so the tooltip is the only place the name lives — leaving it as "My
-            exobiology" made three new tabs unfindable.
-          */}
-                <Tooltip text="My discoveries — every system, body and star you have scanned, plus the species you confirmed on foot.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setMyExoOpen(true)}
-                    aria-label="My discoveries"
-                  >
-                    <IconExobiology />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Unfinished business — biology you found first and never collected, still worth 5x.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setBacklogOpen(true)}
-                    aria-label="Unfinished business"
-                  >
-                    <IconBacklog />
-                  </button>
-                </Tooltip>
-                {/*
-            Carriers is in the menu rather than the app bar because it is a thing the commander goes
-            looking for — where do I sell a full sample bag — not something they watch. The panel
-            holds no data until they press its button.
-          */}
-                <Tooltip text="Carriers — fleet carriers near you, from EDAstro. Downloads on request; positions are last sightings.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setCarriersOpen(true)}
-                    aria-label="Carriers"
-                  >
-                    <IconCarrier />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Points of interest — the Galactic Exploration Catalog near you, from EDAstro. Downloads on request.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setPoiOpen(true)}
-                    aria-label="Points of interest"
-                  >
-                    <IconPoi />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Boxel — every system of one boxel, which you have flown, what is recorded there, and the next one to fly.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setBoxelOpen(true)}
-                    aria-label="Boxel"
-                  >
-                    <IconBoxel />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Bookmarks — systems you marked with the ☆ beside a system's name, with tags and notes.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setBookmarksOpen(true)}
-                    aria-label="Bookmarks"
-                  >
-                    <IconBookmark />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Statistics — income by source, activity and balances, over 24 h to all time.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setStatsOpen(true)}
-                    aria-label="Statistics"
-                  >
-                    <IconStats />
-                  </button>
-                </Tooltip>
-                {feeder.available ? (
-                  <Tooltip text="Data feeder — the corpus behind the rankings, and whether any profile is behind it.">
-                    <button
-                      type="button"
-                      className="appbar-icon-btn"
-                      onClick={() => setFeederOpen(true)}
-                      aria-label="Data feeder"
-                    >
-                      <IconFeeder />
-                    </button>
-                  </Tooltip>
-                ) : null}
-                <Tooltip text="Galaxy map — 5.3 million systems with recorded biology, your own travels, search and codex, in 3D. Opens in its own window.">
-                  <a
-                    className="appbar-icon-btn"
-                    href="?screen=galaxy"
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Galaxy map"
-                  >
-                    <IconGalaxy />
-                  </a>
-                </Tooltip>
-                <Tooltip text="Encyclopedia — every species, its requirements, and what you have found.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setEncyclopediaOpen(true)}
-                    aria-label="Encyclopedia"
-                  >
-                    <IconEncyclopedia />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Achievements — every plant variant by galaxy, genus, rarity and region, Bronze / Silver / Gold; track one to mark its plants.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setAchievementsOpen(true)}
-                    aria-label="Achievements"
-                  >
-                    <IconAchievements />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Session log — tonight's systems, landings, species analysed and sales; copy as Markdown.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setSessionOpen(true)}
-                    aria-label="Session log"
-                  >
-                    <IconSession />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Options — journal service info, map tier thresholds, reset.">
-                  <button
-                    type="button"
-                    className="appbar-icon-btn"
-                    onClick={() => setOptionsOpen(true)}
-                    aria-label="Options"
-                  >
-                    <IconOptions />
-                  </button>
-                </Tooltip>
+                <AppMenuEntries feederAvailable={feeder.available} open={menuOpeners} />
               </div>
             </div>
             <Tooltip
@@ -544,10 +614,7 @@ export const HeaderBar = memo(function HeaderBar({
       <SystemCardRow
         snap={snap}
         onOpenSystemMap={onOpenSystemMap}
-        onNotableClick={(n, ev) => {
-          ev.stopPropagation();
-          setNotableQuick({ notable: n, x: ev.clientX, y: ev.clientY });
-        }}
+        onNotableClick={openNotableQuick}
       />
 
       {trayOpen ? (
@@ -776,28 +843,34 @@ export const HeaderBar = memo(function HeaderBar({
         </Suspense>
       ) : null}
       {myExoOpen ? (
-        <MyExobiologyModal
-          entries={snap.footScannedEntries ?? []}
-          onClose={() => setMyExoOpen(false)}
-          onNavigateEntry={onFootCatalogNavigate}
-          onNavigateSystem={onDiscoveriesNavigate}
-        />
+        <Suspense fallback={<ModalLoading />}>
+          <MyExobiologyModal
+            entries={snap.footScannedEntries ?? NO_FOOT_ENTRIES}
+            onClose={closeMyExo}
+            onNavigateEntry={onFootCatalogNavigate}
+            onNavigateSystem={onDiscoveriesNavigate}
+          />
+        </Suspense>
       ) : null}
       {dataBreakdownOpen ? (
-        <DataValueBreakdownModal
-          lines={snap.organicPendingLines ?? []}
-          includeExplorationScanDataInDataValue={scanDataOn}
-          explorationFssScanCount={snap.explorationFssScanCount ?? 0}
-          explorationFssValueCredits={snap.explorationFssValueCredits ?? 0}
-          explorationDssScanCount={snap.explorationDssScanCount ?? 0}
-          explorationDssValueCredits={snap.explorationDssValueCredits ?? 0}
-          exobioScanCount={snap.organicPendingSampleCount}
-          exobioValueCredits={snap.organicDataValueCredits}
-          onClose={() => setDataBreakdownOpen(false)}
-        />
+        <Suspense fallback={<ModalLoading />}>
+          <DataValueBreakdownModal
+            lines={snap.organicPendingLines ?? []}
+            includeExplorationScanDataInDataValue={scanDataOn}
+            explorationFssScanCount={snap.explorationFssScanCount ?? 0}
+            explorationFssValueCredits={snap.explorationFssValueCredits ?? 0}
+            explorationDssScanCount={snap.explorationDssScanCount ?? 0}
+            explorationDssValueCredits={snap.explorationDssValueCredits ?? 0}
+            exobioScanCount={snap.organicPendingSampleCount}
+            exobioValueCredits={snap.organicDataValueCredits}
+            onClose={() => setDataBreakdownOpen(false)}
+          />
+        </Suspense>
       ) : null}
       {sessionOpen ? (
-        <SessionLogModal log={snap.sessionLog ?? null} onClose={() => setSessionOpen(false)} />
+        <Suspense fallback={<ModalLoading />}>
+          <SessionLogModal log={snap.sessionLog ?? null} onClose={() => setSessionOpen(false)} />
+        </Suspense>
       ) : null}
       {optionsOpen ? (
         <Suspense fallback={<ModalLoading />}>
@@ -811,7 +884,9 @@ export const HeaderBar = memo(function HeaderBar({
         </Suspense>
       ) : null}
       {feederOpen ? (
-        <FeederModal status={feeder.status} onRefresh={feeder.refresh} onClose={() => setFeederOpen(false)} />
+        <Suspense fallback={<ModalLoading />}>
+          <FeederModal status={feeder.status} onRefresh={feeder.refresh} onClose={() => setFeederOpen(false)} />
+        </Suspense>
       ) : null}
       {notableQuick ? (
         <Suspense fallback={null}>

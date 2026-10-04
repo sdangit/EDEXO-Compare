@@ -17,9 +17,11 @@ import type {
   AppSnapshot,
   AppStatusDTO,
   ExoLiveDTO,
+  UiCommand,
   EncyclopediaExomasteryPlanetsResponseDTO,
   EncyclopediaSpeciesRowDTO,
   FeederStatusDTO,
+  UpdateDownloadDTO,
   UpdateInfoDTO,
   ImportDumpStatusDTO,
   BacklogMapDTO,
@@ -43,9 +45,16 @@ import type { GameStateStore } from "./gameState.js";
 import { getProjectRoot, getWebRoot } from "./paths.js";
 import type { CollectionFocusConfig } from "./collectionFocus.js";
 import { perfBytes, perfCount, perfTime } from "./perf.js";
-import { createLanAuthGuard, isLoopbackAddress, requestIsAuthorized } from "./lanAuth.js";
+import {
+  createLanAuthGuard,
+  createOriginGuard,
+  isLoopbackAddress,
+  localOnly,
+  requestIsAuthorized,
+  requestOriginIsAllowed,
+} from "./lanAuth.js";
 import type { JournalScan } from "./statisticsScan.js";
-import { isLauncherOpenMode, readLauncherOpenMode, writeLauncherOpenMode } from "./launcherPrefs.js";
+import { isLauncherOpenMode, readLauncherOpenMode, writeLanAccess, writeLauncherOpenMode } from "./launcherPrefs.js";
 import { type EdsmCatchUpScope } from "./edsmCatchUp.js";
 
 import { GZIP_MIN_BYTES, sendJson } from "./routes/httpHelpers.js";
@@ -168,6 +177,11 @@ export interface HttpServerOptions {
    * taken from the caller; the server opens the page it found itself, on github.com, or nothing.
    */
   openUpdatePage?: () => { ok: boolean; error?: string };
+  /**
+   * POST /api/app/update/download — download the newer release for an install on restart
+   * (appUpdater.ts). Answers at once with the status; GET /api/app/update carries the progress.
+   */
+  startUpdateDownload?: () => UpdateDownloadDTO;
   /**
    * POST /api/feeder/import-dump — start a Spansh JSONL export import into the feeder corpus
    * (`{ file, apply }`); GET /api/feeder/import-dump/status — its progress and last report.
@@ -366,10 +380,38 @@ export function createHttpServer(opts: HttpServerOptions): {
   broadcast: (s: AppSnapshot) => void;
   /** The radar's own frame, straight to the HUD sockets. See {@link ExoLiveDTO}. */
   broadcastExoLive: (live: ExoLiveDTO) => void;
+  /** A command for the app pages (key binds: previous / next body tab), to every app-channel socket. */
+  broadcastUiCommand: (cmd: UiCommand) => void;
   listening: Promise<void>;
   closeConnections: () => void;
 } {
   const app = express();
+  /*
+    Express 4 does not catch a rejected async handler: the rejection goes unhandled and the dev entry
+    exits the process on it (combined plan 1.4). Every route handler that returns a promise has its
+    rejection passed to `next`, which answers 500. `app.get(name)` with one argument is the settings
+    getter and is left alone.
+  */
+  for (const method of ["get", "post", "put", "delete", "patch"] as const) {
+    const register = app[method].bind(app) as (...args: unknown[]) => unknown;
+    (app as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
+      if (args.length < 2) return register(...args);
+      return register(
+        ...args.map((h) =>
+          typeof h === "function" && h.length <= 3
+            ? (req: express.Request, res: express.Response, next: express.NextFunction) => {
+                try {
+                  const r = (h as (a: unknown, b: unknown, c: unknown) => unknown)(req, res, next);
+                  if (r && typeof (r as Promise<unknown>).catch === "function") (r as Promise<unknown>).catch(next);
+                } catch (e) {
+                  next(e);
+                }
+              }
+            : h,
+        ),
+      );
+    };
+  }
   const root = getProjectRoot();
   const webRoot = getWebRoot(root);
   const routeCtx: RouteContext = { root, webRoot };
@@ -379,6 +421,21 @@ export function createHttpServer(opts: HttpServerOptions): {
    * not get its request body parsed either.
    */
   const lanKey = opts.lanKey ?? null;
+  /*
+    This PC's LAN addresses, for the Host/Origin check: read every 30 s, not per request
+    (`os.networkInterfaces()` is slow on Windows with VPN or Hyper-V adapters).
+  */
+  let lanHostsAt = 0;
+  let lanHosts = new Set<string>();
+  const isOwnLanHost = (name: string): boolean => {
+    if (Date.now() - lanHostsAt > 30_000) {
+      lanHosts = new Set(getLanIPv4s(opts.port).map((u) => new URL(u).hostname));
+      if (opts.bindHost && opts.bindHost !== "0.0.0.0") lanHosts.add(opts.bindHost.toLowerCase());
+      lanHostsAt = Date.now();
+    }
+    return lanHosts.has(name);
+  };
+  app.use(createOriginGuard(isOwnLanHost));
   app.use(createLanAuthGuard(lanKey));
 
   /**
@@ -583,12 +640,40 @@ export function createHttpServer(opts: HttpServerOptions): {
     }
   });
 
+  /** The launcher's "LAN access" switch; applies at the next start. From this PC only. */
+  app.post("/api/launcher/lan-access", (req, res) => {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.status(403).json({ ok: false, error: "LAN access can only be changed on the PC running the app." });
+      return;
+    }
+    const enabled = (req.body as { enabled?: unknown } | undefined)?.enabled;
+    if (typeof enabled !== "boolean") {
+      res.status(400).json({ ok: false, error: "enabled must be true or false." });
+      return;
+    }
+    try {
+      writeLanAccess(enabled);
+      res.json({ ok: true, lanAccess: opts.getStatus().lanAccess });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
   app.get("/api/app/update", async (req, res) => {
     if (typeof opts.getUpdateInfo !== "function") {
       res.status(501).json({ error: "Not available" });
       return;
     }
     res.json(await opts.getUpdateInfo(req.query.force === "1"));
+  });
+
+  // This PC only: what it writes is a program for this PC to run.
+  app.post("/api/app/update/download", localOnly, (_req, res) => {
+    if (typeof opts.startUpdateDownload !== "function") {
+      res.status(501).json({ error: "Not available" });
+      return;
+    }
+    res.json(opts.startUpdateDownload());
   });
 
   app.post("/api/app/open-update", (req, res) => {
@@ -623,7 +708,7 @@ export function createHttpServer(opts: HttpServerOptions): {
     the same four gates the CLI uses, so it runs as a background job and the launcher polls the
     status route; only one at a time.
   */
-  app.post("/api/feeder/import-dump", (req, res) => {
+  app.post("/api/feeder/import-dump", localOnly, (req, res) => {
     if (typeof opts.startImportDump !== "function") {
       res.status(501).json({ ok: false, error: "Not available on this build" });
       return;
@@ -637,7 +722,7 @@ export function createHttpServer(opts: HttpServerOptions): {
     const r = opts.startImportDump(file, body.apply === true);
     res.status(r.ok ? 200 : 409).json(r);
   });
-  app.get("/api/feeder/import-dump/status", (req, res) => {
+  app.get("/api/feeder/import-dump/status", localOnly, (req, res) => {
     if (typeof opts.getImportDumpStatus !== "function") {
       res.status(501).json({ error: "Not available on this build" });
       return;
@@ -679,7 +764,7 @@ export function createHttpServer(opts: HttpServerOptions): {
 
   registerSettingsRoutes(app, opts, routeCtx);
 
-  app.post("/api/exo-data-alerts/fix", (req, res) => {
+  app.post("/api/exo-data-alerts/fix", localOnly, (req, res) => {
     if (typeof opts.writeExoDataAlertFix !== "function") {
       res.status(501).json({ ok: false, error: "Fix stubs are not available in this build." });
       return;
@@ -711,7 +796,7 @@ export function createHttpServer(opts: HttpServerOptions): {
     }
   });
 
-  app.post("/api/exobiology/reset", (req, res) => {
+  app.post("/api/exobiology/reset", localOnly, (req, res) => {
     if (typeof opts.resetExobiology !== "function") {
       res.status(501).json({ ok: false, error: "Not available" });
       return;
@@ -769,16 +854,32 @@ export function createHttpServer(opts: HttpServerOptions): {
     server,
     path: "/ws",
     perMessageDeflate: { threshold: GZIP_MIN_BYTES, zlibDeflateOptions: { level: 4 } },
+    // A client only ever sends a hello: the 100 MiB default would let one frame tie up the main thread.
+    maxPayload: 64 * 1024,
     // The upgrade bypasses Express, so the same key check runs here. A paired browser sends the
     // cookie on the handshake; a script can pass ?k= or the header.
     verifyClient: ({ req }, done) => {
-      if (requestIsAuthorized(req, lanKey)) done(true);
+      // A web page can open a WebSocket to 127.0.0.1 from anywhere: its Origin must be ours (1.4).
+      if (!requestOriginIsAllowed(req, isOwnLanHost, { checkOrigin: true })) done(false, 403, "Foreign origin");
+      else if (requestIsAuthorized(req, lanKey)) done(true);
       else done(false, 401, "Access key required");
     },
   });
   const clients = new Set<import("ws").WebSocket>();
   /** What each socket asked for with its hello; "app" (the full state) until it says otherwise. */
   const channelOf = new WeakMap<import("ws").WebSocket, WsChannel>();
+  /*
+    Sockets that must get a whole frame on the next push, not a delta (combined plan 1.3). Pushes leave
+    out what did not change since the previous *push*, but a socket that just connected (or changed
+    channel) holds the snapshot it was sent then, and one that skipped a push for back-pressure holds
+    an older one: a field that changed and changed back would stay stale for it.
+  */
+  const needsFull = new WeakSet<import("ws").WebSocket>();
+  /** Answered the last ping; a socket that misses one interval is a dead connection (a sleeping phone). */
+  const alive = new WeakSet<import("ws").WebSocket>();
+  /** A slow LAN client gets no push while this much is still unsent to it. */
+  const WS_BACKLOG_LIMIT = 8 * 1024 * 1024;
+  wss.on("error", (e) => console.error("[edexo-compare] WebSocket server:", e instanceof Error ? e.message : e));
   const stateMessage = (snap: AppSnapshot, channel: WsChannel): string =>
     JSON.stringify({ type: "state", channel, rev: pushRev, payload: slimSnapshotForChannel(snap, channel) });
 
@@ -846,6 +947,13 @@ export function createHttpServer(opts: HttpServerOptions): {
         clients.delete(ws);
         continue;
       }
+      // No pong since the last ping: half-open TCP. Without this it stayed OPEN and kept buffering.
+      if (!alive.has(ws)) {
+        clients.delete(ws);
+        ws.terminate();
+        continue;
+      }
+      alive.delete(ws);
       try {
         ws.ping();
       } catch {
@@ -857,13 +965,32 @@ export function createHttpServer(opts: HttpServerOptions): {
 
   server.once("close", () => clearInterval(wsKeepAlive));
 
+  /** A snapshot this recent is sent to a new socket as it is: a reconnect storm is not N rebuilds. */
+  let lastAppSnapAt = 0;
+  const recentSnapshot = (): AppSnapshot => {
+    if (!lastAppSnap || Date.now() - lastAppSnapAt > 1000) {
+      lastAppSnap = opts.getSnapshot();
+      lastAppSnapAt = Date.now();
+    }
+    return lastAppSnap;
+  };
+
   wss.on("connection", (ws) => {
     clients.add(ws);
     channelOf.set(ws, "app");
+    alive.add(ws);
     perfCount("ws.connect");
+    /*
+      A malformed frame (bad Wi-Fi, a port scanner on the LAN) makes `ws` emit 'error'; with no
+      listener that is an uncaught exception and the whole app exits (combined plan 1.3).
+    */
+    ws.on("error", () => {
+      clients.delete(ws);
+    });
+    ws.on("pong", () => alive.add(ws));
     try {
-      lastAppSnap = opts.getSnapshot();
-      ws.send(stateMessage(lastAppSnap, "app"));
+      ws.send(stateMessage(recentSnapshot(), "app"));
+      needsFull.add(ws);
     } catch {
       /* ignore */
     }
@@ -879,7 +1006,8 @@ export function createHttpServer(opts: HttpServerOptions): {
           }
           if (ch && ch !== channelOf.get(ws)) {
             channelOf.set(ws, ch);
-            ws.send(stateMessage(opts.getSnapshot(), ch));
+            ws.send(stateMessage(recentSnapshot(), ch));
+            needsFull.add(ws);
           }
         }
       } catch {
@@ -894,11 +1022,15 @@ export function createHttpServer(opts: HttpServerOptions): {
 
   const broadcast = (snap: AppSnapshot) => {
     lastAppSnap = snap;
+    lastAppSnapAt = Date.now();
     // One serialization per channel per push; null marks "identical to the last frame, skip".
     const built = new Map<WsChannel, string | null>();
+    const fullFrames = new Map<WsChannel, string>();
     for (const ws of clients) {
       if (ws.readyState !== ws.OPEN) continue;
       const ch = channelOf.get(ws) ?? "app";
+      // Built for every channel with a client, even one getting a whole frame: the delta's baseline is
+      // the previous push, and it must move on with every push.
       if (!built.has(ch)) {
         // The revision is filled in after the identical-frame check, so it cannot make every frame differ.
         const draft = perfTime("ws.serialize", () => pushMessage(snap, ch));
@@ -914,7 +1046,21 @@ export function createHttpServer(opts: HttpServerOptions): {
           built.set(ch, msg);
         }
       }
-      const msg = built.get(ch);
+      if (ws.bufferedAmount > WS_BACKLOG_LIMIT) {
+        // Still sending earlier frames: skip this one, and send it whole once it has caught up.
+        perfCount("ws.push.skippedBacklog");
+        needsFull.add(ws);
+        continue;
+      }
+      let msg = built.get(ch) ?? null;
+      if (needsFull.has(ws)) {
+        msg = fullFrames.get(ch) ?? null;
+        if (msg === null) {
+          msg = stateMessage(snap, ch);
+          fullFrames.set(ch, msg);
+        }
+        needsFull.delete(ws);
+      }
       if (!msg) continue;
       try {
         ws.send(msg);
@@ -942,6 +1088,7 @@ export function createHttpServer(opts: HttpServerOptions): {
     for (const ws of clients) {
       if (ws.readyState !== ws.OPEN) continue;
       if ((channelOf.get(ws) ?? "app") !== "hud") continue;
+      if (ws.bufferedAmount > WS_BACKLOG_LIMIT) continue;
       if (msg === null) {
         msg = JSON.stringify({ type: "exoLive", channel: "hud", payload: live });
         if (msg === lastExoLiveMsg) {
@@ -960,10 +1107,28 @@ export function createHttpServer(opts: HttpServerOptions): {
     }
   };
 
+  /*
+    Key binds (owner, 2026-10-02: "the user won't have to alt tab to the browser window in order to
+    switch bodies"). Electron catches the global key and the server tells every app page — the app
+    window and any browser tab — so whichever one he is looking at moves.
+  */
+  const broadcastUiCommand = (cmd: UiCommand) => {
+    const msg = JSON.stringify({ type: "uiCommand", payload: cmd });
+    for (const ws of clients) {
+      if (ws.readyState !== ws.OPEN) continue;
+      if ((channelOf.get(ws) ?? "app") !== "app") continue;
+      try {
+        ws.send(msg);
+      } catch {
+        clients.delete(ws);
+      }
+    }
+  };
+
   server.listen(opts.port, opts.bindHost);
   const closeConnections = () => {
     for (const ws of wss.clients) ws.terminate();
     server.closeAllConnections();
   };
-  return { server, broadcast, broadcastExoLive, listening, closeConnections };
+  return { server, broadcast, broadcastExoLive, broadcastUiCommand, listening, closeConnections };
 }

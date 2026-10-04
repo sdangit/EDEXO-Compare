@@ -48,11 +48,25 @@ type Huds = {
   pushPrefs: (p: unknown) => void;
   resizeFromPage: (win: unknown, o: unknown) => { ok: boolean };
   setLayoutPathResolver: (fn: () => string) => void;
+  setMoveMode: (on: boolean) => boolean;
+  setGamePoint: (p: { x: number; y: number } | null) => void;
+  raiseVisible: () => void;
+  isMoving: () => boolean;
+  dragFromPage: (win: unknown, phase: string) => { ok: boolean };
   loadLayout: () => void;
   relayout: () => void;
 };
 
 const WORK = { x: 0, y: 0, width: 1920, height: 1080 };
+/** A second monitor to the right of the primary, for free move. */
+const SECOND = { x: 1920, y: 0, width: 2560, height: 1440 };
+let cursor = { x: 0, y: 0 };
+function nearestDisplay(p: { x: number; y: number }) {
+  const dist = (b: typeof WORK) =>
+    Math.hypot(Math.max(b.x - p.x, 0, p.x - (b.x + b.width - 1)), Math.max(b.y - p.y, 0, p.y - (b.y + b.height - 1)));
+  const b = dist(SECOND) < dist(WORK) ? SECOND : WORK;
+  return { bounds: b, workArea: b };
+}
 
 class FakeWindow {
   static all: FakeWindow[] = [];
@@ -101,8 +115,16 @@ class FakeWindow {
   getBounds() {
     return { ...this.bounds };
   }
+  /**
+   * Windows with monitors at different scaling: Electron's setBounds on the other monitor can land
+   * at a size scaled by the ratio of the two (a commander's report, 2026-10-02). 1 = no distortion.
+   */
+  static secondScreenSizeFactor = 1;
   setBounds(b: Partial<FakeWindow["bounds"]>) {
     this.bounds = { ...this.bounds, ...b };
+    if (b.height != null && this.bounds.x >= SECOND.x) {
+      this.bounds.height = Math.round(b.height * FakeWindow.secondScreenSizeFactor);
+    }
   }
   hide() {
     this.visible = false;
@@ -110,12 +132,23 @@ class FakeWindow {
   show() {
     this.visible = true;
   }
+  shows = 0;
   showInactive() {
     this.visible = true;
+    this.shows += 1;
+  }
+  isVisible() {
+    return this.visible;
   }
   setAlwaysOnTop() {}
-  moveTop() {}
-  setIgnoreMouseEvents() {}
+  raised = 0;
+  moveTop() {
+    this.raised += 1;
+  }
+  ignoresMouse = true;
+  setIgnoreMouseEvents(v: boolean) {
+    this.ignoresMouse = v;
+  }
   setVisibleOnAllWorkspaces() {}
 }
 
@@ -129,7 +162,12 @@ function make(): Huds {
     electron: {
       app: { getPath: () => dir },
       BrowserWindow: FakeWindow,
-      screen: { getPrimaryDisplay: () => ({ workArea: WORK }), on: () => {} },
+      screen: {
+        getPrimaryDisplay: () => ({ workArea: WORK }),
+        getDisplayNearestPoint: nearestDisplay,
+        getCursorScreenPoint: () => ({ ...cursor }),
+        on: () => {},
+      },
     },
     getRuntime: () => runtime,
     preloadPath: "preload.cjs",
@@ -146,6 +184,7 @@ beforeEach(() => {
   runtime = { getLocalBaseUrl: () => "http://127.0.0.1:7111" };
   changes = 0;
   FakeWindow.all = [];
+  FakeWindow.secondScreenSizeFactor = 1;
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -296,6 +335,22 @@ describe("hiding and showing (the hotkey)", () => {
     huds.toggleVisibility(true);
   });
 
+  it("with Elite closed and the HUD shown by hand, another window in front does not hide it (owner, 2026-10-02)", async () => {
+    const huds = make();
+    await huds.request("/distance-overlay.html", 404, 330, null, "open");
+    const win = live()[0]!;
+    huds.setGameAway(true);
+    huds.toggleVisibility(false);
+    expect(win.visible).toBe(true);
+    huds.setFocusAway(true);
+    expect(win.visible).toBe(true);
+    // The game starts: now another window in front does hide it.
+    huds.setGameAway(false);
+    huds.setFocusAway(false);
+    huds.setFocusAway(true);
+    expect(win.visible).toBe(false);
+  });
+
   it("shows on the hotkey while the game is away (and forgets the away state)", async () => {
     const huds = make();
     await huds.request("/distance-overlay.html", 404, 330, null, "open");
@@ -312,6 +367,204 @@ describe("hiding and showing (the hotkey)", () => {
     await huds.request("/distance-overlay.html", 404, 330, null, "toggle");
     expect(huds.isHidden()).toBe(false);
     huds.toggleVisibility(true);
+  });
+});
+
+describe("back on top when the game comes to the front (plan 2.1, Fable C10)", () => {
+  it("coming back to the game does not show a window that is already up (the blinks, 2026-10-02)", async () => {
+    const huds = make();
+    await huds.request("/distance-overlay.html", 404, 330, null, "open");
+    const [w] = live();
+    huds.toggleVisibility(false);
+    const shows = w!.shows;
+    huds.setFocusAway(false);
+    huds.raiseVisible();
+    huds.raiseVisible();
+    expect(w!.shows).toBe(shows);
+    expect(w!.visible).toBe(true);
+  });
+
+  it("raises every visible HUD at once, and none while they are hidden", async () => {
+    const huds = make();
+    await huds.request("/fss-scan-overlay.html", 404, 120, null, "open");
+    await huds.request("/distance-overlay.html", 404, 330, null, "open");
+    const [a, b] = live();
+    const before = [a!.raised, b!.raised];
+    huds.raiseVisible();
+    expect([a!.raised - before[0]!, b!.raised - before[1]!]).toEqual([1, 1]);
+    huds.toggleVisibility(true);
+    const hidden = [a!.raised, b!.raised];
+    huds.raiseVisible();
+    expect([a!.raised, b!.raised]).toEqual(hidden);
+  });
+});
+
+describe("the corner stack and the game's monitor (plan 2.1, Fable C12)", () => {
+  it("goes to the monitor the game's window is on, and stays on the primary until it is known", async () => {
+    const huds = make();
+    await huds.request("/distance-overlay.html", 404, 330, null, "open");
+    const [w] = live();
+    // Not known yet: the primary, top-right as always.
+    expect(w!.bounds.x).toBe(WORK.x + WORK.width - 14 - 404);
+    // Elite in front on the second screen.
+    huds.setGamePoint({ x: SECOND.x + 1280, y: 720 });
+    huds.relayout();
+    expect(w!.bounds.x).toBe(SECOND.x + SECOND.width - 14 - 404);
+    expect(w!.bounds.y).toBe(SECOND.y + 14);
+    // Back on the primary.
+    huds.setGamePoint({ x: 960, y: 540 });
+    huds.relayout();
+    expect(w!.bounds.x).toBe(WORK.x + WORK.width - 14 - 404);
+  });
+});
+
+describe("free move (owner, 2026-10-02: the HUD anywhere, on any screen)", () => {
+  const twoHuds = async (huds: Huds) => {
+    await huds.request("/fss-scan-overlay.html", 404, 120, null, "open");
+    await huds.request("/distance-overlay.html", 404, 330, null, "open");
+    return live();
+  };
+
+  it("switched on, the stack stays where it was and the spot is saved", async () => {
+    const huds = make();
+    const [a] = await twoHuds(huds);
+    const before = { ...a!.bounds };
+    huds.setLayout({ freeOn: true });
+    expect(a!.bounds).toMatchObject({ x: before.x, y: before.y });
+    const file = JSON.parse(readFileSync(layoutFile, "utf8"));
+    expect(file.freeOn).toBe(true);
+    expect(file.free).toMatchObject({ x: before.x, y: before.y, bottom: false });
+  });
+
+  it("placing: the windows take the mouse and show the frame, a drag moves the whole stack, Done ends it", async () => {
+    const huds = make();
+    const [a, b] = await twoHuds(huds);
+    huds.setLayout({ freeOn: true });
+    huds.toggleVisibility(true);
+    expect(huds.setMoveMode(true)).toBe(true);
+    // Shown while placing, whatever hid them; click-through off; the page told.
+    expect(a!.visible).toBe(true);
+    expect(a!.ignoresMouse).toBe(false);
+    expect(b!.sent).toContainEqual(["edexo:hud-move-mode", { on: true }]);
+    const start = { ...a!.bounds };
+    cursor = { x: 1600, y: 40 };
+    expect(huds.dragFromPage(b, "start").ok).toBe(true);
+    cursor = { x: 900, y: 240 };
+    huds.dragFromPage(b, "move");
+    expect(a!.bounds).toMatchObject({ x: start.x - 700, y: start.y + 200 });
+    expect(b!.bounds).toMatchObject({ x: start.x - 700, y: start.y + 200 + 120 + 6 });
+    huds.dragFromPage(b, "end");
+    expect(JSON.parse(readFileSync(layoutFile, "utf8")).free).toMatchObject({ x: start.x - 700, y: start.y + 200, bottom: false });
+    huds.dragFromPage(b, "done");
+    expect(huds.isMoving()).toBe(false);
+    expect(a!.ignoresMouse).toBe(true);
+    // Hidden again: the commander's choice was hidden before placing.
+    expect(a!.visible).toBe(false);
+  });
+
+  it("dropped in the lower half of the second screen it hangs from its bottom edge and grows upwards", async () => {
+    const huds = make();
+    const [a, b] = await twoHuds(huds);
+    huds.setLayout({ freeOn: true });
+    huds.setMoveMode(true);
+    cursor = { x: 0, y: 0 };
+    huds.dragFromPage(a, "start");
+    const start = { ...a!.bounds };
+    cursor = { x: 2400 - start.x, y: 900 - start.y };
+    huds.dragFromPage(a, "move");
+    huds.dragFromPage(a, "end");
+    const free = JSON.parse(readFileSync(layoutFile, "utf8")).free;
+    expect(free).toEqual({ x: 2400, y: 900 + 120 + 6 + 330, bottom: true });
+    // A taller page keeps the bottom edge where it was dropped.
+    huds.resizeFromPage(b, { height: 400 });
+    expect(b!.bounds.y + b!.bounds.height).toBe(free.y);
+    expect(a!.bounds.x).toBe(2400);
+    huds.setMoveMode(false);
+  });
+
+  /*
+    A commander's report (2026-10-02): moved to another screen, the merged HUD grew taller and taller,
+    to the height of the screen; unmerged, the windows piled on top of each other. On that screen
+    setBounds landed at a scaled size, and the stack read every window's size back and set it again,
+    so each relayout scaled it once more.
+  */
+  it("on a screen where a set size lands scaled, the merged panel does not keep growing", async () => {
+    FakeWindow.secondScreenSizeFactor = 1.25;
+    const huds = make();
+    await huds.request("/hud-overlay.html", 404, 330, null, "open");
+    const [w] = live();
+    huds.setLayout({ freeOn: true, free: { x: 2400, y: 100 } });
+    const heights: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      // The page reports its content as it changes (a timer, a distance), and the stack relayouts.
+      huds.resizeFromPage(w, { height: 500 + (i % 3) });
+      huds.relayout();
+      heights.push(w!.bounds.height);
+    }
+    expect(Math.max(...heights)).toBeLessThanOrEqual(Math.round(502 * 1.25));
+    expect(heights.at(-1)).toBeLessThan(SECOND.height);
+  });
+
+  it("on that screen, separate windows do not pile on top of each other", async () => {
+    FakeWindow.secondScreenSizeFactor = 1.25;
+    const huds = make();
+    const [a, b] = await twoHuds(huds);
+    huds.setLayout({ freeOn: true, free: { x: 2400, y: 100 } });
+    for (let i = 0; i < 5; i++) {
+      huds.resizeFromPage(a, { height: 120 });
+      huds.resizeFromPage(b, { height: 330 });
+      huds.relayout();
+    }
+    expect(b!.bounds.y).toBeGreaterThanOrEqual(a!.bounds.y + a!.bounds.height);
+    expect(a!.bounds.height).toBeLessThanOrEqual(Math.round(120 * 1.25));
+    expect(b!.bounds.height).toBeLessThanOrEqual(Math.round(330 * 1.25));
+  });
+
+  it("a merged HUD as tall as the screen still follows a drag (owner, 2026-10-02: it would not move)", async () => {
+    const huds = make();
+    await huds.request("/hud-overlay.html", 404, 330, null, "open");
+    const [w] = live();
+    huds.resizeFromPage(w, { height: 1300 }); // taller than the 1080 screen
+    huds.setLayout({ freeOn: true });
+    huds.setMoveMode(true);
+    cursor = { x: 1000, y: 500 };
+    huds.dragFromPage(w, "start");
+    const before = { ...w!.bounds };
+    cursor = { x: 700, y: 300 };
+    huds.dragFromPage(w, "move");
+    expect(w!.bounds.x).toBe(before.x - 300);
+    huds.dragFromPage(w, "end");
+    huds.setMoveMode(false);
+  });
+
+  it("a spot off every screen comes back onto the nearest one", async () => {
+    const huds = make();
+    const [a] = await twoHuds(huds);
+    huds.setLayout({ freeOn: true, free: { x: 9000, y: -500 } });
+    expect(a!.bounds.x).toBe(SECOND.x + SECOND.width - 404);
+    expect(a!.bounds.y).toBe(0);
+  });
+
+  it("listens to drags only while placing and only from a HUD window; no placing without free move", async () => {
+    const huds = make();
+    const [a] = await twoHuds(huds);
+    expect(huds.setMoveMode(true)).toBe(false);
+    huds.setLayout({ freeOn: true });
+    expect(huds.dragFromPage(a, "start").ok).toBe(false);
+    huds.setMoveMode(true);
+    expect(huds.dragFromPage({}, "start").ok).toBe(false);
+    // Free move off ends placing and returns the stack to its corner.
+    huds.setLayout({ freeOn: false });
+    expect(huds.isMoving()).toBe(false);
+    expect(a!.bounds).toMatchObject({ x: 1920 - 14 - 404, y: 14 });
+  });
+
+  it("comes back from the layout file at the saved spot", async () => {
+    writeFileSync(layoutFile, JSON.stringify({ corner: "tr", order: [], freeOn: true, free: { x: 300, y: 200, bottom: false } }));
+    const huds = make();
+    huds.loadLayout();
+    const [a] = await twoHuds(huds);
+    expect(a!.bounds).toMatchObject({ x: 300, y: 200 });
   });
 });
 
@@ -403,7 +656,8 @@ describe("what the pages report", () => {
     await huds.request("/distance-overlay.html", 404, 330, null, "open");
     const win = live()[0]!;
     expect(huds.resizeFromPage(win, { height: 5000 })).toEqual({ ok: true });
-    expect(win.bounds.height).toBe(hw.HUD_MAX_HEIGHT);
+    // Asked for more than any screen: held to the screen it is on.
+    expect(win.bounds.height).toBe(Math.min(hw.HUD_MAX_HEIGHT, WORK.height));
     huds.resizeFromPage(win, { height: 10 });
     expect(win.bounds.height).toBe(hw.HUD_MIN_HEIGHT);
     huds.resizeFromPage(win, { height: hw.HUD_MIN_HEIGHT + 1 });

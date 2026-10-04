@@ -82,7 +82,9 @@ export const BodyTabStrip = memo(function BodyTabStrip({
 }) {
   const notableByKey = new Map(notables.map((n) => [`${n.systemAddress}:${n.bodyId}`, n]));
   const bioKeys = new Set(sections.flatMap((s) => s.hostCards.flat().map((b) => b.state.key)));
-  const notableOnly = notableTabs ? notables.filter((n) => !bioKeys.has(`${n.systemAddress}:${n.bodyId}`)) : [];
+  const notableOnly = notableTabs
+    ? notables.filter((n) => !bioKeys.has(`${n.systemAddress}:${n.bodyId}`))
+    : [];
   const distances = sortMode === "closest" ? (proximity?.distanceLsByBodyKey ?? null) : null;
   const estimate = proximity?.basis === "orbits";
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -112,18 +114,34 @@ export const BodyTabStrip = memo(function BodyTabStrip({
       window.removeEventListener("resize", measureEdges);
       ro.disconnect();
     };
-  }, [measureEdges, sections]);
+    // Once per mount: every live push brings a new `sections`, and re-subscribing on each was wasted
+    // work ten times a second (plan 2.2). Tabs coming and going are re-measured below instead.
+  }, [measureEdges]);
 
-  // Keep the selected tab reachable — arrow keys, the palette and auto-select can all move it
-  // outside the visible slice of the scroller.
+  // Tabs come and go with any push; re-measure the edges without re-subscribing. A read, and the
+  // state update bails out when nothing moved.
+  useLayoutEffect(() => {
+    measureEdges();
+  });
+
+  /*
+    Keep the selected tab reachable — arrow keys, the palette and auto-select can all move it outside
+    the visible slice of the scroller. Inside the strip only: `scrollIntoView` also scrolls the page to
+    the strip, and with a fresh `sections` on every push it pulled a commander reading further down
+    back up to the tabs ten times a second (plan 2.2, O-16).
+  */
+  const tabKeys = sections.map((s) => s.hostCards.map((g) => g.map((b) => b.state.key).join(",")).join("|")).join("/");
   useEffect(() => {
     if (!selectedBodyKey) return;
-    const el = scrollerRef.current?.querySelector<HTMLElement>(
-      `[data-body-key="${CSS.escape(selectedBodyKey)}"]`,
-    );
-    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const strip = scrollerRef.current;
+    const el = strip?.querySelector<HTMLElement>(`[data-body-key="${CSS.escape(selectedBodyKey)}"]`);
+    if (!strip || !el) return;
+    const s = strip.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    if (r.left < s.left) strip.scrollLeft -= s.left - r.left;
+    else if (r.right > s.right) strip.scrollLeft += r.right - s.right;
     measureEdges();
-  }, [selectedBodyKey, measureEdges, sections]);
+  }, [selectedBodyKey, measureEdges, tabKeys]);
 
   const nudge = (dir: -1 | 1) => {
     const el = scrollerRef.current;
@@ -227,8 +245,15 @@ export const BodyTabStrip = memo(function BodyTabStrip({
                     const dist = distances?.[b.state.key];
                     // CX: something here would be a new codex entry for this region (owner, 2026-09-26).
                     const cx = b.matches.some((x) => !x.unlikely && x.codexNew === true);
+                    // FCX: and nobody has logged it in this region at all, the [CODEX FIRST] of the species
+                    // rows (owner, 2026-10-01). It replaces CX, which it implies.
+                    const fcx = b.matches.some(
+                      (x) => !x.unlikely && x.codexNew === true && x.codexFirst === true,
+                    );
                     const nb = notableTabs ? notableByKey.get(b.state.key) : undefined;
                     const rare = bodyRarest(b.matches);
+                    // Known only from the ship's arrival AutoScan: no signal count yet (owner, 2026-10-02).
+                    const auto = b.state.autoScanOnly === true;
                     return (
                       <button
                         key={b.state.key}
@@ -237,9 +262,13 @@ export const BodyTabStrip = memo(function BodyTabStrip({
                         aria-selected={on}
                         tabIndex={on ? 0 : -1}
                         data-body-key={b.state.key}
-                        className={`tab${on ? " on" : ""}${done ? " tab--done" : ""}`}
+                        className={`tab${on ? " on" : ""}${done ? " tab--done" : ""}${auto ? " tab--fss-required" : ""}`}
                         onClick={() => onSelect(b.state.key)}
-                        title={`${b.tabLabel}: ${bio ?? "?"} biological signal${bio === 1 ? "" : "s"}${best > 0 ? `, best candidate ${best.toLocaleString()} CR list` : ""}${done ? ", a species analysed here" : ""}${focus ? ", carries a species worth sampling" : ""}${cx ? ", a new codex entry for this region (CX)" : ""}${nb ? `, notable: ${nb.tag}` : ""}${rare ? `, ${rare.title}` : ""}${typeof dist === "number" ? `, ${fmtTabDistanceLs(dist, estimate)} from ${proximity?.originLabel ?? "the ship"}` : ""}`}
+                        title={
+                          auto
+                            ? `${b.tabLabel}: the ship only AutoScanned this landable body on arrival, and the game reports biological signals only once a body is resolved in the FSS. Resolve it in the FSS to know whether there is life here.`
+                            : `${b.tabLabel}: ${bio ?? "?"} biological signal${bio === 1 ? "" : "s"}${best > 0 ? `, best candidate ${best.toLocaleString()} CR list` : ""}${done ? ", a species analysed here" : ""}${focus ? ", carries a species worth sampling" : ""}${fcx ? ", a FIRST codex entry: nobody has logged it in this region yet (FCX)" : cx ? ", a new codex entry for this region (CX)" : ""}${nb ? `, notable: ${nb.tag}` : ""}${rare ? `, ${rare.title}` : ""}${typeof dist === "number" ? `, ${fmtTabDistanceLs(dist, estimate)} from ${proximity?.originLabel ?? "the ship"}` : ""}`
+                        }
                       >
                         {/* In the tab's left padding: the tab keeps its size (owner, 2026-09-30). */}
                         {rare ? (
@@ -251,16 +280,27 @@ export const BodyTabStrip = memo(function BodyTabStrip({
                           />
                         ) : null}
                         <span className="tab-label">{b.tabLabel}</span>
-                        <span className="tab-meta">
-                          {bio ?? "?"}
-                          <small>bio</small>
-                          {best > 0 ? <> · {fmtCrShort(best)}</> : null}
-                          {typeof dist === "number" ? (
-                            <span className="tab-dist"> · {fmtTabDistanceLs(dist, estimate)}</span>
-                          ) : null}
-                          {cx ? <span className="tab-cx"> · CX</span> : null}
-                          {nb ? <span className="tab-n"> · N</span> : null}
-                        </span>
+                        {auto ? (
+                          <span className="tab-meta tab-fss-required">AutoScanned only - FSS required</span>
+                        ) : (
+                          <span className="tab-meta">
+                            {bio ?? "?"}
+                            <small>bio</small>
+                            {best > 0 ? <> · {fmtCrShort(best)}</> : null}
+                            {typeof dist === "number" ? (
+                              <span className="tab-dist"> · {fmtTabDistanceLs(dist, estimate)}</span>
+                            ) : null}
+                            {fcx ? (
+                              <>
+                                {" · "}
+                                <span className="tab-fcx">FCX</span>
+                              </>
+                            ) : cx ? (
+                              <span className="tab-cx"> · CX</span>
+                            ) : null}
+                            {nb ? <span className="tab-n"> · N</span> : null}
+                          </span>
+                        )}
                         {done ? <span className="tab-dot" aria-hidden="true" /> : null}
                         {focus ? (
                           <span className="tab-focus" aria-hidden="true">

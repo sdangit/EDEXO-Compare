@@ -1,4 +1,4 @@
-import { cap, head, norm, q } from "../core.js";
+import { HUD_LIST_ROWS, cap, head, listRowLimit, moreRow, norm, q } from "../core.js";
 import { pref } from "../theme.js";
 
 /* ============================================================== Exo candidates ============== */
@@ -168,11 +168,17 @@ export var candidates = {
     (bc.genusLikelihoods || []).forEach(function (l, idx) {
       if (l && l.genus) rank[norm(l.genus)] = idx;
     });
+    // Priced as the app prices it: ×5 once nobody has landed here, ×1 once somebody has, the list
+    // price tagged "×1 ?" while nothing has said (server/wsChannels.ts slimBodyForHud).
+    var foot = bc.footfall || "unknown";
+    var mult = foot === "unwalked" ? 5 : 1;
+    var multTag = foot === "unwalked" ? "×5" : foot === "walked" ? "×1" : "×1 ?";
     rows.forEach(function (r, idx) {
       r.idx = idx;
-      var g = norm((r.m.entry || {}).genus);
+      // The solver keys genera by data folder ("brain-tree"), not by display name ("Brain Trees").
+      var g = norm((r.m.entry || {}).genusDataDir || (r.m.entry || {}).genus);
       r.rank = Object.prototype.hasOwnProperty.call(rank, g) ? rank[g] : 9999;
-      r.cr = r.m.priceCredits != null && isFinite(r.m.priceCredits) ? Number(r.m.priceCredits) : -1;
+      r.cr = r.m.priceCredits != null && isFinite(r.m.priceCredits) ? Number(r.m.priceCredits) * mult : -1;
     });
     rows.sort(function (a, b) {
       return byValue ? b.cr - a.cr || a.idx - b.idx : a.rank - b.rank || a.idx - b.idx;
@@ -189,7 +195,9 @@ export var candidates = {
       plain("No candidate species");
       return null;
     }
-    rows.forEach(function (r) {
+    var limit = listRowLimit(HUD_LIST_ROWS);
+    var hidden = Math.max(0, rows.length - limit);
+    rows.slice(0, limit).forEach(function (r) {
       var m = r.m;
       var e = m.entry || {};
       var genus = cap((e.genus || "").trim() || "—");
@@ -219,9 +227,10 @@ export var candidates = {
       if (m.codexNew) {
         var cx = document.createElement("span");
         cx.className = m.codexFirst ? "cxnew cxnew--first" : "cxnew";
-        cx.textContent = m.codexFirst ? "CX1" : "CX";
+        // FCX, as on the app's body tabs (owner, 2026-10-01; was "CX1").
+        cx.textContent = m.codexFirst ? "FCX" : "CX";
         cx.title = m.codexFirst
-          ? "Nobody has logged it in this region yet (EDSM): you would be the first"
+          ? "A FIRST codex entry: nobody has logged it in this region yet (EDSM, EDAstro), you would be the first"
           : "A new entry in your codex here";
         name.appendChild(cx);
       }
@@ -233,12 +242,16 @@ export var candidates = {
       }
       var cr = document.createElement("span");
       cr.className = "cr";
-      cr.textContent = r.cr >= 0 ? r.cr.toLocaleString() + " CR" : "— CR";
+      cr.textContent = r.cr >= 0 ? r.cr.toLocaleString() + " CR " + multTag : "— CR";
+      if (r.cr >= 0 && foot === "unknown") {
+        cr.title = (r.cr * 5).toLocaleString() + " CR if you take first footfall here";
+      }
       li.appendChild(name);
       li.appendChild(cr);
       li.title = (genus + " " + sp).trim();
       ul.appendChild(li);
     });
+    if (hidden) ul.appendChild(moreRow(hidden));
     return null;
   },
 };

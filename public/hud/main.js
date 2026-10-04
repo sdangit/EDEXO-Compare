@@ -47,7 +47,16 @@ export var SECTIONS = {
   notable: notable,
   notices: notices,
 };
-export var ORDER = ["jump", "fss", "candidates", "distance", "datavalue", "achievement", "notable", "notices"];
+export var ORDER = [
+  "jump",
+  "fss",
+  "candidates",
+  "distance",
+  "datavalue",
+  "achievement",
+  "notable",
+  "notices",
+];
 
 /*
   "Only when relevant" (guild tester report, 2026-09-30; opt-in). A section with a `relevant(d)` rule
@@ -158,6 +167,78 @@ export function mountPhoneBar(list) {
   if (shellEl && shellEl.parentNode) shellEl.parentNode.insertBefore(bar, shellEl);
 }
 
+/*
+  Free move's placing mode (owner, 2026-10-02): the window takes the mouse while it is on, and this
+  frame over the HUD is what it is grabbed by. The drag only says start / move / end; the app reads
+  the cursor itself and moves the whole stack, so every HUD window follows the one being dragged.
+  "Done" ends placing for every window (the launcher has the same button).
+*/
+var moveFrame = null;
+HUD.setMoveMode = function (on) {
+  var ee = window.edexoElectron;
+  if (!on) {
+    if (moveFrame && moveFrame.parentNode) moveFrame.parentNode.removeChild(moveFrame);
+    moveFrame = null;
+    return;
+  }
+  if (moveFrame || !ee || typeof ee.hudDrag !== "function") return;
+  var f = document.createElement("div");
+  f.className = "hud-move";
+  f.style.cssText =
+    "position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;gap:0.6em;" +
+    "cursor:move;background:rgba(0,0,0,0.45);border:2px dashed var(--hud-hi,#ffb060);box-sizing:border-box;" +
+    "color:var(--hud-hi,#ffb060);font:600 13px/1.2 var(--hud-font,'Segoe UI',sans-serif);letter-spacing:0.06em;" +
+    "text-transform:uppercase;user-select:none;touch-action:none;";
+  var label = document.createElement("span");
+  label.textContent = "Drag to place";
+  var done = document.createElement("button");
+  done.type = "button";
+  done.className = "hud-move-done";
+  done.textContent = "Done";
+  done.style.cssText =
+    "cursor:pointer;font:inherit;letter-spacing:inherit;text-transform:inherit;padding:0.2em 0.8em;" +
+    "color:#111;background:var(--hud-hi,#ffb060);border:0;";
+  done.addEventListener("pointerdown", function (ev) {
+    ev.stopPropagation();
+  });
+  done.addEventListener("click", function () {
+    void ee.hudDrag("done");
+  });
+  f.appendChild(label);
+  f.appendChild(done);
+  var dragging = false;
+  var queued = false;
+  f.addEventListener("pointerdown", function (ev) {
+    if (ev.button !== 0) return;
+    dragging = true;
+    try {
+      f.setPointerCapture(ev.pointerId);
+    } catch (e) {
+      /* the drag still works while the cursor stays over the window */
+    }
+    void ee.hudDrag("start");
+  });
+  f.addEventListener("pointermove", function () {
+    // One move per frame: the app moves every window in the stack on each one.
+    if (!dragging || queued) return;
+    queued = true;
+    requestAnimationFrame(function () {
+      queued = false;
+      if (dragging) void ee.hudDrag("move");
+    });
+  });
+  var end = function () {
+    if (!dragging) return;
+    dragging = false;
+    void ee.hudDrag("end");
+  };
+  f.addEventListener("pointerup", end);
+  f.addEventListener("pointercancel", end);
+  f.addEventListener("lostpointercapture", end);
+  document.body.appendChild(f);
+  moveFrame = f;
+};
+
 HUD.mount = function (names, opts) {
   opts = opts || {};
   var root = document.getElementById("hud");
@@ -207,6 +288,15 @@ HUD.mount = function (names, opts) {
     }
   } catch (e) {
     /* the snapshot mirror still arrives */
+  }
+  try {
+    if (!PHONE && window.edexoElectron && typeof window.edexoElectron.onHudMoveMode === "function") {
+      window.edexoElectron.onHudMoveMode(function (v) {
+        HUD.setMoveMode(!!(v && v.on));
+      });
+    }
+  } catch (e) {
+    /* no free move outside the app */
   }
   root.innerHTML = list
     .map(function (n) {
@@ -406,32 +496,51 @@ HUD.mount = function (names, opts) {
   if (!opts.noTimers) {
     tick();
     setInterval(tick, 5000);
-    try {
-      var proto = location.protocol === "https:" ? "wss:" : "ws:";
-      var host = typeof location.host === "string" && location.host ? location.host : "127.0.0.1:7111";
-      var ws = new WebSocket(proto + "//" + host + "/ws");
-      ws.onopen = function () {
-        // Ask for the HUD's slice of the state, not the whole snapshot (see server/wsChannels.ts).
-        try {
-          ws.send(JSON.stringify({ type: "hello", channel: "hud" }));
-        } catch (e) {}
-      };
-      ws.onmessage = function (ev) {
-        try {
-          var msg = JSON.parse(String(ev.data));
-          if (msg.type === "state" && msg.payload) {
-            lastWsAt = Date.now();
-            if (typeof msg.payload.port === "number" && msg.payload.port > 0) setPort(msg.payload.port);
-            render(msg.payload);
-          } else if (msg.type === "exoLive" && msg.payload) {
-            // Counts as the socket being alive, or the 5 s fallback poll would start fighting it
-            // during a sample run — which is exactly when these frames are arriving.
-            lastWsAt = Date.now();
-            renderExoLive(msg.payload);
-          }
-        } catch (_) {}
-      };
-    } catch (_) {}
+    /*
+      Reconnects (combined plan 1.3). The socket had no onclose, so after a server restart or a phone's
+      Wi-Fi drop every overlay fell back to the 5 s poll for good and the radar's live frames never
+      came back until the window was reloaded. Back-off 1 s doubling to 10 s, reset once connected.
+    */
+    var wsRetryMs = 1000;
+    var connectWs = function () {
+      try {
+        var proto = location.protocol === "https:" ? "wss:" : "ws:";
+        var host = typeof location.host === "string" && location.host ? location.host : "127.0.0.1:7111";
+        var ws = new WebSocket(proto + "//" + host + "/ws");
+        ws.onopen = function () {
+          wsRetryMs = 1000;
+          // Ask for the HUD's slice of the state, not the whole snapshot (see server/wsChannels.ts).
+          try {
+            ws.send(JSON.stringify({ type: "hello", channel: "hud" }));
+          } catch (e) {}
+        };
+        ws.onclose = function () {
+          ws.onclose = null;
+          ws.onmessage = null;
+          setTimeout(connectWs, wsRetryMs);
+          wsRetryMs = Math.min(10000, wsRetryMs * 2);
+        };
+        ws.onmessage = function (ev) {
+          try {
+            var msg = JSON.parse(String(ev.data));
+            if (msg.type === "state" && msg.payload) {
+              lastWsAt = Date.now();
+              if (typeof msg.payload.port === "number" && msg.payload.port > 0) setPort(msg.payload.port);
+              render(msg.payload);
+            } else if (msg.type === "exoLive" && msg.payload) {
+              // Counts as the socket being alive, or the 5 s fallback poll would start fighting it
+              // during a sample run — which is exactly when these frames are arriving.
+              lastWsAt = Date.now();
+              renderExoLive(msg.payload);
+            }
+          } catch (_) {}
+        };
+      } catch (_) {
+        setTimeout(connectWs, wsRetryMs);
+        wsRetryMs = Math.min(10000, wsRetryMs * 2);
+      }
+    };
+    connectWs();
   }
 
   HUD.render = render; // for previews and tests
