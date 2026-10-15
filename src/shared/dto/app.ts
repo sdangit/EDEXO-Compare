@@ -14,14 +14,14 @@ import type { JumpTargetSource } from "./scan.js";
 /** GET /api/app/update — the running version and the newest release on GitHub. */
 export interface UpdateInfoDTO {
   current: string;
-  /** Newest published version, or null when GitHub has not answered yet. */
+  /** Newest compatible published version, or null before a check or when none is published. */
   latest: string | null;
   /** True only when `latest` is a higher version than `current`. */
   newer: boolean;
-  /** That release's page for this form of the app (single exe or zip), on github.com. */
+  /** That release's page for this platform and build, on github.com. */
   pageUrl: string | null;
   publishedAt: string | null;
-  form: "portable" | "zip" | "appimage";
+  form: "portable" | "zip" | "appimage" | "macos-app" | "macos-browser";
   /** When GitHub was last asked (ISO), null before the first try. */
   checkedAt: string | null;
   /** Why the last try failed; the last good `latest` is kept. */

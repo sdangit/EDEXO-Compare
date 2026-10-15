@@ -4,6 +4,7 @@
  * 'unsafe-inline' for scripts, takes 100 kB of parse off the HTML, and lets the HTML stay small.
  */
 (function () {
+  const isMac = window.edexoPlatform && window.edexoPlatform.platform === "darwin";
   const hudEnabled = window.edexoPlatform ? window.edexoPlatform.hud : false;
   if (!hudEnabled) {
     document.getElementById("btnOverlayMenu").remove();
@@ -552,7 +553,7 @@
   */
   function canSelfUpdate(info) {
     return Boolean(
-      info && info.newer && info.download && info.download.supported &&
+      !isMac && info && info.newer && info.download && info.download.supported &&
         window.edexoElectron && typeof window.edexoElectron.installUpdate === "function",
     );
   }
@@ -560,6 +561,7 @@
   function renderUpdateInfo(info, checking) {
     updateInfo = info;
     var cur = info && info.current ? "v" + info.current : "Version —";
+    if (isMac) cur = "macOS " + cur;
     versionLine.classList.toggle("newer", Boolean(info && info.newer));
     btnCheckUpdate.disabled = Boolean(checking);
     btnUpdatePage.hidden = !(info && info.newer && canSelfUpdate(info));
@@ -594,8 +596,10 @@
     }
     if (info && info.newer) {
       versionText.textContent = "Installed " + cur + " · v" + info.latest + " available";
-      btnCheckUpdate.textContent = "Download v" + info.latest;
-      btnCheckUpdate.title = "Opens the release page on GitHub in your browser.";
+      btnCheckUpdate.textContent = (isMac ? "Download Mac v" : "Download v") + info.latest;
+      btnCheckUpdate.title = isMac
+        ? "Opens this fork's Mac release page for manual download and installation."
+        : "Opens the release page on GitHub in your browser.";
       return;
     }
     btnCheckUpdate.textContent = "Check for updates";
@@ -604,8 +608,13 @@
       versionText.textContent = cur + " · could not check";
       versionText.title = info.error;
     } else if (info && info.latest) {
-      versionText.textContent = cur + " · up to date";
+      versionText.textContent = isMac
+        ? cur + (info.latest === info.current ? " · latest Mac release" : " · local build; latest Mac release v" + info.latest)
+        : cur + " · up to date";
       versionText.title = "";
+    } else if (isMac && info && !info.error) {
+      versionText.textContent = cur + " · no compatible Mac release published";
+      versionText.title = "Only published Mac builds in sdangit/EDEXO-Compare are offered as updates.";
     } else {
       versionText.textContent = cur;
     }
@@ -626,7 +635,7 @@
       .catch(function (e) {
         var prev = updateInfo || {};
         renderUpdateInfo(
-          { current: prev.current, latest: prev.latest, newer: prev.newer, pageUrl: prev.pageUrl, error: String(e && e.message ? e.message : e) },
+          Object.assign({}, prev, { error: String(e && e.message ? e.message : e) }),
           false,
         );
       });
@@ -820,6 +829,12 @@
     whatsNewBody.innerHTML = "";
     var rel = info.releases || [];
     whatsNewTitle.textContent = (info.pending ? "Updated to v" : "What's new in v") + info.current;
+    if (isMac) {
+      whatsNewTitle.textContent = "Upstream changes in v" + info.current;
+      var source = document.createElement("p");
+      source.textContent = "Changes from the original project through this build's base version. Some features apply only to Windows or Linux.";
+      whatsNewBody.appendChild(source);
+    }
     whatsNewPageUrl = rel.length ? rel[0].pageUrl : "https://github.com/bahuckel/EDEXO-Compare/releases";
     if (!rel.length) {
       var p = document.createElement("p");

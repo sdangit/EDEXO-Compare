@@ -54,6 +54,7 @@
     "typecheck:client": "tsc --noEmit",
     "dist:mac": "npm run build && npm run bundle && node scripts/dist-mac.mjs",
     "dist:mac:electron": "npm run build && npm run bundle && node scripts/dist-mac-electron.mjs",
+    "release:mac": "node scripts/release-mac.mjs",
     "electron:dev:mac": "npm run build && npm run bundle && electron electron/main.mac.cjs",
     "test:e2e:mac": "playwright test -c playwright.mac.config.ts",
     "test:electron:mac": "node scripts/smoke-mac-electron.mjs",

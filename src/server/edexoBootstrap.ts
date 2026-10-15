@@ -170,6 +170,7 @@ import { mySystemDetail, mySystemsDto, sessionRouteDto, visitedSystemsDto } from
 import { commanderSectorsDto } from "./galaxySectorTiers.js";
 import { runEdsmCatchUp, type EdsmCatchUpScope } from "./edsmCatchUp.js";
 import { createUpdateChecker, currentReleaseForm } from "./updateCheck.js";
+import { createMacUpdateChecker, currentMacReleaseForm } from "./macUpdateCheck.js";
 import { createAppUpdater, resolveUpdateDir } from "./appUpdater.js";
 import { createWhatsNew } from "./whatsNew.js";
 import { buildDiagnosticsText, installLogRing, loggedLines } from "./diagnostics.js";
@@ -311,15 +312,18 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   }
 
   const projectRoot = getProjectRoot();
-  const updateChecker = createUpdateChecker();
+  // Keep upstream notes for the installed base version; only fork releases offer Mac updates.
+  const upstreamUpdates = createUpdateChecker();
+  const updateChecker = process.platform === "darwin" ? createMacUpdateChecker() : upstreamUpdates;
   const appUpdater = createAppUpdater({
-    newerAsset: () => updateChecker.newerAsset(),
+    newerAsset: () => (process.platform === "darwin" ? null : upstreamUpdates.newerAsset()),
     form: currentReleaseForm(),
+    ...(process.platform === "darwin" ? { supported: false } : {}),
   });
   const whatsNew = createWhatsNew({
-    check: () => updateChecker.check(false),
-    notesBetween: (from, to) => updateChecker.notesBetween(from, to),
-    lastError: () => updateChecker.lastError(),
+    check: () => upstreamUpdates.check(false),
+    notesBetween: (from, to) => upstreamUpdates.notesBetween(from, to),
+    lastError: () => upstreamUpdates.lastError(),
   });
 
   let journalDir = resolveInitialJournalDir(projectRoot);
@@ -2212,7 +2216,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         version: APP_VERSION,
         form:
           process.env.EDEXO_ELECTRON_PACKAGED === "1"
-            ? currentReleaseForm()
+            ? process.platform === "darwin"
+              ? currentMacReleaseForm()
+              : currentReleaseForm()
             : "pkg" in process
               ? "console build"
               : "source",

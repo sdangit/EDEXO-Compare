@@ -10,6 +10,9 @@ import * as backups from "../src/server/backupService.js";
 import * as httpServer from "../src/server/httpServer.js";
 import { resolveJournalPathsPath } from "../src/server/paths.js";
 import { startEdexo, type EdexoRuntime } from "../src/server/edexoBootstrap.js";
+import { MAC_RELEASES_API } from "../src/server/macUpdateCheck.js";
+import { RELEASES_API } from "../src/server/updateCheck.js";
+import { APP_VERSION } from "../src/server/appVersion.js";
 
 let runtime: EdexoRuntime | undefined;
 let root: string | undefined;
@@ -31,6 +34,35 @@ describe("macOS bootstrap integration", () => {
     vi.stubEnv("ED_JOURNAL_DIR", journals);
     vi.stubEnv("EDEXO_USER_DATA_DIR", path.join(root, "profile"));
     vi.stubEnv("EDEXO_ELECTRON", "1"); // The desktop shell must still avoid polling.
+    vi.stubEnv("EDEXO_SELF_UPDATE", "1"); // Even an inherited flag must not enable Mac installation.
+    const originalFetch = globalThis.fetch;
+    const githubRequests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === MAC_RELEASES_API || url === RELEASES_API) {
+        githubRequests.push(url);
+        return new Response(
+          JSON.stringify(
+            url === MAC_RELEASES_API
+              ? [
+                  {
+                    tag_name: "v9.0.0-macos",
+                    assets: [
+                      { name: `EDExoCompare-9.0.0-macos-${process.arch}.zip`, state: "uploaded", size: 123 },
+                    ],
+                  },
+                ]
+              : [
+                  {
+                    tag_name: `v${APP_VERSION}-zip`,
+                    body: "<!-- whats-new -->\nUpstream changes for the installed version.\n<!-- /whats-new -->",
+                  },
+                ],
+          ),
+        );
+      }
+      return originalFetch(input, init);
+    });
     Object.defineProperty(process, "platform", { ...originalPlatform, value: "darwin" });
     const presenceSpy = vi.spyOn(presence, "createGamePresence");
     const backupSpy = vi.spyOn(backups, "createBackupService");
@@ -52,6 +84,18 @@ describe("macOS bootstrap integration", () => {
     const server = serverSpy.mock.results[0]!.value as ReturnType<typeof httpServer.createHttpServer>;
     await server.listening;
     const base = `http://127.0.0.1:${(server.server.address() as AddressInfo).port}`;
+    const update = await (await fetch(`${base}/api/app/update`)).json();
+    expect(update).toMatchObject({ newer: true, form: "macos-app", download: { supported: false } });
+    expect(update.pageUrl).toBe("https://github.com/sdangit/EDEXO-Compare/releases/tag/v9.0.0-macos");
+    expect(githubRequests).toEqual([MAC_RELEASES_API]);
+    const notes = await (await fetch(`${base}/api/app/whats-new?any=1`)).json();
+    expect(notes.releases[0]).toMatchObject({
+      version: APP_VERSION,
+      notes: "Upstream changes for the installed version.",
+    });
+    expect(githubRequests).toEqual([MAC_RELEASES_API, RELEASES_API]);
+    const download = await (await fetch(`${base}/api/app/update/download`, { method: "POST" })).json();
+    expect(download.supported).toBe(false);
     await vi.waitFor(
       async () => {
         const state = await (await fetch(`${base}/api/state`)).json();

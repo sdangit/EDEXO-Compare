@@ -1,5 +1,6 @@
 import { _electron as electron } from "@playwright/test";
-import { cpSync, mkdtempSync, mkdirSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -10,9 +11,15 @@ cpSync("tests/fixtures/journal-smoke", journals, { recursive: true });
 const env = { ...process.env, ED_JOURNAL_DIR: journals, EDEXO_USER_DATA_DIR: profile };
 // Codex and other Node hosts may set this; the release must run as a desktop app.
 delete env.ELECTRON_RUN_AS_NODE;
-const executablePath = path.resolve(
-  "dist/electron-out-mac/mac-arm64/EDExoCompare.app/Contents/MacOS/EDExoCompare",
-);
+const { version } = JSON.parse(readFileSync("package.json", "utf8"));
+const extracted = mkdtempSync(path.join(tmpdir(), "edexo Mac app release "));
+execFileSync("/usr/bin/ditto", [
+  "-x",
+  "-k",
+  path.resolve("dist/electron-out-mac", `EDExoCompare-${version}-macos-${process.arch}.zip`),
+  extracted,
+]);
+const executablePath = path.join(extracted, "EDExoCompare.app/Contents/MacOS/EDExoCompare");
 const desktop = await electron.launch({
   executablePath,
   args: ["--port", "7139"],
@@ -24,7 +31,15 @@ try {
   desktop.on("window", (window) => window.on("pageerror", (error) => errors.push(String(error))));
   launcher.on("pageerror", (error) => errors.push(String(error)));
   await launcher.waitForSelector("#main.ready");
-  assert.equal(await launcher.locator("#btnOverlayMenu, #wzOpenHud, #btnKeybinds, #keybindsModal").count(), 0);
+  const update = await launcher.evaluate(async () => (await fetch("/api/app/update")).json());
+  assert.equal(update.form, "macos-app");
+  assert.equal(update.download.supported, false);
+  if (update.pageUrl)
+    assert.ok(update.pageUrl.startsWith("https://github.com/sdangit/EDEXO-Compare/releases/tag/"));
+  assert.equal(
+    await launcher.locator("#btnOverlayMenu, #wzOpenHud, #btnKeybinds, #keybindsModal").count(),
+    0,
+  );
   const [appWindow] = await Promise.all([
     desktop.waitForEvent("window"),
     launcher.evaluate(() => globalThis.edexoElectron.openAppWindow()),

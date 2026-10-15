@@ -12,7 +12,8 @@ Made by Bahuckel (CMDR FALrenica). Not affiliated with Frontier Developments.
 This branch adds a **macOS / CrossOver port**, with browser and Electron releases
 and no HUD overlays. See [macOS setup and builds](#macos--crossover-local-port).
 The original project's download links below are upstream Windows/Linux releases;
-there is no published Mac download yet. Our integration branch is `macos`; `main`
+Mac builds, when published, are on [our fork's releases page](https://github.com/sdangit/EDEXO-Compare/releases).
+Our integration branch is `macos`; `main`
 tracks the original repository. Contributors and agents should follow
 [the branch and integration workflow](AGENTS.md).
 
@@ -343,7 +344,7 @@ both scripts accept `--arch arm64` or `--arch x64`.
 ```sh
 npm run dist:mac               # self-contained browser release for this Mac's architecture
 npm run dist:mac -- --arch x64 # optional Intel release, built on macOS
-npm run dist:mac:electron      # optional .app in dist/electron-out-mac
+npm run dist:mac:electron      # .app and release ZIP in dist/electron-out-mac
 ```
 
 The browser release is under `dist/mac/` as a folder and `.tar.gz`. It embeds Node 24;
@@ -353,9 +354,56 @@ backups are available at `http://127.0.0.1:7111/launcher.html`.
 
 The Electron release is `dist/electron-out-mac/mac-arm64/EDExoCompare.app` on
 Apple Silicon (`mac/EDExoCompare.app` for Intel). Open the `.app` to use the native
-launcher. Both releases include the web app, species data, and SQLite WASM assets.
+launcher. The same build also creates `dist/electron-out-mac/EDExoCompare-<version>-macos-<arch>.zip`
+containing the `.app`, ready for manual download; a DMG is not required. Both releases
+include the web app, species data, and SQLite WASM assets.
 The browser release uses maintained `@yao-pkg/pkg` packaging; Electron uses its
 own runtime and `electron-builder`.
+
+#### Updates and publishing a personal release
+
+The Mac launcher checks **sdangit/EDEXO-Compare**, never upstream, for application updates.
+It accepts published, non-prerelease tags named `v<version>-macos` only when they contain
+an uploaded asset for the running architecture (`arm64` or `x64`) and build:
+
+- Electron: `EDExoCompare-<version>-macos-<arch>.zip`
+- Browser: `EDExoCompare-<version>-macos-<arch>.tar.gz`
+
+Drafts, upstream tags, and releases missing the matching asset do not trigger a notification.
+Until a compatible release exists, the launcher says so instead of claiming the app is up to date.
+**Download Mac** opens that fork release page. Quit the app, extract the ZIP, and replace
+`EDExoCompare.app` in Applications; browser users replace the extracted release folder.
+The Mac port does not download or install updates itself. Settings remain in the user data folder.
+
+Keep `package.json` and `src/server/appVersion.ts` at the upstream version, with at most one
+Mac release per upstream version. Skipping upstream releases is supported. Replacing an asset
+under the same version does not generate a new update notification. **What's new** reuses
+upstream notes through the installed base version and labels them as upstream changes;
+there is no separate Mac changelog to maintain.
+
+After integrating the work into `macos`, use the release command from a clean checkout:
+
+```sh
+nvm use 24
+npm run release:mac
+```
+
+GitHub CLI (`gh`) must be installed and authenticated (`gh auth login` once); Google Chrome
+must be installed for the browser smoke test. The command reads the version automatically,
+installs the committed dependencies with `npm ci`, runs unit tests, typecheck and lint, then
+builds and smoke-tests both archives for the Mac running the command. It generates release
+notes linking to upstream changes and attaches SHA-256 checksums.
+
+After all checks pass, it pushes the tested commit to `origin/macos`, creates a **draft**
+release in this fork pinned to that exact commit, uploads the ZIP, browser archive and
+checksums, and verifies the uploaded sizes and SHA-256 digests. It prints and opens the
+GitHub draft page. Review the notes and assets, then click **Publish release** on GitHub.
+The command never publishes a release itself.
+
+A failed build or test stops before any push or upload. Rerunning the command can resume
+an interrupted draft for the same commit; it replaces only that architecture's draft assets.
+An already published version, a draft for another commit, or a conflicting tag stops the
+command without modifying the existing release. Release assets remain under `dist/`.
 
 #### Journals and settings
 
@@ -381,9 +429,8 @@ checks. Journals and `Status.json` still update the main app. Automatic departur
 backups rely on journal `Shutdown` events; crash/process-exit detection is excluded.
 The launcher can still make manual and scheduled backups.
 
-These are local test builds. Browser executables use ad-hoc signing; the Electron
-`.app` is not prepared for public distribution. Developer ID signing and notarization
-should be configured before publishing a Mac download. Existing Windows/Linux
+These personal-use builds are not notarized. Browser executables use ad-hoc signing;
+the Electron build does not require a Developer ID certificate. Existing Windows/Linux
 overlay functionality is retained for those platforms.
 
 Apple Silicon browser and packaged Electron releases have passed automated smoke
@@ -401,7 +448,7 @@ npm run lint
 npm run dist:mac
 npm run test:e2e:mac            # requires installed Google Chrome; uses synthetic journals
 npm run dist:mac:electron
-npm run test:electron:mac       # currently targets the packaged arm64 app
+npm run test:electron:mac       # extracts and launches the release ZIP for this Mac's architecture
 ```
 
 Run these checks after resolving every upstream sync. `test:mac` also runs within
@@ -418,7 +465,8 @@ The browser test extracts the archive into a temporary path with spaces and
 checks live journal updates, Status.json updates through the app WebSocket, and
 HUD omission. The Electron smoke test checks the real preload bridge, isolated
 windows, opening/reopening the main app, and clean shutdown with a temporary
-profile and synthetic journals. These automated checks do not replace live
+profile and synthetic journals, launching the app extracted from the release ZIP.
+These automated checks do not replace live
 CrossOver testing or validation on an Intel Mac.
 
 ### Windows / upstream development
