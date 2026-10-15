@@ -103,7 +103,7 @@ export async function releaseMac({
     );
     const release = pages.flat().find((release) => release.tag_name === tag);
     releaseId = release?.id;
-    return release;
+    return releaseId ? getRelease() : release;
   };
   const assertDraft = (release) => {
     if (!release) return;

@@ -47,6 +47,7 @@ function harness() {
     fail: "",
     corrupt: false,
     staleList: false,
+    cachedCommit: "",
   };
   const calls: { command: string; args: string[] }[] = [];
   const run = (command: string, args: string[]) => {
@@ -69,7 +70,11 @@ function harness() {
     }
     if (command === "gh") {
       if (args[0] === "api" && args[1]!.includes("/releases?"))
-        return JSON.stringify([state.release && !state.staleList ? [state.release] : []]);
+        return JSON.stringify([
+          state.release && !state.staleList
+            ? [{ ...state.release, target_commitish: state.cachedCommit || state.release.target_commitish }]
+            : [],
+        ]);
       if (args[0] === "api" && args[1]!.includes("/releases/")) return JSON.stringify(state.release);
       if (args[0] === "release" && args[1] === "view" && args.includes("--json"))
         return JSON.stringify({ databaseId: state.release!.id });
@@ -141,6 +146,13 @@ describe("the macOS draft release command", () => {
     expect(h.calls.some((call) => call.command === "gh" && call.args[1]?.endsWith("/releases/123"))).toBe(
       true,
     );
+  });
+
+  it("uses current draft metadata when the release list contains an old target commit", async () => {
+    const h = harness();
+    h.state.release = draft();
+    h.state.cachedCommit = "b".repeat(40);
+    await expect(h.start()).resolves.toBe(draft().html_url);
   });
 
   it.each(["published", "different commit", "prerelease"])(
