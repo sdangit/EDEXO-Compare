@@ -30,6 +30,28 @@ describe("who has logged it in the region", () => {
   });
 });
 
+describe("EDSM's four \"Bacteria …\" names (owner, 2026-10-03, Hypi Fraae RF-Q b21-2 B 4)", () => {
+  it("Tela - Orange and the other three are read as Bacterium, so a logged one is no first", () => {
+    for (const [species, colour] of [
+      ["Bacterium Tela", "Orange"],
+      ["Bacterium Acies", "Magenta"],
+      ["Bacterium Vesicula", "Orange"],
+      ["Bacterium Informem", "Lime"],
+    ]) {
+      expect(codexFirstColours(root, "Inner Orion Spur", species!, colour), `${species} - ${colour}`).toBeNull();
+    }
+    expect(codexFirstColours(root, "Inner Orion Spur", "Bacterium Tela", "Orange or Yellow")).toBeNull();
+  });
+});
+
+describe("EDSM's codex_ent_cactoid_03_a (2026-10-03, EDDN ScanOrganic test set)", () => {
+  it("is Cactoida Vermis - Green, as the game logs it, not Pullulanta", () => {
+    // EDSM's id table named it "Cactoida Pullulanta - Green"; every other _03 variant is Vermis, and
+    // the six bodies EDDN logged it on are Vermis country (thin water, rocky, ~420 K).
+    expect(codexFirstColours(root, "Inner Orion Spur", "Cactoida Vermis", "Green")).toBeNull();
+  });
+});
+
 describe("EDAstro's plants per region too (owner, 2026-10-01)", () => {
   // Stratum Paleas - Indigo is not in EDSM's Trojan Belt (the owner's own first); its id is _02_y.
   const ed = (...keys: string[]) => ({ ids: new Set(keys), fetchedAtMs: Date.parse("2026-10-01T10:00:00Z") });
@@ -74,6 +96,21 @@ describe("the notice", () => {
     expect(n.list()[0]!.text).toMatch(/nobody has logged it in Tenebrae/);
     n.setPrefs({ codexFirst: false });
     expect(n.announceCodexFirst([{ ...find, bodyKey: "5:4" }], "2026-09-30T12:02:00Z")).toBe(false);
+  });
+  it("leaves the bell when its body's candidates no longer hold it (owner, 2026-10-04)", () => {
+    // Crystalline Shards dropped from the candidates after the full system scan but stayed here.
+    const n = createNoticesService({ filePath: null });
+    const other = { ...find, bodyKey: "5:9", body: "9" };
+    n.announceCodexFirst([find, other], "2026-10-04T12:00:00Z", new Set(["5:3", "5:9"]));
+    n.markRead("all");
+    // 5:3 re-evaluated without it: withdrawn even though read; 5:9 not evaluated this time: kept.
+    expect(n.announceCodexFirst([], "2026-10-04T12:01:00Z", new Set(["5:3"]))).toBe(true);
+    expect(n.list().map((x) => x.bodyKey)).toEqual(["5:9"]);
+    // Nothing more to withdraw: no change.
+    expect(n.announceCodexFirst([], "2026-10-04T12:02:00Z", new Set(["5:3"]))).toBe(false);
+    // The candidate comes back: announced again.
+    expect(n.announceCodexFirst([find], "2026-10-04T12:03:00Z", new Set(["5:3"]))).toBe(true);
+    expect(n.list()[0]!.bodyKey).toBe("5:3");
   });
   it("is on by default, also for settings saved before it existed", () => {
     expect(DEFAULT_NOTIFY_PREFS.codexFirst).toBe(true);

@@ -1,0 +1,238 @@
+"use strict";
+
+/*
+  Tab view's windows (owner, 2026-10-06, stage 3: "drag-drop outside and inside to exclude them and
+  include them in the main window, how Chrome tabs work"). The app window ("main") and any number of
+  detached windows, each a whole app page showing its own tabs (src/client/tabs/tabStore.ts; a detached
+  window has no Main tab). Main process side:
+
+  - every window reports its tabs; the registry goes back to all of them, so opening a screen that
+    lives in another window brings that window forward instead of opening it twice;
+  - a tab dropped outside any window opens a new window there, holding it;
+  - a tab dropped on another window's strip moves there: the window it left closes it, and an empty
+    detached window closes itself;
+  - detached windows are remembered (window-state.json `tabWindows` + their bounds) and come back
+    with the app window; closing the app window closes them.
+*/
+
+const DETACHED = { w: 1180, h: 780 };
+
+/**
+ * @param {{
+ *   BrowserWindow: typeof import("electron").BrowserWindow,
+ *   ipcMain: import("electron").IpcMain,
+ *   baseUrl: () => string | null,
+ *   preloadPath: string | undefined,
+ *   partition: string,
+ *   icon: unknown,
+ *   readWindowStates: () => Record<string, unknown>,
+ *   readWindowState: (name: string) => ({ x: number, y: number, width: number, height: number, maximized: boolean } | null),
+ *   writeWindowStates: (all: Record<string, unknown>) => void,
+ *   trackWindowState: (name: string, win: import("electron").BrowserWindow) => void,
+ *   enableZoom: (win: import("electron").BrowserWindow) => void,
+ *   onExternalLink: (url: string) => void,
+ * }} d
+ */
+function createTabWindows(d) {
+  /** key → window; "main" is the app window. */
+  const windows = new Map();
+  /** key → the tab kinds it shows. */
+  const registry = new Map();
+  let seq = 0;
+  /** Tab windows, the one the commander was in last first: where the screen-tab keys go. */
+  let focusOrder = ["main"];
+  const focused = (key) => {
+    focusOrder = [key, ...focusOrder.filter((k) => k !== key)];
+  };
+  /** The app window is closing (or the app quitting): the list of detached windows is kept as it is. */
+  let frozen = false;
+
+  const live = (w) => w && !w.isDestroyed();
+  const keyOf = (wc) => {
+    for (const [k, w] of windows) if (live(w) && w.webContents === wc) return k;
+    return null;
+  };
+  function broadcast() {
+    const reg = Object.fromEntries(registry);
+    for (const w of windows.values()) if (live(w)) w.webContents.send("edexo:tab-registry", reg);
+  }
+  function remember() {
+    if (frozen) return;
+    try {
+      const all = d.readWindowStates();
+      all.tabWindows = [...windows.keys()].filter((k) => k !== "main" && live(windows.get(k)));
+      d.writeWindowStates(all);
+    } catch {
+      /* the next start opens the app window alone */
+    }
+  }
+
+  function attachMain(win) {
+    frozen = false;
+    windows.set("main", win);
+    win.on("focus", () => focused("main"));
+    win.on("close", () => {
+      frozen = true;
+    });
+    win.on("closed", () => {
+      windows.delete("main");
+      registry.delete("main");
+      // The app window is the app: its detached windows go with it (they come back with it).
+      for (const [k, w] of windows) if (k !== "main" && live(w)) w.close();
+    });
+  }
+
+  /** A detached window: `key` names its tabs' storage; `open` is the tab it is made for (a drag-out). */
+  function openDetached(key, opts = {}) {
+    const base = d.baseUrl();
+    if (!base) return null;
+    const saved = d.readWindowState(`tab:${key}`);
+    const custom = process.platform === "win32";
+    const win = new d.BrowserWindow({
+      width: saved?.width ?? DETACHED.w,
+      height: saved?.height ?? DETACHED.h,
+      ...(opts.at
+        ? { x: Math.round(opts.at.x - 120), y: Math.round(opts.at.y - 16) }
+        : saved
+          ? { x: saved.x, y: saved.y }
+          : {}),
+      minWidth: 640,
+      minHeight: 420,
+      backgroundColor: "#050507",
+      autoHideMenuBar: true,
+      title: "ED Exo Compare",
+      icon: d.icon,
+      ...(custom
+        ? {
+            titleBarStyle: "hidden",
+            titleBarOverlay: { color: "#07060a", symbolColor: "#f0a050", height: 34 },
+          }
+        : {}),
+      webPreferences: {
+        // As the app window: read beside the game, so not throttled when the game is in front.
+        backgroundThrottling: false,
+        spellcheck: false,
+        contextIsolation: true,
+        nodeIntegration: false,
+        partition: d.partition,
+        preload: d.preloadPath,
+        additionalArguments: custom ? ["--edexo-custom-titlebar"] : [],
+      },
+    });
+    windows.set(key, win);
+    if (saved?.maximized && !opts.at) win.maximize();
+    d.trackWindowState(`tab:${key}`, win);
+    d.enableZoom(win);
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//i.test(url) && !url.startsWith(`${base}/`)) d.onExternalLink(url);
+      return { action: "deny" };
+    });
+    win.on("focus", () => focused(key));
+    win.on("closed", () => {
+      focusOrder = focusOrder.filter((k) => k !== key);
+      windows.delete(key);
+      registry.delete(key);
+      broadcast();
+      remember();
+    });
+    const q = new URLSearchParams({ tabwin: key });
+    if (opts.open) q.set("open", opts.open);
+    void win.loadURL(`${base}/?${q}`);
+    remember();
+    return win;
+  }
+
+  d.ipcMain.on("edexo:tabs-report", (ev, tabs) => {
+    const k = keyOf(ev.sender);
+    if (!k || !Array.isArray(tabs)) return;
+    registry.set(
+      k,
+      tabs.filter((t) => typeof t === "string"),
+    );
+    broadcast();
+  });
+  d.ipcMain.handle("edexo:tab-registry", () => Object.fromEntries(registry));
+  // Bring the window holding a tab forward, the tab in front. False: no other window has it.
+  d.ipcMain.handle("edexo:tab-focus", (ev, kind) => {
+    const from = keyOf(ev.sender);
+    for (const [k, tabs] of registry) {
+      if (k === from || !tabs.includes(kind)) continue;
+      const w = windows.get(k);
+      if (!live(w)) continue;
+      if (w.isMinimized()) w.restore();
+      w.show();
+      w.focus();
+      w.webContents.send("edexo:tab-activate", kind);
+      return true;
+    }
+    return false;
+  });
+  // A tab dropped outside every window: a new window at the drop point holds it.
+  d.ipcMain.handle("edexo:tab-detach", (ev, req) => {
+    const from = keyOf(ev.sender);
+    if (!from || !req || typeof req.kind !== "string") return false;
+    const key = `w${Date.now().toString(36)}${(seq++).toString(36)}`;
+    const win = openDetached(key, { open: req.kind, at: { x: Number(req.x) || 0, y: Number(req.y) || 0 } });
+    if (!win) return false;
+    ev.sender.send("edexo:tab-remove", req.kind);
+    return true;
+  });
+  // A tab dropped on another window's strip: the window it came from lets go of it.
+  d.ipcMain.on("edexo:tab-moved", (ev, req) => {
+    const from = windows.get(req?.from);
+    if (live(from) && from.webContents !== ev.sender) from.webContents.send("edexo:tab-remove", req.kind);
+  });
+  /*
+    A tab is being dragged (or the drag ended): every window hears it, so its whole strip takes the drop.
+    The strip's empty part is the window's drag handle, and Windows gives a drop there to nobody — a tab
+    let go on it opened a new window (owner, 2026-10-06: "I need to drop it close to the +").
+  */
+  d.ipcMain.on("edexo:tab-dragging", (_ev, on) => {
+    for (const w of windows.values()) if (live(w)) w.webContents.send("edexo:tab-dragging", on === true);
+  });
+  // A detached window whose last tab left.
+  d.ipcMain.on("edexo:tab-window-empty", (ev) => {
+    const k = keyOf(ev.sender);
+    if (k && k !== "main") windows.get(k)?.close();
+  });
+
+  return {
+    attachMain,
+    /**
+     * A key bind's command for the app window's page (owner 2026-10-07), straight over IPC: through the
+     * server and the socket it queued behind the game-state messages the page was still reading, 2-3 s.
+     */
+    sendToMain(cmd) {
+      const w = windows.get("main");
+      if (live(w)) w.webContents.send("edexo:ui-command", cmd);
+    },
+    /**
+     * The screen-tab keys (owner, 2026-10-07/08): one key pair for every window. They go to a window
+     * with something to step to — two tabs or more, the app window's Main counting as one — and of
+     * those to the one clicked last; with no such window, to the app window.
+     */
+    sendToFocused(cmd) {
+      windows.get(this.focusedKey())?.webContents.send("edexo:ui-command", cmd);
+    },
+    /** The window the screen-tab keys act on. */
+    focusedKey() {
+      const steps = (k) => (k === "main" ? 1 : 0) + (registry.get(k)?.length ?? 0);
+      const open = [...windows.keys()].filter((k) => live(windows.get(k)));
+      const many = open.filter((k) => steps(k) >= 2);
+      if (!many.length) return "main";
+      return focusOrder.find((k) => many.includes(k)) ?? (many.includes("main") ? "main" : many[0]);
+    },
+    /** The app is quitting: keep the list of detached windows for the next start. */
+    freeze() {
+      frozen = true;
+    },
+    /** The detached windows there were last time, with the app window. */
+    restore() {
+      const keys = d.readWindowStates().tabWindows;
+      if (!Array.isArray(keys)) return;
+      for (const k of keys) if (typeof k === "string" && !windows.has(k)) openDetached(k);
+    },
+  };
+}
+
+module.exports = { createTabWindows };

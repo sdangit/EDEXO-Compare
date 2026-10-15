@@ -1,20 +1,21 @@
 import type { SystemMapBodyDetailDTO } from "@shared/types";
 import type { ReactNode } from "react";
-import { useEffect, useLayoutEffect, useRef } from "react";
-import { createPortal } from "react-dom";
+import { Popover } from "./ui/Popover";
 import { recordText, type RecordMarkDTO } from "@shared/notices";
 import { RecordMedal } from "./noticesClient";
 import { BodyFeatureLines, GreenGiantBlock } from "./GreenGiantBlock";
+import { GggLadderDrawer } from "./GggLadderDrawer";
 import { DetailCard, KvList, KvRow } from "./bodyDetailKv";
 import { nextTempUnit, usePressUnit, useTempUnit } from "./useUnits";
 import { ExoPayoutRangePanel } from "./ExoPayoutRangePanel";
 import { readableAtmosphereType } from "@shared/atmosphereLabel";
 import {
   formatPressurePill,
-  formatTemperaturePillLine,
   formatTempScalar,
   gravityFromScan,
 } from "./planetDisplayUtils";
+import { TemperatureLabel } from "./TemperatureLabel";
+import { fmtCrExact } from "@shared/format";
 
 function roleLabel(role: SystemMapBodyDetailDTO["starRole"]): string {
   if (role === "fuel") return "Fuel-scoopable star";
@@ -271,13 +272,15 @@ function WorldDetailBody({
                 title="Tap to cycle Kelvin → °C → °F (display only; matching uses journal Kelvin)."
                 onClick={() => setTempUnit(nextTempUnit)}
               >
-                {formatTemperaturePillLine(
-                  detail.surfaceTemperature != null && Number.isFinite(detail.surfaceTemperature)
-                    ? detail.surfaceTemperature
-                    : null,
-                  detail.estimatedSurfaceTempK ?? null,
-                  tempUnit,
-                )}
+                <TemperatureLabel
+                  journalK={
+                    detail.surfaceTemperature != null && Number.isFinite(detail.surfaceTemperature)
+                      ? detail.surfaceTemperature
+                      : null
+                  }
+                  est={detail.estimatedSurfaceTempK ?? null}
+                  unit={tempUnit}
+                />
               </button>
             </div>
             {detail.surfaceTemperatureRangeK ? (
@@ -347,7 +350,7 @@ function WorldDetailBody({
         >
           <span className="body-detail-callout-label">Top single-species heuristic</span>
           <span className="body-detail-callout-value">
-            {detail.maxExoHeuristicCredits.toLocaleString()} CR
+            {fmtCrExact(detail.maxExoHeuristicCredits)}
           </span>
           <p className="body-detail-callout-note dim tiny">
             Map tier hint — full range needs bio signals + list prices on candidates.
@@ -364,13 +367,13 @@ function WorldDetailBody({
             >
               <div className="body-detail-mini-card-label">FSS · discovery</div>
               <div className="body-detail-mini-card-value">
-                {detail.fssCredits != null ? `${detail.fssCredits.toLocaleString()} CR` : "—"}
+                {detail.fssCredits != null ? `${fmtCrExact(detail.fssCredits)}` : "—"}
               </div>
               {detail.fssFirstDiscoverBonus != null && detail.fssFirstDiscoverBonus > 0 ? (
                 <p className="dim tiny body-detail-mini-card-meta">
-                  + first discovery {detail.fssFirstDiscoverBonus.toLocaleString()} CR → total{" "}
+                  + first discovery {fmtCrExact(detail.fssFirstDiscoverBonus)} → total{" "}
                   {detail.fssFirstDiscoverCredits != null
-                    ? `${detail.fssFirstDiscoverCredits.toLocaleString()} CR`
+                    ? `${fmtCrExact(detail.fssFirstDiscoverCredits)}`
                     : "—"}
                 </p>
               ) : null}
@@ -384,17 +387,17 @@ function WorldDetailBody({
                 {detail.dssProjectedCredits != null
                   ? "not mapped yet"
                   : detail.dssCredits != null
-                    ? `${detail.dssCredits.toLocaleString()} CR`
+                    ? `${fmtCrExact(detail.dssCredits)}`
                     : "—"}
               </div>
               {detail.dssVersusFssUpliftCredits != null && detail.dssVersusFssUpliftCredits > 0 ? (
                 <p className="dim tiny body-detail-mini-card-meta">
-                  Uplift vs FSS: +{detail.dssVersusFssUpliftCredits.toLocaleString()} CR
+                  Uplift vs FSS: +{fmtCrExact(detail.dssVersusFssUpliftCredits)}
                 </p>
               ) : null}
               {detail.dssProjectedCredits != null ? (
                 <p className="dim tiny body-detail-mini-card-meta">
-                  If DSS completed (est.): ~{detail.dssProjectedCredits.toLocaleString()} CR
+                  If DSS completed (est.): ~{fmtCrExact(detail.dssProjectedCredits)}
                 </p>
               ) : null}
               {detail.dssProbeEfficientApplied === true ? (
@@ -404,9 +407,9 @@ function WorldDetailBody({
               ) : null}
               {detail.dssFirstDiscoverBonus != null && detail.dssFirstDiscoverBonus > 0 ? (
                 <p className="dim tiny body-detail-mini-card-meta">
-                  + first disc. &amp; map {detail.dssFirstDiscoverBonus.toLocaleString()} CR → total{" "}
+                  + first disc. &amp; map {fmtCrExact(detail.dssFirstDiscoverBonus)} → total{" "}
                   {detail.dssFirstDiscoverCredits != null
-                    ? `${detail.dssFirstDiscoverCredits.toLocaleString()} CR`
+                    ? `${fmtCrExact(detail.dssFirstDiscoverCredits)}`
                     : "—"}
                 </p>
               ) : null}
@@ -466,7 +469,18 @@ function ScanMapValues({ detail }: { detail: SystemMapBodyDetailDTO }) {
     >
       <div className="body-value-line">
         <dt>Scan value</dt>
-        <dd>{detail.fssCredits.toLocaleString()} CR</dd>
+        <dd>
+          <span className="body-value-num">{fmtCrExact(detail.fssCredits)}</span>
+          {/* The arrival star carries the honk, as the game's map shows it (explorationValue.ts). */}
+          {detail.honkCredits ? (
+            <span
+              className="body-value-note"
+              title="The discovery scan's share: a third of every other scanned body's value, paid with the system"
+            >
+              incl. honk {fmtCrExact(detail.honkCredits)}
+            </span>
+          ) : null}
+        </dd>
       </div>
       {map != null ? (
         <div className={`body-value-line${mapped ? " body-value-line--done" : ""}`}>
@@ -474,7 +488,7 @@ function ScanMapValues({ detail }: { detail: SystemMapBodyDetailDTO }) {
           <dd>
             <span className="body-value-num">
               {mapped ? "" : "~"}
-              {map.toLocaleString()} CR
+              {fmtCrExact(map)}
             </span>
             <span className="body-value-note">{mapped ? "✓ mapped" : "not mapped yet"}</span>
           </dd>
@@ -519,6 +533,7 @@ export function DetailBody({
         </div>
       ) : null}
       <GreenGiantBlock detail={detail} />
+      <GggLadderDrawer detail={detail} />
       <BodyFeatureLines detail={detail} />
       <ScanMapValues detail={detail} />
 
@@ -555,54 +570,29 @@ export function PlanetQuickFactsPopup({
   onGoToBioBody?: (bodyKey: string) => void;
   pos: { left: number; top: number };
 }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const pad = 8;
-    const r = el.getBoundingClientRect();
-    let left = pos.left + 12;
-    let top = pos.top + 12;
-    if (left + r.width > window.innerWidth - pad) left = window.innerWidth - r.width - pad;
-    if (top + r.height > window.innerHeight - pad) top = window.innerHeight - r.height - pad;
-    if (left < pad) left = pad;
-    if (top < pad) top = pad;
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
-  }, [pos, bodyId, detail?.bodyId]);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const onDoc = (ev: MouseEvent) => {
-      if (ev.target instanceof Node && el.contains(ev.target)) return;
-      onClose();
-    };
-    // Escape closes the popup alone, not a window it was opened over.
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      ev.stopPropagation();
-      onClose();
-    };
-    const t = window.setTimeout(() => document.addEventListener("mousedown", onDoc), 80);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      window.clearTimeout(t);
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey, true);
-    };
-  }, [onClose, bodyId]);
-
   const aria = detail?.bodyName ?? fallbackTitle;
 
-  return createPortal(
-    <div
-      ref={ref}
+  /*
+    Opened at the click by ui/Popover (plan 3.3, 2026-10-12), 12 px right of and below it as before.
+    Beside the point (side right), so a popup taller than the room below slides up to stay in the
+    window, and near the right edge it goes to the click's left rather than over it. Focus goes in and
+    back to the strip entry that opened it; Escape, a click outside or focus leaving closes it (Escape
+    the popup alone, not a window it was opened over).
+  */
+  return (
+    <Popover
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+      at={pos}
+      label={`Quick facts: ${aria}`}
       className="system-map-popup card-neon planet-quick-popup"
-      role="dialog"
-      aria-label={`Quick facts: ${aria}`}
-      onClick={(ev) => ev.stopPropagation()}
+      portal
+      contained
+      side="right"
+      sideOffset={12}
+      alignOffset={12}
     >
       <button
         type="button"
@@ -634,7 +624,6 @@ export function PlanetQuickFactsPopup({
           </DetailCard>
         </div>
       )}
-    </div>,
-    document.body,
+    </Popover>
   );
 }

@@ -80,8 +80,11 @@ describe("the verdict", () => {
 
   it("possible for any gas giant of a green class in a K10 system; never for other classes", () => {
     expect(classifyGreenGiant({ planetClass: C1, surfaceTemperatureK: 99, k10InSystem: true })?.level).toBe("possible");
-    expect(classifyGreenGiant({ planetClass: "Sudarsky class V gas giant", surfaceTemperatureK: 1500, k10InSystem: true })).toBeNull();
-    expect(classifyGreenGiant({ planetClass: "Helium rich gas giant", surfaceTemperatureK: 130, codex: true })).toBeNull();
+    // Class V and helium giants: his cloud ladder covers them (2026-10-07), none found green yet.
+    expect(classifyGreenGiant({ planetClass: "Sudarsky class V gas giant", surfaceTemperatureK: 1500, k10InSystem: true })?.level).toBe(
+      "possible",
+    );
+    expect(isGggClass("Helium rich gas giant")).toBe(true);
     expect(classifyGreenGiant({ planetClass: "Icy body", surfaceTemperatureK: 130 })).toBeNull();
   });
 
@@ -153,6 +156,19 @@ describe("notices", () => {
 
   it("a candidate scan, a codex confirmation and a K10 anomaly each come to the mail icon", () => {
     const n = createNoticesService({ filePath: null });
+    // The codex line comes just before its body's scan, and names the ship's body (the star), not the giant.
+    n.observe(
+      {
+        timestamp: "2026-09-30T12:00:00Z",
+        event: "CodexEntry",
+        Name: "$Codex_Ent_Green_Sudarsky_Class_III_Name;",
+        System: "Gree",
+        SystemAddress: ADDR,
+        BodyID: 0,
+        IsNewEntry: true,
+      },
+      ctx(),
+    );
     n.observe(
       {
         timestamp: "2026-09-30T12:00:00Z",
@@ -169,18 +185,6 @@ describe("notices", () => {
     );
     n.observe(
       {
-        timestamp: "2026-09-30T12:01:00Z",
-        event: "CodexEntry",
-        Name: "$Codex_Ent_Green_Sudarsky_Class_III_Name;",
-        System: "Gree",
-        SystemAddress: ADDR,
-        BodyID: 7,
-        IsNewEntry: true,
-      },
-      ctx(),
-    );
-    n.observe(
-      {
         timestamp: "2026-09-30T12:02:00Z",
         event: "CodexEntry",
         Name: "$Codex_Ent_L_Phn_Part_Cld_011_Name;",
@@ -191,7 +195,7 @@ describe("notices", () => {
       ctx(),
     );
     const titles = n.list().map((x) => x.title);
-    expect(titles).toContain("Green gas giant (likely)");
+    expect(titles.some((t) => /^Green gas giant \(likely, \d\.\d\/5\)$/.test(t))).toBe(true);
     expect(titles).toContain("Green gas giant — confirmed by the codex");
     expect(titles).toContain("K10-Type Anomaly — a green gas giant is likely here");
     expect(n.list().find((x) => x.id === `ggg-codex:${ADDR}:7`)).toMatchObject({ body: "7", codexNew: true });
@@ -213,6 +217,7 @@ describe("the store", () => {
     const { GameStateStore } = await import("../src/server/gameState.js");
     const a = new GameStateStore();
     const t = "2026-09-30T12:00:00Z";
+    // As the journal has it: the codex line names the ship's body (0), the giant's scan follows.
     a.apply({
       timestamp: t,
       event: "CodexEntry",
@@ -220,7 +225,18 @@ describe("the store", () => {
       Region_Localised: "Inner Orion Spur",
       System: "Gree",
       SystemAddress: 42,
+      BodyID: 0,
+    } as never);
+    a.apply({
+      timestamp: t,
+      event: "Scan",
+      ScanType: "Detailed",
+      StarSystem: "Gree",
+      SystemAddress: 42,
       BodyID: 7,
+      BodyName: "Gree 7",
+      PlanetClass: "Sudarsky class II gas giant",
+      SurfaceTemperature: 217.84,
     } as never);
     a.apply({ timestamp: t, event: "CodexEntry", Name: "$Codex_Ent_L_Phn_Part_Cld_011_Name;", System: "Gree", SystemAddress: 42, BodyID: 1 } as never);
     a.mergeExplorationScan(
@@ -241,6 +257,7 @@ describe("the store", () => {
       t,
     );
     expect(a.greenCodexBodies.get("42:7")).toBe("codex_ent_green_sudarsky_class_ii");
+    expect(a.greenCodexBodies.has("42:0")).toBe(false);
     expect(a.k10Systems.has(42)).toBe(true);
     const b = new GameStateStore();
     expect(b.hydrateJournalMergePayload(a.serializeJournalMergePayload())).toBe(true);
@@ -325,5 +342,103 @@ describe("My discoveries", () => {
     expect(by.get("55:2")).toMatchObject({ greenGiant: { level: "confirmed" }, greenMark: "yes" });
     expect(by.get("55:3")!.greenGiant).toBeNull();
     expect("greenMark" in by.get("55:3")!).toBe(false);
+  });
+});
+
+describe("the cloud ladder (shared/gggLadder.ts)", () => {
+  const WATER = "Gas giant with water based life";
+  const C4 = "Sudarsky class IV gas giant";
+  // Pheia Aewsy LV-Y d11 B 4 (catalogue #26), its Spansh values, under no name: the ladder alone finds it.
+  const pheia = { planetClass: C1, surfaceTemperatureK: 126.062111, massEM: 212.034698, radiusM: 67972136 };
+
+  it("likely when a cloud layer lands on a colour border at the scanned density", () => {
+    const v = classifyGreenGiant(pheia);
+    expect(v).toMatchObject({ level: "likely" });
+    expect(v!.why).toMatch(/temperature and density cloud layer 6 of 7 lands on the 250 K colour border/);
+    // The same body is catalogued by its name, and the catalogue wins.
+    expect(classifyGreenGiant({ ...pheia, bodyName: "Pheia Aewsy LV-Y d11 B 4" })?.level).toBe("catalogued");
+    // A float step away from that temperature, no layer is on a border.
+    expect(classifyGreenGiant({ ...pheia, surfaceTemperatureK: 126.0622 })).toBeNull();
+  });
+
+  it("likely at an always-green temperature with the clouds at their ceiling, possible without a mass", () => {
+    // Class IV 1149.999878 K (on his always-green table): dense enough for the ceiling.
+    const iv = { planetClass: C4, surfaceTemperatureK: 1149.999878, massEM: 3089.6, radiusM: 7e7 };
+    expect(classifyGreenGiant(iv)).toMatchObject({ level: "likely" });
+    expect(classifyGreenGiant(iv)!.why).toMatch(/at this temperature cloud layer 6 of 7 lands on the 1400 K/);
+    // Without a mass it is still likely there, as a temperature two catalogued class IV GGGs share …
+    expect(classifyGreenGiant({ ...iv, massEM: null, radiusM: null })).toMatchObject({ level: "likely" });
+    // … but where only the ladder speaks, it can only be possible.
+    const water = { planetClass: WATER, surfaceTemperatureK: 217.500015, massEM: 3000, radiusM: 7e7 };
+    expect(classifyGreenGiant(water)?.level).toBe("likely");
+    expect(classifyGreenGiant({ ...water, massEM: null, radiusM: null })).toMatchObject({ level: "possible" });
+    // The commander's "not green" silences it.
+    expect(classifyGreenGiant({ ...iv, mark: "no" })).toBeNull();
+  });
+
+  it("no answer for a whole-kelvin temperature (rounded by EDSM and Spansh), nor in a nudge range", () => {
+    expect(classifyGreenGiant({ planetClass: WATER, surfaceTemperatureK: 242, massEM: 3000, radiusM: 7e7 })).toBeNull();
+    expect(classifyGreenGiant({ planetClass: WATER, surfaceTemperatureK: 242.000015, massEM: 3000, radiusM: 7e7 })?.level).toBe(
+      "likely",
+    );
+    // Class I 80–113 K: the shown temperature is not the ladder's (ten catalogued greens there miss).
+    expect(classifyGreenGiant({ planetClass: C1, surfaceTemperatureK: 102.212288, massEM: 300, radiusM: 7e7 })).toBeNull();
+  });
+
+  it("scores a guess 1–5 in tenths: the strongest sign, a quarter more for each other one", () => {
+    const score = (i: Parameters<typeof classifyGreenGiant>[0]) => classifyGreenGiant(i)?.score;
+    // Density-decided, exact: 4.7.
+    expect(score(pheia)).toBe(4.7);
+    expect(greenGiantLabel(classifyGreenGiant(pheia)!)).toBe("Green gas giant (likely, 4.7/5)");
+    // Temperature alone, on his tables: 5, and agreement never goes past 5.
+    const water = { planetClass: WATER, surfaceTemperatureK: 217.500015, massEM: 3000, radiusM: 7e7 };
+    expect(score(water)).toBe(5);
+    expect(score({ ...water, k10InSystem: true })).toBe(5);
+    // Without a mass: 2.5, possible.
+    expect(classifyGreenGiant({ ...water, massEM: null, radiusM: null })).toMatchObject({ level: "possible", score: 2.5 });
+    // 176.666626 K misses 270 K by a float step (his tables): the temperature the catalogue's 176.667 K
+    // greens share is left, and the ladder's no drops it to 1.5.
+    const off = classifyGreenGiant({ ...water, surfaceTemperatureK: 176.666626 })!;
+    expect(off).toMatchObject({ level: "possible", score: 1.5 });
+    // In his "maybe" nudge range half a point less (Vegnao PA-S c6-43 3, catalogue #38, under no name).
+    const vegnao = { planetClass: C1, surfaceTemperatureK: 113.841248, massEM: 306.238953, radiusM: 72_590_296 };
+    expect(classifyGreenGiant(vegnao)).toMatchObject({ level: "likely", score: 4.2 });
+    expect(classifyGreenGiant(vegnao)!.why).toMatch(/holds if the random nudge left it alone\)$/);
+    // A shared temperature the ladder rejects at its density drops to 1.5.
+    const thin = classifyGreenGiant({ planetClass: WATER, surfaceTemperatureK: 176.666687, massEM: 1, radiusM: 3.05e7 })!;
+    expect(thin).toMatchObject({ level: "possible", score: 1.5 });
+    expect(thin.why).toMatch(/but at its density no cloud layer lands on a colour border/);
+    // One float step off a border that the scan's rounding can close (Synookio EI-J d9-1 7, catalogue
+    // #19, under no name), in the maybe nudge range: 4.5 − 0.5, likely.
+    const near = { planetClass: C1, surfaceTemperatureK: 119.986717, massEM: 21.216078, radiusM: 20_795_606 };
+    expect(classifyGreenGiant(near)).toMatchObject({ level: "likely", score: 4 });
+    expect(classifyGreenGiant(near)!.why).toMatch(/within 1 float step, which the scan's rounding of mass and radius can close \(cloud ladder; holds if/);
+    // One the rounding cannot close (Leami SL-W c18-375 8, 0.5 float steps short; not green by his tool): no sign.
+    expect(
+      classifyGreenGiant({ planetClass: "Gas giant with ammonia based life", surfaceTemperatureK: 119.724983, massEM: 346.083435, radiusM: 70_950_224 }),
+    ).toBeNull();
+    // EDAstro: 1 + 3.5 / bodies of the class there; K10 alone 1.5.
+    expect(score({ planetClass: C1, surfaceTemperatureK: 150, edastroReport: "only" })).toBe(4.5);
+    expect(score({ planetClass: C1, surfaceTemperatureK: 150, edastroReport: "shared", edastroCandidates: 3 })).toBe(2.2);
+    expect(score({ planetClass: C1, surfaceTemperatureK: 150, k10InSystem: true })).toBe(1.5);
+    // Confirmed and catalogued are not guesses: no score.
+    expect(classifyGreenGiant({ ...pheia, codex: true })?.score).toBeUndefined();
+    expect(classifyGreenGiant({ ...pheia, bodyName: "Pheia Aewsy LV-Y d11 B 4" })?.score).toBeUndefined();
+  });
+
+  it("is passed the scan's mass and radius by the server", () => {
+    const v = greenGiantForRecord(
+      {
+        systemAddress: 1,
+        bodyId: 4,
+        bodyName: "Somewhere 4",
+        planetClass: C1,
+        surfaceTemperature: pheia.surfaceTemperatureK,
+        massEM: pheia.massEM,
+        radius: pheia.radiusM,
+      },
+      { greenCodexBodies: new Map(), k10Systems: new Set(), marks: { get: () => null } },
+    );
+    expect(v?.level).toBe("likely");
   });
 });

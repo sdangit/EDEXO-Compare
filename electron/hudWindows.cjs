@@ -12,6 +12,7 @@
 */
 const path = require("path");
 const fs = require("fs");
+const { writeFileAtomic } = require("./atomicWrite.cjs");
 
 const MAX_HUD_OVERLAYS = 8; // was 3; the owner wants every HUD selectable at once
 const HUD_STACK_GAP = 6;
@@ -94,6 +95,11 @@ function createHudWindows(deps) {
 
   /** @type {{ win: Electron.BrowserWindow, pathname: string }[]} */
   let hudOverlayStack = [];
+  /*
+    Set when the app quits (`dispose`). A HUD still loading then, or one a restore loop asks for
+    after it, used to be created anyway and outlive the rest (review O-18).
+  */
+  let disposed = false;
 
   /*
     Where the stack lives and in what order — the owner's choice, remembered across launches in
@@ -112,6 +118,8 @@ function createHudWindows(deps) {
     follow a drag; never saved, and it shows the HUDs whatever hides them.
   */
   let moving = false;
+  /** The app icon the HUD windows were opened with, for the ones placing makes again. */
+  let lastIcon = null;
   /** The drag in progress: the cursor and the stack's top-left when it started. */
   let drag = null;
   /*
@@ -144,6 +152,13 @@ function createHudWindows(deps) {
     comes back on its own the moment its page has something again.
   */
   const isIdle = (s) => s.idle === true;
+  /*
+    Out of the stack and hidden: an idle window, except while placing (owner, 2026-10-05: "sometimes I
+    am unable to move it unless I split it to different windows and then merge it again"). Placing
+    shows every HUD, idle ones too — an idle stack left nothing on screen to grab, and only a split
+    made fresh windows that showed until their pages reported idle again.
+  */
+  const outOfStack = (s) => !moving && isIdle(s);
   /*
     What the HUD windows did and why, one line each, in hud-events.log beside the layout file (owner,
     2026-10-02: "the HUD still appears-disappears every ~4 sec", which nothing here does on a timer).
@@ -234,6 +249,12 @@ function createHudWindows(deps) {
   function destroyAllHudOverlays() {
     for (const s of hudOverlayStack) destroyHudWindow(s.win);
     hudOverlayStack = [];
+  }
+
+  /** Quitting: every HUD goes, and none opens after this. */
+  function disposeHudOverlays() {
+    disposed = true;
+    destroyAllHudOverlays();
   }
 
   /**
@@ -347,7 +368,7 @@ function createHudWindows(deps) {
       // the commander deciding he wants no HUDs, and forgetting on every quit is how the hotkey ended
       // up with nothing to show.
       if (open.length) hudRememberedOpen = open;
-      fs.writeFileSync(
+      writeFileAtomic(
         hudLayoutPath(),
         JSON.stringify({
           ...hudLayout,
@@ -456,6 +477,14 @@ function createHudWindows(deps) {
           return;
         }
       }
+      /*
+        Click-through again after every show (owner, 2026-10-05: a HUD that would not move until it
+        was split and merged). After the hide / show of each trip away from the game, the window took
+        the clicks on placing — they went to the game behind it (hud-events.log: the game came to the
+        front each time) — while a freshly made window did not. The flag is set again here, in the
+        state the moment wants, rather than trusted to survive the hide.
+      */
+      setClickThrough(win, !moving);
     }
     // `screen-saver` is the highest level Electron offers; `floating` is the fallback for a platform
     // that refuses it. Re-set rather than assumed: the level travels with the assertion.
@@ -472,6 +501,14 @@ function createHudWindows(deps) {
       win.moveTop();
     } catch {
       /* ignore */
+    }
+  }
+
+  function setClickThrough(win, on) {
+    try {
+      win.setIgnoreMouseEvents(on);
+    } catch {
+      /* a window closing */
     }
   }
 
@@ -495,7 +532,7 @@ function createHudWindows(deps) {
         stopKeepingHudsOnTop();
         return;
       }
-      for (const s of live) if (!isIdle(s)) raiseHudWindow(s.win);
+      for (const s of live) if (!outOfStack(s)) raiseHudWindow(s.win);
     }, HUD_KEEP_ON_TOP_MS);
     if (typeof hudKeepOnTopTimer.unref === "function") hudKeepOnTopTimer.unref();
   }
@@ -506,7 +543,7 @@ function createHudWindows(deps) {
     // Coming back to the game raises them through applyAway already; once is enough.
     if (Date.now() - raisedAt < 400) return;
     raisedAt = Date.now();
-    for (const s of hudOverlayStack) if (s.win && !s.win.isDestroyed() && !isIdle(s)) raiseHudWindow(s.win);
+    for (const s of hudOverlayStack) if (s.win && !s.win.isDestroyed() && !outOfStack(s)) raiseHudWindow(s.win);
   }
   function stopKeepingHudsOnTop() {
     if (!hudKeepOnTopTimer) return;
@@ -546,6 +583,34 @@ function createHudWindows(deps) {
    * Whatever it ends up as, the caller spaces the next window by the larger of the two, so a window
    * that came out taller still never covers the one below it.
    */
+  /*
+    The tall HUD on a 125 % screen (a user's report via the owner, 2026-10-03: screens at 125 % and
+    100 %, the HUD fine on a 100 % one and tall once dragged to the 125 % one). Windows resizes a
+    window that lands on a monitor of another scaling *after* setBounds returns (WM_DPICHANGED), so the
+    check just below sees the size it asked for and the window grows a moment later, for good. Look
+    again once that has had time to arrive, and put it back; twice at most, so a monitor that never
+    takes the size cannot start a loop.
+  */
+  const settleTimers = new WeakMap();
+  function settleLater(win, rect, tries = 2) {
+    const prev = settleTimers.get(win);
+    if (prev) clearTimeout(prev);
+    const t = setTimeout(() => {
+      settleTimers.delete(win);
+      try {
+        if (!win || win.isDestroyed()) return;
+        const b = win.getBounds();
+        if (Math.abs(b.width - rect.width) <= 2 && Math.abs(b.height - rect.height) <= 2) return;
+        hudLog(`settle: ${b.width}x${b.height} back to ${rect.width}x${rect.height}`);
+        win.setBounds({ ...rect, animate: false });
+        if (tries > 1) settleLater(win, rect, tries - 1);
+      } catch {
+        /* a window going away */
+      }
+    }, 120);
+    settleTimers.set(win, t);
+  }
+
   function placeWindow(win, rect) {
     // Already there: no setBounds, which repaints a transparent window over the game even when it
     // changes nothing (the blinks on coming back to the game, 2026-10-02).
@@ -566,7 +631,61 @@ function createHudWindows(deps) {
     } catch {
       /* a window going away */
     }
+    settleLater(win, rect);
     return Math.max(rect.height, actual);
+  }
+
+  /*
+    A stack taller than its screen goes on in a second column beside the first (owner, 2026-10-04: on a
+    125 % screen every panel is a quarter taller, the stack ran past the bottom and the windows down
+    there were pushed up over the ones above). Each column holds what fits in `room`; a window taller
+    than that gets a column to itself. Returns the indexes, column by column.
+  */
+  function splitIntoColumns(heights, room) {
+    const cols = [];
+    let col = [];
+    let used = 0;
+    heights.forEach((h, i) => {
+      if (h == null) return;
+      const need = (col.length ? HUD_STACK_GAP : 0) + h;
+      if (col.length && used + need > room) {
+        cols.push(col);
+        col = [];
+        used = 0;
+      }
+      used += (col.length ? HUD_STACK_GAP : 0) + h;
+      col.push(i);
+    });
+    if (col.length) cols.push(col);
+    return cols;
+  }
+  /** The x of column `c`: the next one goes inwards, away from the screen edge it started at. */
+  function columnX(x0, c, w, area, leftwards) {
+    const step = (w + HUD_STACK_GAP) * c * (leftwards ? -1 : 1);
+    return Math.max(area.x, Math.min(x0 + step, area.x + area.width - w));
+  }
+  let lastPlacementLog = "";
+  /** One hud-events.log line per new arrangement: the screen, its scaling, and each window asked vs got. */
+  function logPlacement(area, ordered) {
+    let scale = "?";
+    try {
+      const d = screen.getDisplayNearestPoint({ x: area.x + 1, y: area.y + 1 });
+      if (d && d.scaleFactor) scale = d.scaleFactor;
+    } catch {
+      /* the log is a bystander */
+    }
+    const parts = ordered.map((s) => {
+      try {
+        const b = s.win.getBounds();
+        return `${slotName(s.win)} ${b.x},${b.y} ${b.width}x${b.height} (asked h ${slotHeight(s)})`;
+      } catch {
+        return "?";
+      }
+    });
+    const line = `layout on ${area.x},${area.y} ${area.width}x${area.height} @${scale}: ${parts.join(" | ")}`;
+    if (line === lastPlacementLog) return;
+    lastPlacementLog = line;
+    hudLog(line);
   }
 
   function orderedStack() {
@@ -576,7 +695,7 @@ function createHudWindows(deps) {
       return i < 0 ? 1000 + hudOverlayStack.indexOf(s) : i;
     };
     const ordered = hudOverlayStack
-      .filter((s) => !isIdle(s))
+      .filter((s) => !outOfStack(s))
       .sort((a, b) => rank(a) - rank(b));
     const w = Math.round((Math.max(0, ...hudOverlayStack.map((s) => s.width || 0)) || 404) * hudScale);
     return { ordered, w };
@@ -619,21 +738,25 @@ function createHudWindows(deps) {
       const h = slotHeight(s);
       return h == null ? null : Math.min(h, area.height);
     });
-    const total = sizes.reduce((a, h) => a + (h ?? 0), 0) + HUD_STACK_GAP * Math.max(0, ordered.length - 1);
     const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-    const x = fit(f.x, area.x, Math.max(area.x, area.x + area.width - w));
-    let y = fit(f.bottom ? f.y - total : f.y, area.y, Math.max(area.y, area.y + area.height - total));
-    ordered.forEach((slot, i) => {
-      const h = sizes[i];
-      if (h == null) return;
-      let used = h;
-      try {
-        used = placeWindow(slot.win, { x, y, width: w, height: h });
-      } catch {
-        /* ignore */
+    const x0 = fit(f.x, area.x, Math.max(area.x, area.x + area.width - w));
+    // A second column goes right, unless there is no room for it there.
+    const leftwards = x0 + 2 * w + HUD_STACK_GAP > area.x + area.width;
+    splitIntoColumns(sizes, area.height).forEach((col, c) => {
+      const total = col.reduce((a, i) => a + sizes[i], 0) + HUD_STACK_GAP * Math.max(0, col.length - 1);
+      const x = columnX(x0, c, w, area, leftwards);
+      let y = fit(f.bottom ? f.y - total : f.y, area.y, Math.max(area.y, area.y + area.height - total));
+      for (const i of col) {
+        let used = sizes[i];
+        try {
+          used = placeWindow(ordered[i].win, { x, y, width: w, height: sizes[i] });
+        } catch {
+          /* ignore */
+        }
+        y += used + HUD_STACK_GAP;
       }
-      y += used + HUD_STACK_GAP;
     });
+    if (!drag) logPlacement(area, ordered);
   }
 
   /**
@@ -646,13 +769,12 @@ function createHudWindows(deps) {
     hudLog(`placing ${next ? "on" : "off"}`);
     moving = next;
     drag = null;
+    if (moving) void renewForPlacing();
     for (const s of hudOverlayStack) {
       if (!s.win || s.win.isDestroyed()) continue;
-      try {
-        s.win.setIgnoreMouseEvents(!moving);
-      } catch {
-        /* ignore */
-      }
+      // Through both states, so the window's style is written again even if it already "was" this.
+      if (moving) setClickThrough(s.win, true);
+      setClickThrough(s.win, !moving);
       try {
         s.win.webContents.send("edexo:hud-move-mode", { on: moving });
       } catch {
@@ -661,6 +783,60 @@ function createHudWindows(deps) {
     }
     applyAway();
     return moving;
+  }
+
+  /**
+   * Placing gets fresh windows (owner, 2026-10-05: the HUD would not move "unless I split it to
+   * different windows and then merge it again"). hud-events.log, every time: placing on, the page's
+   * frame up, the mouse over it — and no press ever arriving from a window made before placing, while
+   * one made during placing (what un-merging and merging back gives) took the drag at once. So each
+   * HUD window is made again, in placing state, and swapped in for the old one when its page has
+   * loaded; the old one goes.
+   */
+  let renewing = false;
+  async function renewForPlacing() {
+    const rt = deps.getRuntime();
+    if (renewing || disposed || !rt) return;
+    renewing = true;
+    try {
+      const slots = hudOverlayStack.filter((s) => s.win && !s.win.isDestroyed());
+      await Promise.all(
+        slots.map(async (slot) => {
+          const old = slot.win;
+          const fresh = createHudOverlayWindow(slot.width || 404, slot.height || 330, lastIcon);
+          try {
+            await loadHudUrlWithRetry(fresh, `${rt.getLocalBaseUrl()}${slot.pathname}`);
+          } catch {
+            destroyHudWindow(fresh);
+            return;
+          }
+          // Placing ended, the app is closing, or the slot changed while it loaded: keep the old one.
+          if (!moving || disposed || slot.win !== old || !hudOverlayStack.includes(slot)) {
+            destroyHudWindow(fresh);
+            return;
+          }
+          try {
+            fresh.setBounds(old.getBounds());
+          } catch {
+            /* the relayout below places it */
+          }
+          slot.win = fresh;
+          destroyHudWindow(old);
+          // Its load already did both (did-finish-load); said again, the page ignores a second "on".
+          setClickThrough(fresh, false);
+          try {
+            fresh.webContents.send("edexo:hud-move-mode", { on: true });
+          } catch {
+            /* closing */
+          }
+          hudLog(`renewed ${slot.pathname} for placing`);
+        }),
+      );
+      relayoutHudStack();
+      applyAway();
+    } finally {
+      renewing = false;
+    }
   }
 
   /**
@@ -673,6 +849,8 @@ function createHudWindows(deps) {
   function dragFromPage(win, phase) {
     if (phase !== "move") hudLog(`drag ${phase}${moving ? "" : " (not placing)"}${hudOverlayStack.some((s) => s.win === win) ? "" : " (not a HUD window)"}`);
     if (!moving || !hudOverlayStack.some((s) => s.win === win)) return { ok: false };
+    // Log only: the page's frame is up, the mouse reached it (the line above wrote it).
+    if (phase === "frame" || phase === "hover") return { ok: true };
     if (phase === "done") {
       setMoveMode(false);
       deps.onChange();
@@ -761,13 +939,12 @@ function createHudWindows(deps) {
       return i < 0 ? 1000 + hudOverlayStack.indexOf(s) : i;
     };
     const ordered = hudOverlayStack
-      .filter((s) => !isIdle(s))
+      .filter((s) => !outOfStack(s))
       .sort((a, b) => rank(a) - rank(b));
     const w = Math.round((Math.max(0, ...hudOverlayStack.map((s) => s.width || 0)) || 404) * hudScale);
     const atBottom = hudLayout.corner.startsWith("b");
     const atRight = hudLayout.corner.endsWith("r");
     const x = atRight ? Math.floor(wa.x + wa.width - margin - w) : wa.x + margin;
-    let y = atBottom ? wa.y + wa.height - margin : wa.y + margin;
     /*
       Clamped into the work area, always.
 
@@ -777,24 +954,32 @@ function createHudWindows(deps) {
       shrank under it, which is the failure this clamp exists for: see the display listener below.
     */
     const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-    for (const slot of ordered) {
-      const full = slotHeight(slot);
-      if (full == null) continue;
-      const h = Math.min(full, wa.height);
-      if (atBottom) y -= h;
-      let used = h;
-      try {
-        used = placeWindow(slot.win, {
-          x: fit(x, wa.x, Math.max(wa.x, wa.x + wa.width - w)),
-          y: fit(y, wa.y, Math.max(wa.y, wa.y + wa.height - h)),
-          width: w,
-          height: h,
-        });
-      } catch {
-        /* ignore */
+    const sizes = ordered.map((s) => {
+      const full = slotHeight(s);
+      return full == null ? null : Math.min(full, wa.height);
+    });
+    const x0 = fit(x, wa.x, Math.max(wa.x, wa.x + wa.width - w));
+    splitIntoColumns(sizes, wa.height - 2 * margin).forEach((col, c) => {
+      const cx = columnX(x0, c, w, wa, atRight);
+      let y = atBottom ? wa.y + wa.height - margin : wa.y + margin;
+      for (const i of col) {
+        const h = sizes[i];
+        if (atBottom) y -= h;
+        let used = h;
+        try {
+          used = placeWindow(ordered[i].win, {
+            x: cx,
+            y: fit(y, wa.y, Math.max(wa.y, wa.y + wa.height - h)),
+            width: w,
+            height: h,
+          });
+        } catch {
+          /* ignore */
+        }
+        y = atBottom ? y - HUD_STACK_GAP : y + used + HUD_STACK_GAP;
       }
-      y = atBottom ? y - HUD_STACK_GAP : y + used + HUD_STACK_GAP;
-    }
+    });
+    logPlacement(wa, ordered);
   }
 
   /**
@@ -883,7 +1068,7 @@ function createHudWindows(deps) {
 
     for (const s of hudOverlayStack) {
       if (!s.win || s.win.isDestroyed()) continue;
-      if (hudHidden || isIdle(s)) {
+      if (hudHidden || outOfStack(s)) {
         hideWin(s.win);
         continue;
       }
@@ -937,7 +1122,7 @@ function createHudWindows(deps) {
     deps.onChange();
     for (const s of hudOverlayStack) {
       if (!s.win || s.win.isDestroyed()) continue;
-      if (hiddenNow() || isIdle(s)) hideWin(s.win);
+      if (hiddenNow() || outOfStack(s)) hideWin(s.win);
       else raiseHudWindow(s.win);
     }
     if (!hiddenNow()) raisedAt = Date.now();
@@ -1018,7 +1203,7 @@ function createHudWindows(deps) {
     */
     win.once("ready-to-show", () => {
       relayoutHudStack();
-      if (hiddenNow() || hudOverlayStack.some((s) => s.win === win && isIdle(s))) {
+      if (hiddenNow() || hudOverlayStack.some((s) => s.win === win && outOfStack(s))) {
         try {
           win.hide();
         } catch {
@@ -1067,19 +1252,27 @@ function createHudWindows(deps) {
    * commander in front of an error for something that had not actually gone wrong. Three attempts
    * over roughly half a second; a page that is genuinely missing still fails, just three times.
    *
+   * A load that is no longer wanted — a newer section change for the same window, or the app
+   * quitting — stops without retrying: its retry used to load the older page over the newer one
+   * (review O-18, two quick section changes).
+   *
    * @param {import("electron").BrowserWindow} win
    * @param {string} url
+   * @param {() => boolean} [wanted]
+   * @returns {Promise<boolean>} false when it stopped because it was no longer wanted
    */
-  async function loadHudUrlWithRetry(win, url) {
+  async function loadHudUrlWithRetry(win, url, wanted = () => true) {
     const ATTEMPTS = 3;
     const BACKOFF_MS = 200;
     let last;
     for (let i = 0; i < ATTEMPTS; i += 1) {
       if (win.isDestroyed()) throw last ?? new Error("Overlay window closed while loading.");
+      if (disposed || !wanted()) return false;
       try {
         await win.loadURL(url);
-        return;
+        return true;
       } catch (e) {
+        if (disposed || !wanted()) return false;
         last = e;
         if (i < ATTEMPTS - 1) {
           console.warn(`[edexo-compare] HUD overlay load attempt ${i + 1} failed, retrying:`, url, String(e));
@@ -1098,6 +1291,8 @@ function createHudWindows(deps) {
    *   no-op; set: an already-open page is pointed at the new URL (query string changes)
    */
   async function requestHudOverlaySlot(pathNorm, width, height, iconForChild, mode) {
+    if (iconForChild) lastIcon = iconForChild;
+    if (disposed) return { opened: false, paths: [], error: "The app is closing." };
     const runtime = deps.getRuntime();
     if (!runtime) return { opened: false, paths: hudPathsFiltered(), error: "Server not ready yet." };
 
@@ -1141,8 +1336,11 @@ function createHudWindows(deps) {
         slot.pathname = pathNorm;
         slot.width = Math.max(slot.width || 0, width);
         slot.height = Math.max(slot.height || 0, height);
+        // Only the newest change for this window may load or retry (review O-18).
+        const seq = (slot.loadSeq = (slot.loadSeq || 0) + 1);
         try {
-          await loadHudUrlWithRetry(slot.win, `${runtime.getLocalBaseUrl()}${pathNorm}`);
+          const done = await loadHudUrlWithRetry(slot.win, `${runtime.getLocalBaseUrl()}${pathNorm}`, () => slot.loadSeq === seq);
+          if (!done) return { opened: !disposed, paths: hudPathsFiltered() };
           relayoutHudStack();
           persistHudFile();
         } catch (e) {
@@ -1174,6 +1372,12 @@ function createHudWindows(deps) {
 
     try {
       await loadHudUrlWithRetry(win, url);
+      if (disposed) {
+        // Quitting began while it loaded: it goes with the rest.
+        destroyHudWindow(win);
+        hudOverlayStack = hudOverlayStack.filter((s) => s.win !== win);
+        return { opened: false, paths: [], error: "The app is closing." };
+      }
       relayoutHudStack();
       if (hiddenNow()) win.hide();
       persistHudFile();
@@ -1230,7 +1434,7 @@ function createHudWindows(deps) {
       if (slot && isIdle(slot) !== idle) {
         hudLog(`${idle ? "idle" : "relevant"} ${slot.pathname}`);
         slot.idle = idle;
-        if (idle) hideWin(win);
+        if (idle && !moving) hideWin(win);
         else if (!hiddenNow()) raiseHudWindow(win);
         relayoutHudStack();
         deps.onChange();
@@ -1303,6 +1507,7 @@ function createHudWindows(deps) {
     idlePaths: () => hudOverlayStack.filter((s) => s.win && !s.win.isDestroyed() && isIdle(s)).map((s) => s.pathname),
     restore: restoreHudOverlays,
     destroyAll: destroyAllHudOverlays,
+    dispose: disposeHudOverlays,
     pushPrefs,
     resizeFromPage,
     /** Where the game's window is (screen pixels), so the corner stack goes to its monitor. */

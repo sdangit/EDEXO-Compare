@@ -1,7 +1,7 @@
 import type { ExoPayoutRangeDTO } from "@shared/types";
 import { footfallCertainty, footfallValueNote, type FootfallCertainty } from "@shared/footfallValue";
 import { KvRow } from "./bodyDetailKv";
-import { fmtCrRangeExact, fmtCrRangeShort } from "./credits";
+import { fmtCrRangeExact, fmtCrRangeShort } from "@shared/format";
 
 function footfallMeta(pr: ExoPayoutRangeDTO): {
   text: string;
@@ -10,7 +10,8 @@ function footfallMeta(pr: ExoPayoutRangeDTO): {
 } {
   if (pr.commanderFirstFootfall) {
     return {
-      text: "FOOTFALL — YOUR BONUS",
+      // ⬢ first footfall (a body), ◆ first discovery (the system): one glyph each (plan V4, 2026-10-04).
+      text: "⬢ FIRST FOOTFALL — YOURS",
       tone: "yours",
       hint: "Your commander is flagged for first-footfall organic bonus here (disembark / journal).",
     };

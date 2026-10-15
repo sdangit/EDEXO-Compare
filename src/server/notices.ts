@@ -21,11 +21,15 @@
  * Kept in `edexo-notices.json` beside the user settings: the unread list, the ids already announced
  * (so the same body never comes back after being read), the records, and the settings.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import type { ExplorationScanRecord } from "../shared/types.js";
 import { BODY_FEATURES, bodyFeatures, directParent, featureRecordFromScan, inVoidCross } from "../shared/bodyFeatures.js";
+import { emptyJumpRange, fullJumpRange, jumpRangeJump } from "../shared/jumpRange.js";
+import { createGreenCodexMatcher } from "../shared/greenCodexMatch.js";
 import { greenCodexId, greenGiantLabel, isK10CodexName, type GreenGiantVerdict } from "../shared/greenGasGiant.js";
 import { carrierServiceLabel } from "../shared/carrierServices.js";
+import { bodyKey as toBodyKey } from "../shared/bodyKey.js";
+import { RECIPES, RAW_CAP, bodyJumponium, hitLabel, jumpElement, type JumpElement } from "../shared/jumponium.js";
 import {
   CARRIER_NOTICE_MIN_FROM_SOL_LY,
   DEFAULT_NOTIFY_PREFS,
@@ -41,6 +45,7 @@ import {
   type RecordMarkDTO,
   type RecordSubject,
 } from "../shared/notices.js";
+import { writeFileAtomic } from "./atomicWrite.js";
 
 type Line = Record<string, unknown>;
 
@@ -59,8 +64,10 @@ export interface NoticesContext {
   /** Every scan the commander made, for seeding the records. */
   allScans(): Iterable<ExplorationScanRecord>;
   currentSystem(): { name: string; address: number | null };
-  /** Loadout `MaxJumpRange`, the fallback until a few jumps have been flown. */
+  /** Loadout `MaxJumpRange` (an empty tank), the fallback until a few jumps have been flown. */
   loadoutJumpLy?(): number | null;
+  /** The full jump range as flown over the journals (shared/jumpRange.ts), when known. */
+  fullJumpLy?(): number | null;
   /** EDAstro POIs in the given groups within the radius, nearest first. */
   nearbyPois?(origin: Vec3, radiusLy: number, groups: readonly string[]): NearbyPoi[];
   /** EDAstro carriers within the radius, nearest first. */
@@ -70,9 +77,16 @@ export interface NoticesContext {
   /** Notable stellar phenomena (EDAstro's codex file) within the radius, by system, nearest first. */
   nearbyNsps?(origin: Vec3, radiusLy: number): NearbyNsp[];
   /** The green gas giant verdict for a body being scanned (server/greenGiants.ts). */
-  greenGiant?(rec: Pick<ExplorationScanRecord, "systemAddress" | "bodyId" | "bodyName" | "planetClass" | "surfaceTemperature">): GreenGiantVerdict | null;
+  greenGiant?(
+    rec: Pick<
+      ExplorationScanRecord,
+      "systemAddress" | "bodyId" | "bodyName" | "planetClass" | "surfaceTemperature" | "massEM" | "radius"
+    >,
+  ): GreenGiantVerdict | null;
   /** A body the store already has, by `system:body` key — a moon's parent, for the ring features. */
   scanOf?(bodyKey: string): ExplorationScanRecord | null;
+  /** Raw materials aboard (shared/jumponium.ts), null until a login line gave them. */
+  rawStock?(): Record<string, number> | null;
 }
 
 export interface CodexFirstFind {
@@ -116,10 +130,6 @@ export interface NearbyCarrier {
   services: readonly string[];
 }
 
-/** The last this many jumps make the average. */
-const JUMP_SAMPLES = 20;
-/** Fewer than this, and the loadout's range stands in. */
-const JUMP_SAMPLES_MIN = 3;
 const NEARBY_PER_JUMP = 3;
 
 const MAX_ITEMS = 200;
@@ -189,19 +199,41 @@ export interface NoticesService {
   /** Deletes the read ones. Returns how many went. */
   clearRead(): number;
   /**
-   * Candidates nobody has logged in their region ([CODEX FIRST]), from the snapshot of the system the
-   * commander is in. Each species, colour and body is announced once. True when one was added.
+   * Options → Notify me → "Send a test notice" (review F-5.10): one notice through the real list, so
+   * the commander sees (and, with the chime on, hears) what a find looks like. A newer test replaces
+   * the last one; it is never remembered as seen.
    */
-  announceCodexFirst(finds: readonly CodexFirstFind[], at: string): boolean;
+  sendTest(at: string): NoticeDTO;
+  /**
+   * An achievement step reached live (server/achievementNotices.ts): one notice per achievement and
+   * step, ever. True when it was added.
+   */
+  announceAchievement(a: { id: string; step: number; title: string; text: string }, at: string): boolean;
+  /** A gas giant to photograph for the nudge research (server/gggResearch.ts; the developer's PC only). */
+  announceGggResearch(n: { bodyKey: string; system: string; systemAddress: number; body: string; title: string; text: string }, at: string): boolean;
+  /**
+   * Candidates nobody has logged in their region ([CODEX FIRST]), from the snapshot of the system the
+   * commander is in. Each species, colour and body is announced once.
+   *
+   * The bell follows the candidate list (owner, 2026-10-04: Crystalline Shards left the candidates
+   * after a full system scan "but remain in the notices"): a [CODEX FIRST] notice for a body in
+   * `evaluated` whose candidate is no longer among `finds` is withdrawn, read or not, and may be
+   * announced again if the candidate comes back. True when the list changed.
+   */
+  announceCodexFirst(finds: readonly CodexFirstFind[], at: string, evaluated?: ReadonlySet<string>): boolean;
   snapshot(systemAddress: number | null): NoticesSnapshotDTO;
   /** Call with each live journal line **before** the store applies it. True when a notice was added. */
   observe(line: Line, ctx: NoticesContext): boolean;
   /** The store was rebuilt: seed the records again on the next scan. */
   invalidate(): void;
   /** The ship's average jump in ly: recent jumps, else the loadout's range. */
-  jumpLy(ctx: Pick<NoticesContext, "loadoutJumpLy">): number | null;
+  jumpLy(ctx: Pick<NoticesContext, "loadoutJumpLy" | "fullJumpLy">): number | null;
   /** Every type's records, the commander's and EDAstro's (Statistics → Records). */
   records(ctx: NoticesContext): RecordRowDTO[];
+}
+
+function codexFirstId(f: CodexFirstFind): string {
+  return `codexfirst:${f.bodyKey}:${f.speciesId}:${f.colours.join("+").toLowerCase()}`;
 }
 
 export function createNoticesService(opts: {
@@ -215,20 +247,24 @@ export function createNoticesService(opts: {
   let nspDrop: { systemAddress: number | null; system: string; atMs: number } | null = null;
   /** Inside the void cross after the last jump; null until the first jump of the session (which only sets it). */
   let voidInside: boolean | null = null;
-  const jumps: number[] = [];
+  /** This session's jumps, when the journals' estimate is not passed in. */
+  const jumps = emptyJumpRange();
 
-  function jumpLy(ctx: Pick<NoticesContext, "loadoutJumpLy">): number | null {
-    if (jumps.length >= JUMP_SAMPLES_MIN) return jumps.reduce((a, b) => a + b, 0) / jumps.length;
+  /*
+    How far "N jumps" reaches (owner, 2026-10-08): the full range as flown — not an average an
+    economical route drags down, not a neutron-boosted jump, not the loadout's empty-tank range
+    (shared/jumpRange.ts). The loadout's range stands in until three full-range jumps are flown.
+  */
+  function jumpLy(ctx: Pick<NoticesContext, "loadoutJumpLy" | "fullJumpLy">): number | null {
+    const flown = ctx.fullJumpLy?.() ?? fullJumpRange(jumps);
+    if (flown != null) return flown;
     const l = ctx.loadoutJumpLy?.() ?? null;
     return l != null && l > 0 ? l : null;
   }
 
   function onJump(line: Line, ctx: NoticesContext): boolean {
     const dist = num(line.JumpDist);
-    if (line.event === "FSDJump" && dist != null && dist > 0) {
-      jumps.push(dist);
-      if (jumps.length > JUMP_SAMPLES) jumps.shift();
-    }
+    if (line.event === "FSDJump" && dist != null && dist > 0) jumpRangeJump(jumps, dist, line.BoostUsed);
     const p = Array.isArray(line.StarPos) ? (line.StarPos as unknown[]) : null;
     const origin = p && p.length >= 3 && p.every((v) => typeof v === "number") ? { x: p[0] as number, y: p[1] as number, z: p[2] as number } : null;
     let voidAdded = false;
@@ -340,7 +376,7 @@ export function createNoticesService(opts: {
     if (!opts.filePath) return;
     state.seen = [...seen].slice(-MAX_SEEN);
     try {
-      writeFileSync(opts.filePath, `${JSON.stringify(state, null, 1)}\n`, "utf8");
+      writeFileAtomic(opts.filePath, `${JSON.stringify(state, null, 1)}\n`, "utf8");
     } catch {
       /* best effort: the list is a convenience, the journal is the record */
     }
@@ -389,7 +425,7 @@ export function createNoticesService(opts: {
     const addr = num(line.SystemAddress);
     const bodyId = num(line.BodyID);
     if (addr == null || bodyId == null) return false;
-    const bodyKey = `${addr}:${bodyId}`;
+    const bodyKey = toBodyKey(addr, bodyId);
     if (ctx.isKnownBody(bodyKey)) return false;
     const system = str(line.StarSystem) || ctx.currentSystem().name;
     const body = shortBodyName(str(line.BodyName), system) || `Body ${bodyId}`;
@@ -418,6 +454,8 @@ export function createNoticesService(opts: {
         bodyName: str(line.BodyName),
         planetClass: planetClass || undefined,
         surfaceTemperature: num(line.SurfaceTemperature) ?? undefined,
+        massEM: num(line.MassEM) ?? undefined,
+        radius: num(line.Radius) ?? undefined,
       });
       if (v) {
         added =
@@ -426,9 +464,47 @@ export function createNoticesService(opts: {
       }
     }
 
+    const jp = state.prefs.jumponium?.tiers ? state.prefs.jumponium : DEFAULT_NOTIFY_PREFS.jumponium;
+    if (jp.on && line.Landable === true) {
+      const bj = bodyJumponium(line.Materials);
+      const stock = ctx.rawStock?.() ?? null;
+      // The elements of the injections and refills he gathers for (owner: "custom for basic/standard/premium").
+      const afmOn = jp.afm ?? { basic: false, standard: false, premium: false };
+      const tiers = RECIPES.filter((i) => (i.kind === "fsd" ? jp.tiers[i.tier] : afmOn[i.tier]));
+      // Common elements (carbon, nickel, chromium, manganese) are never a reason to fly anywhere (review 1.2.16).
+      const wanted = new Set(
+        tiers.flatMap((i) => Object.keys(i.recipe) as JumpElement[]).filter((k) => !jumpElement(k).common),
+      );
+      // Short of: under the number set, and never at the grade's cap — a full hold takes no more (review 1.2.16).
+      const short = (k: JumpElement) => (stock?.[k] ?? 0) < Math.min(jp.target, RAW_CAP[jumpElement(k).grade]);
+      const rich = (bj?.hits ?? []).filter((h) => h.good && wanted.has(h.key) && (!jp.onlyShort || stock == null || short(h.key)));
+      if (rich.length) {
+        const served = tiers.filter((i) => rich.some((h) => h.key in i.recipe));
+        const kinds = new Set(served.map((i) => i.kind));
+        const head =
+          kinds.size > 1
+            ? `Laboratory (${served.map((i) => `${i.kind === "fsd" ? "FSD" : "AFM"} ${i.name}`).join(", ")})`
+            : `${kinds.has("afm") ? "AFM refill" : "Jumponium"} (${served.map((i) => i.name).join(", ")})`;
+        const g = num(line.SurfaceGravity);
+        const ls = num(line.DistanceFromArrivalLS);
+        const facts = [g != null ? `${(g / 9.80665).toFixed(2)} g` : "", ls != null ? `${Math.round(ls).toLocaleString("en-US")} ls` : ""]
+          .filter(Boolean)
+          .join(", ");
+        const have = stock ? ` · aboard ${rich.map((h) => `${jumpElement(h.key).symbol} ${stock[h.key] ?? 0}`).join(", ")}` : "";
+        added =
+          add({
+            ...base,
+            id: `jumponium:${bodyKey}`,
+            kind: "jumponium",
+            title: `${head}: ${rich.map(hitLabel).join(", ")}`,
+            text: `${body} in ${system}${facts ? ` — ${facts}` : ""}${have}`,
+          }) || added;
+      }
+    }
+
     if (BODY_FEATURES.some((f) => state.prefs.features[f.key])) {
       const dp = directParent(line.Parents);
-      const parent = dp && dp.kind !== "Null" ? (ctx.scanOf?.(`${addr}:${dp.id}`) ?? null) : null;
+      const parent = dp && dp.kind !== "Null" ? (ctx.scanOf?.(toBodyKey(addr, dp.id)) ?? null) : null;
       for (const f of bodyFeatures(featureRecordFromScan(line), parent)) {
         if (!state.prefs.features[f.key]) continue;
         added =
@@ -529,6 +605,44 @@ export function createNoticesService(opts: {
   }
 
   /** A green gas giant confirmed by the codex, or a K10 anomaly that says one is in the system. */
+  /*
+    Green gas giants confirmed by the codex: the codex line names the ship's body, not the scanned one
+    (2026-10-08), so the notice waits for the gas giant scanned with it (shared/greenCodexMatch.ts).
+  */
+  const greenCodex = createGreenCodexMatcher();
+  function greenCodexConfirmed(line: Line, ctx: NoticesContext): boolean {
+    if (line.event !== "Scan" && line.event !== "CodexEntry") return false;
+    let changed = false;
+    for (const e of greenCodex.observe(line)) {
+      const id = `ggg-codex:${e.bodyKey}`;
+      if (e.kind === "retract") {
+        const before = state.items.length;
+        state.items = state.items.filter((n) => n.id !== id);
+        changed = changed || state.items.length !== before;
+        continue;
+      }
+      if (!state.prefs.notable.green) continue;
+      const addr = num(e.codex.SystemAddress)!;
+      const system = str(e.codex.System) || ctx.currentSystem().name;
+      const scanned = line.event === "Scan" ? str(line.BodyName) : (ctx.scanOf?.(e.bodyKey)?.bodyName ?? "");
+      const body = shortBodyName(scanned, system) || e.bodyKey;
+      changed =
+        add({
+          id,
+          at: str(e.codex.timestamp) || new Date(now()).toISOString(),
+          kind: "notable",
+          title: "Green gas giant — confirmed by the codex",
+          text: `${body} in ${system}`,
+          system,
+          systemAddress: addr,
+          body,
+          bodyKey: e.bodyKey,
+          codexNew: e.codex.IsNewEntry === true,
+        }) || changed;
+    }
+    return changed;
+  }
+
   function onGreenCodex(line: Line, ctx: NoticesContext): boolean {
     if (!state.prefs.notable.green) return false;
     const addr = num(line.SystemAddress);
@@ -536,23 +650,8 @@ export function createNoticesService(opts: {
     const name = str(line.Name);
     const system = str(line.System) || ctx.currentSystem().name;
     const at = str(line.timestamp) || new Date(now()).toISOString();
-    const bodyId = num(line.BodyID);
-    if (greenCodexId(name) && bodyId != null) {
-      const bodyKey = `${addr}:${bodyId}`;
-      const body = shortBodyName(ctx.scanOf?.(bodyKey)?.bodyName ?? "", system) || `Body ${bodyId}`;
-      return add({
-        id: `ggg-codex:${bodyKey}`,
-        at,
-        kind: "notable",
-        title: "Green gas giant — confirmed by the codex",
-        text: `${body} in ${system}`,
-        system,
-        systemAddress: addr,
-        body,
-        bodyKey,
-        codexNew: line.IsNewEntry === true,
-      });
-    }
+    // A green codex entry's notice goes out with its body's scan (greenCodexConfirmed below).
+    if (greenCodexId(name)) return false;
     if (isK10CodexName(name)) {
       return add({
         id: `k10:${addr}`,
@@ -626,14 +725,24 @@ export function createNoticesService(opts: {
       if (changed) save();
       return changed;
     },
-    announceCodexFirst(finds, at) {
+    announceCodexFirst(finds, at, evaluated) {
       if (!state.prefs.codexFirst) return false;
       let added = false;
+      if (evaluated?.size) {
+        const keep = new Set(finds.map(codexFirstId));
+        const before = state.items.length;
+        state.items = state.items.filter((n) => {
+          const gone = n.kind === "codex" && n.id.startsWith("codexfirst:") && n.bodyKey != null && evaluated.has(n.bodyKey) && !keep.has(n.id);
+          if (gone) seen.delete(n.id);
+          return !gone;
+        });
+        added = state.items.length !== before;
+      }
       for (const f of finds) {
         const what = f.colours.length ? `${f.species} (${f.colours.join(" or ")})` : f.species;
         added =
           add({
-            id: `codexfirst:${f.bodyKey}:${f.speciesId}:${f.colours.join("+").toLowerCase()}`,
+            id: codexFirstId(f),
             at,
             kind: "codex",
             title: `Codex first possible: ${what}`,
@@ -644,6 +753,43 @@ export function createNoticesService(opts: {
             bodyKey: f.bodyKey,
           }) || added;
       }
+      if (added) save();
+      return added;
+    },
+    sendTest(at) {
+      const n: NoticeDTO = {
+        id: `test:${at}`,
+        at,
+        // A record, so the chime rings when it is on: the one notice kind that has a sound.
+        kind: "record",
+        title: "Test notice",
+        text: "This is how a find appears. Mark it read, or clear read notices, to remove it.",
+        system: "",
+        systemAddress: null,
+        body: null,
+        bodyKey: null,
+      };
+      state.items = [n, ...state.items.filter((x) => !x.id.startsWith("test:"))];
+      save();
+      return n;
+    },
+    announceAchievement(a, at) {
+      const added = add({
+        id: `achievement:${a.id}:${a.step}`,
+        at,
+        kind: "achievement",
+        title: a.title,
+        text: a.text,
+        system: "",
+        systemAddress: null,
+        body: null,
+        bodyKey: null,
+      });
+      if (added) save();
+      return added;
+    },
+    announceGggResearch(n, at) {
+      const added = add({ ...n, id: `ggg-research:${n.bodyKey}`, at, kind: "notable" });
       if (added) save();
       return added;
     },
@@ -666,7 +812,7 @@ export function createNoticesService(opts: {
       };
     },
     observe(line, ctx) {
-      let changed = false;
+      let changed = greenCodexConfirmed(line, ctx);
       switch (line.event) {
         case "Scan":
           changed = onScan(line, ctx);
@@ -741,7 +887,16 @@ function load(filePath: string | null): NoticesFile {
       records: Array.isArray(raw.records) ? raw.records.filter((r) => r && typeof r.bodyKey === "string") : [],
     };
   } catch {
-    // A broken file costs the unread list, not the app.
+    /*
+      A broken file costs the unread list, not the app — but it is set aside, not overwritten by the
+      next save: it holds the commander's notify settings, and those were silently reset to the
+      defaults (code review 2026-10-10, A5). Kept as `.unreadable-<time>` to recover by hand.
+    */
+    try {
+      renameSync(filePath, `${filePath}.unreadable-${Date.now()}`);
+    } catch {
+      /* left where it is; the next save replaces it */
+    }
     return fresh;
   }
 }

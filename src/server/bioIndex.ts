@@ -20,8 +20,9 @@
  * Missing file is not an error. The index is optional data: the app works without it, minus the
  * galaxy-wide filter, exactly as it did before this existed.
  */
+import { galaxyIndexFilePath } from "./galaxyIndexFiles.js";
 import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { getProjectRoot } from "./paths.js";
 
 const MAGIC = "EDEXOBIO";
@@ -61,12 +62,20 @@ export interface BioIndex {
   systemsWithAny(speciesIds: Iterable<string>): BioIndexSystem[];
   /** Allocation-free pass over every system's position and summary, in file order (the galaxy map). */
   forEachPoint(cb: (i: number, x: number, y: number, z: number, tiers: number, speciesCount: number) => void): void;
+  /** The same over ordinals [from, to): lets a long pass hand the event loop back between slices. */
+  forEachPointIn?(
+    from: number,
+    to: number,
+    cb: (i: number, x: number, y: number, z: number, tiers: number, speciesCount: number) => void,
+  ): void;
   /** One system's position and summary by ordinal: [x, y, z, tiers, speciesCount]. */
   pointAt(i: number): [number, number, number, number, number];
   /** One whole system by ordinal (the galaxy map's picking and its detail panel). */
   systemAt(i: number): BioIndexSystem;
   /** Just the name, for labels. */
   nameOf(i: number): string;
+  /** The system's mass code index (0 = a … 7 = h): its address's low 3 bits, read without building a record. */
+  massCodeAt?(i: number): number;
   /** Allocation-free pass over every (region, species) pair; see the implementation for why. */
   forEachRegionSpecies(
     cb: (systemIndex: number, regionId: number, speciesIndex: number, tiers: number) => void,
@@ -181,7 +190,15 @@ class Index implements BioIndex {
    * system ordinal comes along so a caller can tell where one system's run ends and the next begins.
    */
   forEachPoint(cb: (i: number, x: number, y: number, z: number, tiers: number, speciesCount: number) => void): void {
-    for (let i = 0; i < this.systemCount; i++) {
+    this.forEachPointIn(0, this.systemCount, cb);
+  }
+
+  forEachPointIn(
+    from: number,
+    to: number,
+    cb: (i: number, x: number, y: number, z: number, tiers: number, speciesCount: number) => void,
+  ): void {
+    for (let i = Math.max(0, from); i < Math.min(to, this.systemCount); i++) {
       const o = this.tableAt + i * RECORD;
       cb(
         i,
@@ -200,6 +217,10 @@ class Index implements BioIndex {
 
   nameOf(i: number): string {
     return this.nameAt(i);
+  }
+
+  massCodeAt(i: number): number {
+    return this.view.getUint8(this.tableAt + i * RECORD) & 7;
   }
 
   pointAt(i: number): [number, number, number, number, number] {
@@ -252,8 +273,9 @@ class Index implements BioIndex {
   }
 }
 
+/** The downloaded copy beside the settings, else the project's (galaxyIndexFiles.ts, plan 4.2). */
 export function bioIndexPath(projectRoot = getProjectRoot()): string {
-  return path.join(projectRoot, "data", "galaxy", "bio-index.bin");
+  return galaxyIndexFilePath("bio-index.bin", projectRoot);
 }
 
 let cached: BioIndex | null | undefined;
@@ -271,7 +293,50 @@ export function loadBioIndex(file = bioIndexPath()): BioIndex | null {
   return cached;
 }
 
-/** Test seam. */
+/**
+ * The index if this process has already read it, else null — never a read (the header's "Next boxel", plan
+ * 2.7: a line on every jump must not pull 1.7 M systems into memory the map would otherwise let go).
+ */
+export function peekBioIndex(): BioIndex | null {
+  return cached ?? null;
+}
+
+let pending: Promise<BioIndex | null> | null = null;
+/**
+ * Bumped by a clear (code review, 2026-10-14): a read that started before it must not put the old
+ * file's index back afterwards (a download replaces the file and clears), and nobody joins it after.
+ */
+let generation = 0;
+
+/**
+ * The same, with the 245 MB read off the main thread (owner, 2026-10-06: opening Boxels froze the
+ * launcher too). The server runs in Electron's main process, so a synchronous read there stops every
+ * window; only the offsets are built here, a few tens of milliseconds.
+ */
+export function loadBioIndexAsync(file = bioIndexPath()): Promise<BioIndex | null> {
+  if (cached !== undefined) return Promise.resolve(cached);
+  if (pending) return pending;
+  const gen = generation;
+  const p: Promise<BioIndex | null> = (async () => {
+    let read: BioIndex | null = null;
+    try {
+      if (existsSync(file)) read = new Index(await readFile(file));
+    } catch (e) {
+      console.warn(`ED Exo Compare — bio index unreadable, continuing without it: ${String(e)}`);
+    }
+    if (gen !== generation) return read; // cleared meanwhile: this caller's answer, never the cache's
+    if (cached === undefined) cached = read;
+    return cached ?? null;
+  })().finally(() => {
+    if (pending === p) pending = null;
+  });
+  pending = p;
+  return p;
+}
+
+/** Let the index go (idle release, a new download): the next use reads the file again. */
 export function clearBioIndexCache(): void {
   cached = undefined;
+  pending = null;
+  generation++;
 }

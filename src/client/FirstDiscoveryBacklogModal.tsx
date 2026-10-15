@@ -23,8 +23,12 @@ import { isBool, isNum, oneOf, usePersistedState } from "./usePersistedState";
 import { PAGE } from "./DiscoveriesTables";
 import { useEffect, useMemo, useState } from "react";
 import { CopySystemButton } from "./CopySystemButton";
+import { csvFileName, downloadCsv, toCsv, type CsvColumn } from "./csv";
 import { useModal } from "./ui/useModal";
 import type { FirstDiscoveryBacklogDTO, FirstDiscoveryBacklogRowDTO } from "@shared/types";
+import { fmtLyAway } from "@shared/format";
+import { Tooltip } from "./ui/Tooltip";
+import { LoadingNote } from "./ui/Loading";
 
 const crFmt = new Intl.NumberFormat("en-US");
 const cr = (n: number) => `${crFmt.format(Math.round(n))} CR`;
@@ -47,17 +51,27 @@ function compactCr(n: number): string {
  * nothing. These cut the set to roughly 163 / 74 / 36 / 18.
  */
 const FLOORS = [0, 10e6, 20e6, 30e6, 50e6] as const;
+
+/**
+ * CSV of the list as filtered and sorted (review F-5.11): one row per body, the figures as numbers,
+ * ready for a spreadsheet or a route planner. System first, so a Spansh paste is one column away.
+ */
+const CSV_COLUMNS: CsvColumn<FirstDiscoveryBacklogRowDTO>[] = [
+  { label: "System", value: (r) => r.starSystem },
+  { label: "Body", value: (r) => r.bodyName },
+  { label: "Distance (ly)", value: (r) => (r.distanceLy == null ? null : Math.round(r.distanceLy * 10) / 10) },
+  { label: "Bio signals", value: (r) => r.biologicalSignals },
+  { label: "Floor (CR, 5x)", value: (r) => Math.round(r.minCr) },
+  { label: "Ceiling (CR, 5x)", value: (r) => Math.round(r.maxCr) },
+  { label: "DSS done", value: (r) => (r.dssComplete ? "yes" : "no") },
+  { label: "My discovery", value: (r) => (r.firstDiscovery ? "yes" : "no") },
+  { label: "Unwalked verified", value: (r) => (r.footfallObserved ? "yes" : "no") },
+  { label: "New codex", value: (r) => (r.codexNew ?? []).join("; ") },
+  { label: "Walked by someone", value: (r) => (r.footfallLost ? "yes" : "no") },
+];
 const floorLabel = (n: number) => (n === 0 ? "All" : `${Math.round(n / 1e6)}M+`);
 
-/** Light years, at a precision that matches how far away the thing is. */
-function ly(d: number | null): string {
-  if (d == null) return "—";
-  // Under a light year is the same system — the commander is standing in it, and "0 ly" reads as a
-  // broken number rather than the best possible answer.
-  if (d < 1) return "here";
-  if (d >= 10000) return `${(d / 1000).toFixed(1)} kly`;
-  return `${Math.round(d).toLocaleString("en-US")} ly`;
-}
+const ly = fmtLyAway;
 
 export function FirstDiscoveryBacklogModal({
   onClose,
@@ -175,15 +189,16 @@ export function FirstDiscoveryBacklogModal({
         {error ? <p className="fdb-empty">{error}</p> : null}
 
         {!data && !error ? (
-          <p className="fdb-empty">
-            {/*
-              Says "up to a minute" because it is ~33 s over this commander's history and grows with
-              it. "A few seconds" was true of the first-discovery subset and is now a small lie that
-              makes a working panel look hung.
-            */}
-            Predicting species for every body you have scanned. This takes up to a minute the first time;
-            afterwards it is instant until you fly somewhere new.
-          </p>
+          /*
+            Says "up to a minute" because it is ~33 s over this commander's history and grows with
+            it. "A few seconds" was true of the first-discovery subset and is now a small lie that
+            makes a working panel look hung.
+          */
+          <LoadingNote
+            className="fdb-empty"
+            label="Predicting species for every body you have scanned…"
+            detail="This takes up to a minute the first time; afterwards it is instant until you fly somewhere new."
+          />
         ) : null}
 
         {data ? (
@@ -261,16 +276,26 @@ export function FirstDiscoveryBacklogModal({
               >
                 Verified 5×
               </button>
+              <Tooltip text="Only bodies with a species not yet in your codex for that region, where it is the only candidate of its genus there (after the FSS, or the DSS when mapped). A genus with two or more possible species is left out: not worth the trip on a guess. The colour is not judged.">
+                <button
+                  type="button"
+                  className={`fdb-chip${codexOnly ? " fdb-chip--on" : ""}`}
+                  onClick={() => setCodexOnly((v) => !v)}
+                >
+                  New codex (
+                  {(data?.rows ?? []).filter((r) => (r.codexNew?.length ?? 0) > 0).length.toLocaleString()})
+                </button>
+              </Tooltip>
+              <span className="fdb-filters__gap" />
               <button
                 type="button"
-                className={`fdb-chip${codexOnly ? " fdb-chip--on" : ""}`}
-                onClick={() => setCodexOnly((v) => !v)}
-                title="Only bodies with a species not yet in your codex for that region, where it is the only candidate of its genus there (after the FSS, or the DSS when mapped). A genus with two or more possible species is left out: not worth the trip on a guess. The colour is not judged."
+                className="fdb-chip"
+                disabled={rows.length === 0}
+                title="These rows, as filtered and sorted, as a CSV file for a spreadsheet or a route planner"
+                onClick={() => downloadCsv(csvFileName("unfinished business"), toCsv(rows, CSV_COLUMNS))}
               >
-                New codex (
-                {(data?.rows ?? []).filter((r) => (r.codexNew?.length ?? 0) > 0).length.toLocaleString()})
+                Export CSV
               </button>
-              <span className="fdb-filters__gap" />
               <span className="dim">Sort</span>
               <button
                 type="button"

@@ -14,11 +14,12 @@
  * |---|---|---|---|
  * | nebula < 150 ly | Bark Mounds | 93 % of 23,651 systems | 4–7 % background |
  * | nebula < 150 ly | Electricae radialem | 79 % of 16,370 systems | *pluma 0 %* |
- * | Guardian site < 1,000 ly | Brain Trees | 99 % of 16,062 systems | 15–27 % |
+ * | Guardian site < 1,250 ly | Brain Trees | 99 % of 16,062 systems within 1,000 ly; all 4,142 confirmed bodies within 1,223 | 15–27 % |
  * | galactic core < 10,000 ly | Sinuous Tubers | 94 % of 5,139 systems | 0–20 % |
  *
- * Planetary nebulae are excluded from the catalogue on evidence: **not one** of 88 Bark Mound systems
- * had one as its nearest neighbour. That leaves 346 real + procgen points.
+ * Planetary nebulae are excluded from `nebulae` on evidence: **not one** of 88 Bark Mound systems
+ * had one as its nearest neighbour. That leaves 346 real + procgen points. Radialem is the opposite
+ * (2026-10-14): it grows around planetary nebulae, which the catalogue keeps apart as `planetary`.
  *
  * ## Why this demotes rather than deletes
  *
@@ -54,6 +55,10 @@ export interface SpatialCatalogue {
   nebulae: SpatialPoint[];
   guardian: SpatialPoint[];
   core: SpatialPoint;
+  /** Where a species has been recorded (scripts/add-codex-records.ts), for a gate's `records` check. */
+  records?: Record<string, SpatialPoint[]>;
+  /** EDAstro's planetary nebulae (scripts/add-planetary-nebulae.ts), for a gate's `planetary` check. */
+  planetary?: SpatialPoint[];
 }
 
 export interface Coords {
@@ -78,6 +83,18 @@ export interface SpatialGate {
    */
   softBandLy?: number;
   softFactor?: number;
+  /**
+   * Where the species grows in clusters (owner, 2026-10-08): a system within `withinLy` of one of
+   * `catalogue.records[key]` passes too, wherever the catalogue's nearest point is.
+   */
+  records?: { key: string; withinLy: number; label: string; evidence: string };
+  /** A system within `withinLy` of one of `catalogue.planetary` passes too (radialem, 2026-10-14). */
+  planetary?: { withinLy: number };
+  /**
+   * Turned round (core gates only): the system has to be at least `thresholdLy` from Sgr A*, not
+   * within it. Crystalline Shards (2026-10-09) grow only far out.
+   */
+  beyond?: boolean;
 }
 
 /**
@@ -94,6 +111,47 @@ export const SPATIAL_GATES: { idIncludes: string; gate: SpatialGate }[] = [
       kind: "nebula",
       thresholdLy: 150,
       evidence: "79 % of 16,370 radialem systems are within 150 ly of a nebula; pluma, 0 %",
+      /*
+        Owner, 2026-10-08 (Braisoo JD-H b43-6 3 a, no nebula anywhere near, radialem offered on one
+        codex find 1,130 ly away): within 150 ly of a catalogued nebula, or 50 ly of a radialem cluster;
+        anywhere else demoted to unlikely. Until then a band with no outer edge kept 0.22 of its chance
+        as far as 2,000 ly from a single record. (Since 2026-10-14 a band to 200 ly, below.)
+      */
+      records: {
+        /*
+          The catalogue misses nebulae — 660 radialem systems lie past 5,000 ly of one — but radialem
+          marks them by growing in clusters: the systems with 2+ other radialem systems within 100 ly
+          (one count per system). A lone find is a planetary nebula, in-system, which no scan of an
+          undiscovered system can show, so it does not count. Leave one out over 16,634 radialem
+          systems (EDAstro codex + EDGalaxyData's EDDN year): 79.0 % within 150 ly of a catalogued
+          nebula, 90.2 % with the 50 ly cluster bubbles (75 ly would give 91.8 %, 150 ly 92.7 %).
+        */
+        key: "radialem",
+        withinLy: 50,
+        label: "Electricae radialem cluster",
+        evidence:
+          "99 % of 16,554 radialem systems are within 150 ly of a nebula, 110 ly of a planetary nebula or 50 ly of a radialem cluster (79 % from nebulae alone)",
+      },
+      /*
+        Planetary nebulae (2026-10-14, docs/perf/radialem-pn.py and radialem-pn-systems.py): EDAstro's
+        5,492 planetary nebulae, left out of `nebulae` on Bark Mounds' evidence, are where most of the
+        radialem the rule missed grows. On the EDDN year, outside the old rule, radialem is on 100 % of
+        the bodies it can grow on up to 90 ly from one, 58 % at 90-100, 14 % at 100-110 and none of the
+        281 bodies at 110-160 ly (pluma 0 %). Codex systems passing: 91.0 → 98.9 %; EDDN-year bodies
+        91.1 → 98.9 %, for 50 more bodies passed of 44,286 without it. Owner, 2026-10-14: a lone radialem
+        away from any nebula of the file is a planetary nebula no catalogue has, which nothing can
+        predict, so the 3+ signal rescue of 2026-10-11 (radialem at a tenth of its chance on any 3-signal
+        body; it was catching these) is gone: outside the rule now, 3-signal bodies carry it 0.78 %.
+      */
+      planetary: { withinLy: 110 },
+      /*
+        Owner, 2026-10-14: a band to 200 ly. Outside every rule above, radialem is on 2.7 % of the bodies
+        it can grow on 150-200 ly from a nebula (24 of 891, EDDN year) and on none past 200 ly; 158 of
+        the 186 codex systems the rule misses lie there. A tenth of the chance puts the median band row
+        at ~2 % (radialem's median shown chance is 22 %), about the rate measured.
+      */
+      softBandLy: 200,
+      softFactor: 0.1,
     },
   },
   {
@@ -122,8 +180,14 @@ export const SPATIAL_GATES: { idIncludes: string; gate: SpatialGate }[] = [
     idIncludes: "brain_tree",
     gate: {
       kind: "guardian",
-      thresholdLy: 1000,
-      evidence: "99 % of 16,062 Brain Tree systems are within 1,000 ly of a Guardian site; controls 15–27 %",
+      /*
+        1,250 since 2026-10-04 (owner: no misses): every one of 4,142 confirmed single-species Brain
+        Tree bodies lies within 1,223 ly of a catalogued Guardian site; the 83 past 1,000 ly are all in
+        Norma Expanse (Puniceum 37, Roseum 43, Viride 3), and each lost its species to this gate.
+      */
+      thresholdLy: 1250,
+      evidence:
+        "99 % of 16,062 Brain Tree systems are within 1,000 ly of a Guardian site, and every confirmed Brain Tree body within 1,223 ly; controls 15–27 %",
     },
   },
   /*
@@ -143,6 +207,22 @@ export const SPATIAL_GATES: { idIncludes: string; gate: SpatialGate }[] = [
       thresholdLy: 21000,
       evidence:
         "Sinuous Tubers: every species' codex systems within 21,000 ly of Sgr A* (ring family 100 %, core family 99 % within 19,500 ly)",
+    },
+  },
+  /*
+    Crystalline Shards, the other way round (owner's plan, 2026-10-09: "They need a minimum distance
+    from the core"): all 5,945 Shards bodies in the Spansh dump are 19,760 ly or more from Sgr A*,
+    while 28 % of the bodies that meet every other Shards rule lie nearer and carry none. The rule is
+    19,500 ly, a little inside the nearest find.
+  */
+  {
+    idIncludes: "crystalline_shards",
+    gate: {
+      kind: "core",
+      thresholdLy: 19500,
+      beyond: true,
+      evidence:
+        "Crystalline Shards: 100 % of the 5,945 bodies in the Spansh dump lie 19,760 ly or more from Sgr A*; 0 % of the candidate bodies nearer carry them",
     },
   },
 ];
@@ -189,6 +269,12 @@ export interface SpatialVerdict {
   /** The nebula / Guardian site / Sgr A* the distance is measured to. */
   nearestName: string;
   evidence: string;
+  /** The gate's `records` check, when it ran: the nearest record and how far. */
+  record?: { label: string; name: string; distanceLy: number; withinLy: number } | null;
+  /** The gate's `planetary` check, when it ran: the nearest planetary nebula and how far. */
+  planetary?: { name: string; distanceLy: number; withinLy: number } | null;
+  /** The rule is "at least this far" (SpatialGate.beyond). */
+  beyond?: boolean;
 }
 
 /**
@@ -211,7 +297,8 @@ export function evaluateSpatialGate(
     const d = distanceLy(system, catalogue.core);
     return {
       kind: gate.kind,
-      passes: d <= gate.thresholdLy,
+      passes: gate.beyond ? d >= gate.thresholdLy : d <= gate.thresholdLy,
+      ...(gate.beyond ? { beyond: true } : {}),
       distanceLy: d,
       thresholdLy: gate.thresholdLy,
       nearestName: catalogue.core.n,
@@ -222,16 +309,36 @@ export function evaluateSpatialGate(
   const points = gate.kind === "nebula" ? catalogue.nebulae : catalogue.guardian;
   const near = nearestPoint(system, points);
   if (!near) return null;
+  let passes = near.distanceLy <= gate.thresholdLy;
+  // Outside the radius: a planetary nebula near enough (kept apart from `nebulae`, which Bark Mounds read).
+  let planetary: SpatialVerdict["planetary"];
+  if (!passes && gate.planetary && catalogue.planetary?.length) {
+    const p = nearestPoint(system, catalogue.planetary)!;
+    planetary = { name: p.point.n, distanceLy: p.distanceLy, withinLy: gate.planetary.withinLy };
+    if (p.distanceLy <= gate.planetary.withinLy) passes = true;
+  }
+  // Still outside: a cluster of the species' own records marks a nebula the catalogue lacks.
+  let record: SpatialVerdict["record"];
+  const recs = gate.records ? catalogue.records?.[gate.records.key] : undefined;
+  if (!passes && gate.records && recs) {
+    const r = nearestPoint(system, recs);
+    record = r
+      ? { label: gate.records.label, name: r.point.n, distanceLy: r.distanceLy, withinLy: gate.records.withinLy }
+      : null;
+    if (r && r.distanceLy <= gate.records.withinLy) passes = true;
+  }
   const inBand =
-    gate.softBandLy != null && near.distanceLy > gate.thresholdLy && near.distanceLy <= gate.softBandLy;
+    !passes && gate.softBandLy != null && near.distanceLy > gate.thresholdLy && near.distanceLy <= gate.softBandLy;
   return {
     kind: gate.kind,
-    passes: near.distanceLy <= gate.thresholdLy,
+    passes,
     ...(inBand ? { softBand: { factor: gate.softFactor ?? 0.5, bandLy: gate.softBandLy! } } : {}),
     distanceLy: near.distanceLy,
     thresholdLy: gate.thresholdLy,
     nearestName: near.point.n,
-    evidence: gate.evidence,
+    evidence: gate.records ? gate.records.evidence : gate.evidence,
+    ...(planetary !== undefined ? { planetary } : {}),
+    ...(record !== undefined ? { record } : {}),
   };
 }
 
@@ -246,10 +353,33 @@ export function describeVerdict(v: SpatialVerdict): string {
     v.kind === "core"
       ? v.nearestName
       : `nearest ${v.kind === "nebula" ? "nebula" : "Guardian site"} ${v.nearestName}`;
+  const ly = (n: number) => (n >= 1000 ? `${Math.round(n / 100) / 10} kly` : `${Math.round(n)} ly`);
+  if (v.beyond) {
+    return v.passes
+      ? `${subject} is ${d} away — past the ${rule} it needs.`
+      : `${subject} is ${d} away; it needs at least ${rule}.`;
+  }
+  const pn = v.planetary;
+  if (pn && pn.distanceLy <= pn.withinLy) {
+    return `${subject} is ${d} away, but planetary nebula ${pn.name} is ${ly(pn.distanceLy)} — inside its ${ly(pn.withinLy)} rule.`;
+  }
+  if (v.record && v.record.distanceLy <= v.record.withinLy) {
+    return `${subject} is ${d} away, but a ${v.record.label} (${v.record.name}) is ${ly(v.record.distanceLy)} — inside its ${ly(v.record.withinLy)} rule.`;
+  }
   if (v.passes) return `${subject} is ${d} away — inside the ${rule} rule.`;
+  // In the band, the band is the answer (the other checks failed by definition).
   if (v.softBand) {
     const pct = Math.round(v.softBand.factor * 100);
+    if (!Number.isFinite(v.softBand.bandLy)) return `${subject} is ${d} away — past the ${rule} rule, so it stays listed at ${pct} % of its chance.`;
     return `${subject} is ${d} away — past the ${rule} rule but inside ${v.softBand.bandLy} ly, so it stays listed at ${pct} % of its chance.`;
   }
+  const pnPart = pn ? `the nearest planetary nebula (${pn.name}) is ${ly(pn.distanceLy)} (rule ${ly(pn.withinLy)})` : null;
+  if (v.record) {
+    const recPart = `the nearest ${v.record.label} (${v.record.name}) is ${ly(v.record.distanceLy)} (rule ${ly(v.record.withinLy)})`;
+    return pnPart
+      ? `${subject} is ${d} away (rule ${rule}), ${pnPart}, and ${recPart}.`
+      : `${subject} is ${d} away (rule ${rule}), and ${recPart}.`;
+  }
+  if (pnPart) return `${subject} is ${d} away (rule ${rule}), and ${pnPart}.`;
   return `${subject} is ${d} away; the rule is under ${rule}.`;
 }

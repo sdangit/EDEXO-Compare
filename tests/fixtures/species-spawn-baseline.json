@@ -85,11 +85,11 @@
  },
  "amphora_amphora_plant @ Flyauduae TE-Q d5-4 B 1": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "amphora_amphora_plant @ Ooscs Free SZ-F d11-9 B 2 a": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "amphora_amphora_plant @ Scoagaae PI-B d13-38 1": {
   "dss": "shown",
@@ -100,8 +100,8 @@
   "fss": "shown"
  },
  "anemone_blatteum_bioluminescent @ HIP 34326 D 2": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "anemone_croceum @ Oochoxt LT-Q e5-0 F 1 a": {
   "dss": "shown",
@@ -305,7 +305,7 @@
  },
  "bacterium_bacterium_tela @ Blo Eur ZT-P b35-0 B 6": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "bacterium_bacterium_tela @ Praea Euq PG-O c22-0 B 7": {
   "dss": "shown",
@@ -389,7 +389,7 @@
  },
  "brain_trees_brain_tree_aureum @ Eorl Auwsy HC-A c28-659 C 1": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "brain_trees_brain_tree_aureum @ Puekee SM-W d1-201 1": {
   "dss": "shown",
@@ -401,7 +401,7 @@
  },
  "brain_trees_brain_tree_gypseeum @ Graea Hypue PJ-Q d5-39 B 2 a": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "brain_trees_brain_tree_gypseeum @ Praea Euq JN-W c1-34 2 a": {
   "dss": "shown",
@@ -412,8 +412,8 @@
   "fss": "shown"
  },
  "brain_trees_brain_tree_lindigoticum @ Col 135 Sector NN-T d3-92 4": {
-  "dss": "shown",
-  "fss": "shown"
+  "dss": "unlikely",
+  "fss": "unlikely"
  },
  "brain_trees_brain_tree_lindigoticum @ Eorl Auwsy TY-Z d13-5447 3": {
   "dss": "shown",
@@ -425,11 +425,11 @@
  },
  "brain_trees_brain_tree_lividum @ Puekee AF-R d4-639 3 b": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "brain_trees_brain_tree_lividum @ Shrogaae LK-A d4583 B 1 a": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "brain_trees_brain_tree_lividum @ Swoilz XN-H b2-4 B 4 a": {
   "dss": "shown",
@@ -485,7 +485,7 @@
  },
  "brain_trees_brain_tree_viride @ Graea Hypue YA-V b3-0 A 1 b": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "brain_trees_brain_tree_viride @ Skaudai HZ-A c29-2 2 a": {
   "dss": "shown",
@@ -697,7 +697,7 @@
  },
  "crystalline_shards_crystalline_shards @ Flyoo Bloae JS-I d10-3 C 5": {
   "dss": "shown",
-  "fss": "shown"
+  "fss": "missing"
  },
  "crystalline_shards_crystalline_shards @ Gludgaa PM-U c16-9 D 1 a": {
   "dss": "shown",
@@ -709,7 +709,7 @@
  },
  "crystalline_shards_crystalline_shards @ Phloing KT-Y d1-1 B 6": {
   "dss": "shown",
-  "fss": "shown"
+  "fss": "missing"
  },
  "crystalline_shards_crystalline_shards @ Phrua Hypooe SU-M d8-34 CDE 1 c": {
   "dss": "shown",
@@ -736,8 +736,8 @@
   "fss": "shown"
  },
  "electricae_electricae_radialem @ Dryaa Proae RO-O d7-9 B 8 a": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "electricae_electricae_radialem @ Jellyfish Sector FR-U b3-0 3": {
   "dss": "shown",
@@ -993,7 +993,7 @@
  },
  "fumerola_fumerola_extremus @ Blaa Eork QL-Y c3-1 1 a": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "fumerola_fumerola_extremus @ Dryooe Prou JN-A c14-96 1 e a": {
   "dss": "shown",
@@ -1221,7 +1221,7 @@
  },
  "recepta_recepta_deltahedronix @ Phrio Phoea VF-Z c16-8 A 5 c": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "recepta_recepta_umbrux @ Bleae Thua FF-R c4-30 3": {
   "dss": "shown",
@@ -1233,19 +1233,19 @@
  },
  "recepta_recepta_umbrux @ Iowhaik GM-L d8-1838 1 a": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "recepta_recepta_umbrux @ NGC 2546 Sector OR-X b30-1 B 1": {
   "dss": "shown",
   "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_albidum @ Blua Hypa PI-A b47-65 C 2 a": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_albidum @ Dryaea Bre LD-J d9-99 2 b a": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_albidum @ Stuemeae MM-W d1-5282 2": {
   "dss": "unlikely",
@@ -1272,8 +1272,8 @@
   "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_caeruleum @ Iockols JX-R d5-333 2 c a": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_caeruleum @ Myriesly MC-D d12-6693 6 a": {
   "dss": "shown",
@@ -1300,16 +1300,16 @@
   "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_prasinum @ Blua Hypa IJ-S c20-276 4": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_prasinum @ Eorl Auwsy TY-Z d13-570 4": {
   "dss": "shown",
   "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_prasinum @ Synookua HL-Y d129 C 7": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_prasinum @ Whamboe LH-M d7-3401 A 1": {
   "dss": "shown",
@@ -1336,8 +1336,8 @@
   "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_viride @ Aishaink TP-O d6-416 4 a a": {
-  "dss": "unlikely",
-  "fss": "unlikely"
+  "dss": "shown",
+  "fss": "shown"
  },
  "sinuous_tuber_sinuous_tubers_viride @ Dryu Brue MA-A d328 2": {
   "dss": "shown",
@@ -1377,11 +1377,11 @@
  },
  "stratum_stratum_cucumisis @ Wredguia HE-R c5-2 AB 1 d": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "stratum_stratum_excutitus @ Col 359 Sector EB-V d3-2 3 a": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "stratum_stratum_excutitus @ Plae Aeb DH-B d14-17 2 a": {
   "dss": "shown",
@@ -1393,7 +1393,7 @@
  },
  "stratum_stratum_excutitus @ Stuemeae WP-P d5-6340 A 6 a": {
   "dss": "shown",
-  "fss": "unlikely"
+  "fss": "shown"
  },
  "stratum_stratum_frigus @ Bleou Airgh WX-X c28-5 1 a": {
   "dss": "shown",

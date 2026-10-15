@@ -11,9 +11,10 @@ import type {
   SpeciesMatch,
 } from "../shared/types.js";
 import type { GameStateStore } from "./gameState.js";
-import { collectResolvedOrganicLockSpeciesIds } from "./organicLocks.js";
+import { collectOwnOrganicLockSpeciesIds } from "./organicLocks.js";
 import { regionIndexForSystem } from "./regionMapData.js";
 import { REGION_PRIOR_WEIGHT, rankSpeciesOnBody } from "./speciesLikelihood.js";
+import { applyMeasuredOdds } from "./measuredOdds.js";
 
 /* The region-prior weight now lives with the other model constants; see REGION_PRIOR_WEIGHT. */
 
@@ -37,12 +38,17 @@ function regionIndexForBody(store: GameStateStore, b: BodyExoState, projectRoot:
  *
  * Crystalline Shards (2026-09-28): over the Spansh dump, of the bio bodies meeting every Shards rule
  * (class, 20-273 K, airless or its thin atmospheres, ≥ 12,000 Ls from arrival, a companion body, no
- * O/B/remnant host), Shards is on 4,426 of 134,646 one-signal bodies (3.3 %) and 255 of 203,234 with
- * more signals (0.13 %). Under the 5 % floor either way: before a DSS it waits behind "show unlikely",
- * and once a DSS names the genus it is shown like any confirmed genus.
+ * O/B/remnant host), Shards was on 4,426 of 134,646 one-signal bodies (3.3 %) and 255 of 203,234 with
+ * more signals (0.13 %).
+ *
+ * 2026-10-10, every rule at once, counted in the galaxy query database (all bodies of every system, so
+ * the companion body is known): of the bodies a DSS has named the genera of, meeting class, 20-273 K,
+ * ≥ 12,000 Ls, volcanism (all 5,945 Shards bodies have it), the atmospheres, 19,500 ly from the core
+ * and a companion world, Shards is on 5,497 of 11,322 with one signal (48.6 %) and 400 of 6,690 with
+ * more (6.0 %). Without a companion world: 0.17 % and 0.09 % (46 bodies, likely unscanned companions).
  */
 const FIXED_PRESENCE_PCT: Record<string, { oneSignal: number; more: number }> = {
-  crystalline_shards_crystalline_shards: { oneSignal: 3.3, more: 0.13 },
+  crystalline_shards_crystalline_shards: { oneSignal: 48.6, more: 6 },
 };
 
 /**
@@ -69,10 +75,6 @@ export function attachPresenceProbability(
   if (!scan) return;
   const shown = matches.filter((m) => !m.unlikely);
   if (shown.length === 0) return;
-  for (const m of shown) {
-    const fixed = FIXED_PRESENCE_PCT[m.entry.id];
-    if (fixed) m.presenceProbabilityPercent = (b.biologicalSignals ?? 1) > 1 ? fixed.more : fixed.oneSignal;
-  }
   const { ranked } = rankSpeciesOnBody(shown, scan, rec, journalHost, {
     root,
     regionPrior: true,
@@ -83,9 +85,28 @@ export function attachPresenceProbability(
 
   const signals = b.biologicalSignals;
   const scale = signals != null && Number.isFinite(signals) && signals > 0 ? signals : 1;
+  /*
+    A soft band's factor (presenceFactor) weighs the row *before* the posterior is shared out, so a row
+    kept at x0.02 does not take its full share of the body's probability from the others first: the
+    Fumerola extremus on a lone-signal body fell from 3.3 % to 0.6 % behind rows kept that way
+    (2026-10-03). The weights are renormalised to the same total.
+  */
+  const total = ranked.reduce((a, r) => a + r.probability, 0);
+  const weighted = ranked.reduce((a, r) => a + r.probability * (r.match.presenceFactor ?? 1), 0);
+  const norm = weighted > 0 ? total / weighted : 1;
+  const share = (r: (typeof ranked)[number]) => r.probability * (r.match.presenceFactor ?? 1) * norm;
+  const multiplier = signalMultipliers(ranked, share, scale);
   for (const r of ranked) {
-    const p = Math.max(0, Math.min(1, r.probability * scale * (r.match.presenceFactor ?? 1)));
+    const p = Math.max(0, Math.min(1, share(r) * (multiplier.get(r.match.entry.genusDataDir) ?? scale)));
     r.match.presenceProbabilityPercent = Math.round(p * 1000) / 10;
+    /*
+      A measured rate is the answer for its species, not the ranking's: Crystalline Shards' profile
+      holds 28 bodies, so the ranking put it at 0 % on every body that met its rules (owner,
+      2026-10-09: "Crystalline Shards are getting shown at 0% all the time").
+    */
+    const fixed = FIXED_PRESENCE_PCT[r.match.entry.id];
+    if (fixed)
+      r.match.presenceProbabilityPercent = (b.biologicalSignals ?? 1) > 1 ? fixed.more : fixed.oneSignal;
   }
 
   /**
@@ -95,24 +116,113 @@ export function attachPresenceProbability(
    * question is which Bacterium. That is this number, and it is worth computing before the DSS too —
    * it is what the answer becomes the moment the genus is confirmed.
    */
-  const rows = ranked.map((r) => ({ genus: r.match.entry.genusDataDir, probability: r.probability, r }));
+  // A soft band's factor (Bark Mounds' nebula ring, Clypeus speculumi's orbit) is part of the answer
+  // to "which one of the genus" too, or a row kept at ×0.07 would take its full share after a DSS.
+  const rows = ranked.map((r) => ({
+    genus: r.match.entry.genusDataDir,
+    probability: r.probability * (r.match.presenceFactor ?? 1),
+    r,
+  }));
   const shares = genusShares(rows);
   for (const row of rows) {
     const share = shares.get(row);
     row.r.match.genusSharePercent = share == null ? null : Math.round(share * 1000) / 10;
   }
+  // Where the model is measurably wrong (Recepta by its sulphur dioxide, tela by atmosphere): measuredOdds.ts.
+  applyMeasuredOdds(
+    ranked.map((r) => r.match),
+    scan,
+  );
+}
+
+/**
+ * What each genus's shares are multiplied by to become chances, so the signals the game counted are all spent.
+ *
+ * A share times the signal count, clipped at 100 %, throws away whatever a dominant genus is clipped by: on a
+ * 2-signal body where Bacterium cerbrus held 99 % of the posterior it read 100 % (198 % unclipped), and the Anemone
+ * on the second signal read 0.7 % — under the floor, on a body Spansh's DSS lists with Anemone (2026-10-14). The
+ * game places one genus per signal, so a genus whose shares reach a whole signal takes one, and the signals left
+ * are shared among the other genera in proportion. Iterated until no further genus fills up; the multiplier of an
+ * uncapped genus only grows, so no chance falls by this. Not to the capped genus's own siblings: one species of a
+ * genus per body.
+ */
+export function signalMultipliers<R extends { match: SpeciesMatch }>(
+  ranked: R[],
+  share: (r: R) => number,
+  signals: number,
+): Map<string, number> {
+  const byGenus = new Map<string, number>();
+  for (const r of ranked) {
+    const g = r.match.entry.genusDataDir;
+    byGenus.set(g, (byGenus.get(g) ?? 0) + share(r));
+  }
+  const out = new Map<string, number>();
+  const capped = new Set<string>();
+  for (let guard = 0; guard <= byGenus.size; guard++) {
+    const left = signals - capped.size;
+    const rest = [...byGenus].filter(([g]) => !capped.has(g)).reduce((a, [, s]) => a + s, 0);
+    if (left <= 0 || rest <= 0) break;
+    const m = Math.max(signals, left / rest);
+    let grew = false;
+    for (const [g, s] of byGenus) {
+      if (capped.has(g)) continue;
+      out.set(g, m);
+      if (s * m >= 1) {
+        capped.add(g);
+        grew = true;
+      }
+    }
+    if (!grew) break;
+  }
+  // A genus that fills a signal reads 100 % as a whole; one already there on the plain count keeps it, as before.
+  for (const g of capped) out.set(g, Math.max(signals, 1 / byGenus.get(g)!));
+  return out;
 }
 
 /**
  * How likely a candidate has to be before the panel offers it as a candidate.
  *
- * The commander's line, and the same five per cent he set for a trace gas. It is defensible here
- * because this is the one number on the card that has been calibrated against reality: on
- * complete-label bodies the 0-10 % bin comes in at 8.9 % observed. A row at 2.6 % is not a
- * borderline call, it is the model saying *probably not*, and printing it beside rows at 40 % asks
- * the reader to do arithmetic the app has already done.
+ * One per cent (owner, 2026-10-03: "I didn't mean that we should exclude legitimate results to meet
+ * that quota, give 3 results if needed ... without any misses"). It was five, the commander's line
+ * for a trace gas, and on Hypi Fraae RF-Q b21-2 B 4 — icy, thin neon, 20 K, Minor Methane Magma —
+ * it hid Bacterium tela at 2.6 % on a body type where tela is a third of the confirmed finds (1,534
+ * bodies: scopulum 33.8, tela 33.3, acies 32.9 %). The model's chance there is wrong; the floor is what
+ * turned a wrong number into a miss.
+ *
+ * Measured over 1,500 random confirmed Bacterium bodies and 2,960 bodies of every genus (one per
+ * species per region; docs/perf/share-floor-probe.mts, share_floor_eval.py): at 5 % the floors alone
+ * hid the right species on 11 and 25 of them, every Bacterium one a tela; at 1 % on 2 and 4, for
+ * one wrong row more (almost always tela) on 1.4 % and 2.5 % of the bodies.
  */
-export const PRESENCE_FLOOR_PCT = 5;
+export const PRESENCE_FLOOR_PCT = 1;
+
+/**
+ * Species whose own floor is lower, measured (plan 1.2.17 Part 4, 2026-10-14): on two disjoint September hold-outs of
+ * the EDDN year (8,000 bodies each, signals known), the floor per species chosen on one by the fewest misses and then
+ * the fewest false rows, and judged on the other (`docs/perf/formula/part4_floors.py`). These two were shown under 1 %
+ * where they grew; at 0.3 % the judging sample's misses went 7 → 6 for 32 more false rows over 7,768 bodies
+ * (+0.007 rows a body). Concha labiata reads 0.4-0.9 % on the high-metal bodies it is missed on.
+ */
+export const SPECIES_PRESENCE_FLOOR_PCT: Readonly<Record<string, number>> = {
+  concha_concha_labiata: 0.3,
+  brain_trees_brain_tree_lindigoticum: 0.3,
+};
+
+/** The floor this candidate is held to before a DSS. */
+export function presenceFloorFor(speciesId: string): number {
+  return SPECIES_PRESENCE_FLOOR_PCT[speciesId] ?? PRESENCE_FLOOR_PCT;
+}
+
+/**
+ * Why a row the floors left in the list stands there, for the [?] on a [CODEX FIRST] row at 1 % or
+ * less (owner, 2026-10-09). Read once the whole pipeline has run; the chance can still move after the
+ * floor (the genus prior), which is one of the answers.
+ */
+export type FloorKept = "sampled" | "approximate" | "best" | "passed" | "genusShare" | "genusBest";
+const floorKept = new WeakMap<SpeciesMatch, { why: FloorKept; pct: number }>();
+export function floorKeptReason(m: SpeciesMatch): { why: FloorKept; pct: number } | null {
+  return floorKept.get(m) ?? null;
+}
 
 /**
  * Push the long shots behind "show unlikely".
@@ -141,7 +251,7 @@ export function demoteBelowPresenceFloor(
   b: BodyExoState,
   db: SpeciesDatabase,
 ): void {
-  const confirmed = new Set(collectResolvedOrganicLockSpeciesIds(b.organicGenusLocks, db));
+  const confirmed = new Set(collectOwnOrganicLockSpeciesIds(b.organicGenusLocks, db));
 
   // Probes have named the genera, so "is Bacterium here" is settled and the presence floor has
   // nothing left to judge. "Which Bacterium" is wide open, and that is a different floor.
@@ -170,8 +280,22 @@ export function demoteBelowPresenceFloor(
       m.organicAnalysisComplete === true ||
       m.approximateMatch === true ||
       confirmed.has(m.entry.id);
-    if (immune || pct >= PRESENCE_FLOOR_PCT || kept < keepAtLeast) {
+    const floor = presenceFloorFor(m.entry.id);
+    if (immune || pct >= floor || kept < keepAtLeast) {
       kept++;
+      if (pct != null && Number.isFinite(pct)) {
+        floorKept.set(m, {
+          why:
+            m.organicAnalysisComplete === true || confirmed.has(m.entry.id)
+              ? "sampled"
+              : m.approximateMatch === true
+                ? "approximate"
+                : pct >= floor
+                  ? "passed"
+                  : "best",
+          pct,
+        });
+      }
       continue;
     }
     m.unlikely = true;
@@ -179,7 +303,7 @@ export function demoteBelowPresenceFloor(
       ...(m.unlikelyReasons ?? []),
       {
         field: "Chance here",
-        detail: `${pct.toFixed(1)} % — under the ${PRESENCE_FLOOR_PCT} % this panel shows. Listed as a low-probability find rather than excluded.`,
+        detail: `${pct.toFixed(1)} % — under the ${floor} % this panel shows. Listed as a low-probability find rather than excluded.`,
       },
     ];
   }
@@ -188,13 +312,13 @@ export function demoteBelowPresenceFloor(
 /**
  * How large a share of its own genus a candidate needs after a DSS.
  *
- * The same five per cent as {@link PRESENCE_FLOOR_PCT}, and measured the same way rather than
- * assumed to match: across the 609 species the commander has confirmed on probed bodies, a 5 % floor
- * on this number would have hidden **two** of them beforehand (Bacterium omentum at 0.81 %, Osseus
- * discus at 4.78 %), and both come straight back the moment he samples them, because a confirmed
- * species is immune below. 2 % hides one, 10 % hides three.
+ * The same one per cent as {@link PRESENCE_FLOOR_PCT} (owner, 2026-10-03, no misses). At five it hid
+ * Bacterium tela at 4.9 % on Hypi Fraae RF-Q b21-2 B 4, where it grew; over 1,500 random confirmed
+ * Bacterium bodies it hid the right species on 7, all tela, and at one per cent on none, for a wrong
+ * extra row (tela 15 times, cerbrus twice) on 1.1 % of the bodies. Earlier, on the commander's 609
+ * confirmed species: 5 % hid two (Bacterium omentum 0.81 %, Osseus discus 4.78 %).
  */
-export const GENUS_SHARE_FLOOR_PCT = 5;
+export const GENUS_SHARE_FLOOR_PCT = 1;
 
 /**
  * The same idea as the presence floor, for the list after a DSS.
@@ -243,6 +367,19 @@ function demoteBelowGenusShareFloor(matches: SpeciesMatch[], confirmed: Set<stri
         confirmed.has(m.entry.id);
       if (immune || pct >= GENUS_SHARE_FLOOR_PCT || kept < 1) {
         kept++;
+        if (pct != null && Number.isFinite(pct)) {
+          floorKept.set(m, {
+            why:
+              m.organicAnalysisComplete === true || confirmed.has(m.entry.id)
+                ? "sampled"
+                : m.approximateMatch === true
+                  ? "approximate"
+                  : pct >= GENUS_SHARE_FLOOR_PCT
+                    ? "genusShare"
+                    : "genusBest",
+            pct,
+          });
+        }
         continue;
       }
       m.unlikely = true;
@@ -282,8 +419,12 @@ function demoteBelowGenusShareFloor(matches: SpeciesMatch[], confirmed: Set<stri
  * `exoDataConsistencyAlerts` still reports the mismatch: the row being visible does not make the
  * codex list right.
  */
-export function markSampledDespiteUnlikely(matches: SpeciesMatch[], b: BodyExoState, db: SpeciesDatabase): void {
-  const sampled = new Set(collectResolvedOrganicLockSpeciesIds(b.organicGenusLocks, db));
+export function markSampledDespiteUnlikely(
+  matches: SpeciesMatch[],
+  b: BodyExoState,
+  db: SpeciesDatabase,
+): void {
+  const sampled = new Set(collectOwnOrganicLockSpeciesIds(b.organicGenusLocks, db));
   if (sampled.size === 0) return;
   for (const m of matches) {
     // A Log already resolves the species, so `organicAnalysisComplete` is too strict a test here:

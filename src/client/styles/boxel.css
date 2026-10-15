@@ -1,0 +1,573 @@
+/* ---- Boxels screen (owner, 2026-10-05: the redo, laid out like My discoveries) ---------------- */
+
+.boxel-screen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  color: var(--text);
+}
+.boxel-screen__head {
+  gap: var(--s-4);
+}
+.boxel-screen__head .modal-close {
+  margin-left: 0;
+}
+/* The [?] sits just left of the close button; together they take the head's right end. */
+.boxel-screen__head .boxel-help-btn {
+  margin-left: auto;
+}
+.boxel-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.boxel-current__end {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.boxel-current__end input {
+  flex: 0 0 5rem;
+  min-width: 0;
+  width: 5rem;
+}
+
+.boxel-screen__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  /* side menu · its drawer button · the table. The side's width animates to 0 when folded. */
+  grid-template-columns: 22rem 0.9rem 1fr;
+  transition: grid-template-columns 0.25s ease;
+}
+.boxel-screen__body--folded {
+  grid-template-columns: 0rem 0.9rem 1fr;
+}
+.boxel-screen__body--folded .boxel-side {
+  padding-inline: 0;
+  border-right-color: transparent;
+}
+
+/* The drawer's button: small and tall, in the gap between the side menu and the table. */
+.boxel-drawer {
+  align-self: center;
+  width: 0.9rem;
+  height: 4.5rem;
+  padding: 0;
+  border: 1px solid var(--accent-a38);
+  border-left: 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1;
+  cursor: pointer;
+}
+.boxel-drawer:hover,
+.boxel-drawer:focus-visible {
+  background: rgba(var(--accent-rgb), 0.2);
+  color: var(--accent-bright);
+}
+@media (prefers-reduced-motion: reduce) {
+  .boxel-screen__body {
+    transition: none;
+  }
+}
+
+.boxel-stars {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+.boxel-stars__more {
+  color: var(--accent);
+  cursor: help;
+  white-space: nowrap;
+}
+
+/* The side menu: every saved boxel, a tick = in the table. */
+.boxel-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.6rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-right: 1px solid var(--accent-a22);
+}
+.boxel-side__search {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+}
+.boxel-side__list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.boxel-side__item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.2rem 0.45rem;
+  padding: 0.35rem 0.45rem;
+  font-size: var(--fs-sm);
+  border: 1px solid transparent;
+  background: rgba(var(--accent-rgb), 0.04);
+}
+.boxel-side__item--on {
+  border-color: var(--accent-a38);
+  background: rgba(var(--accent-rgb), 0.09);
+}
+.boxel-side__item--done {
+  opacity: 0.8;
+}
+.boxel-side__tick {
+  display: flex;
+  cursor: pointer;
+}
+.boxel-side__name {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.boxel-side__name:hover strong {
+  color: var(--accent-bright);
+}
+.boxel-side__here {
+  margin-left: 0.4rem;
+  padding: 0 0.3rem;
+  font-size: var(--fs-2xs);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid currentColor;
+}
+.boxel-side__bar,
+.boxel-side__count,
+.boxel-side__actions {
+  grid-column: 2;
+}
+.boxel-side__bar {
+  height: 0.3rem;
+  background: rgba(var(--accent-rgb), 0.15);
+}
+.boxel-side__bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.boxel-side__item--done .boxel-side__bar > span {
+  background: var(--ok);
+}
+.boxel-side__count {
+  font-variant-numeric: tabular-nums;
+}
+.boxel-side__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  justify-content: flex-end;
+}
+.boxel-side__actions:empty {
+  display: none;
+}
+
+/* The table side: summary, then the table filling the rest. */
+.boxel-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0.6rem 0.8rem;
+}
+.boxel-main .disc-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* Holds the table (dimmed while other boxels load): passes the height on, so the table still scrolls. */
+.boxel-table-slot {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.boxel-next {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+.boxel-notable {
+  color: var(--accent-bright);
+  font-weight: 700;
+}
+.boxel-skipped {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.boxel-bio {
+  white-space: normal;
+}
+.boxel-common {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.boxel-row__actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.boxel-row__actions .fdb-chip,
+.boxel-side__actions .fdb-chip {
+  padding-inline: 0.45rem;
+  font-size: var(--fs-2xs);
+}
+.boxel-del {
+  color: #ff8a7a;
+  border-color: rgba(255, 138, 122, 0.6);
+}
+
+/* The "delete from here" question, above the table. */
+.boxel-cut {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  font-size: var(--fs-sm);
+  border: 1px solid rgba(255, 138, 122, 0.55);
+  background: rgba(255, 138, 122, 0.07);
+}
+.boxel-cut__actions {
+  display: flex;
+  gap: 0.3rem;
+}
+
+@media (max-width: 760px) {
+  .boxel-screen__head {
+    flex-wrap: wrap;
+  }
+  .boxel-current,
+  .boxel-plan {
+    flex: 1 1 100%;
+  }
+  .boxel-plan input {
+    flex: 1 1 auto;
+    width: auto;
+  }
+  .boxel-screen__body,
+  .boxel-screen__body--folded {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  /* Stacked on a phone: the side menu sits above the table, no drawer. */
+  .boxel-drawer {
+    display: none;
+  }
+  .boxel-screen__body--folded .boxel-side {
+    padding-inline: 0.6rem;
+  }
+  .boxel-side {
+    max-height: 35vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--accent-a22);
+  }
+  /* A phone scrolls the whole screen: the cards get the height, not the summary above them. */
+  .boxel-screen__body {
+    display: block;
+    overflow-y: auto;
+  }
+  .boxel-main .disc-table-wrap,
+  .boxel-main .disc-card-scroll {
+    max-height: 80vh;
+  }
+  .boxel-main .fdb-summary {
+    gap: 0.2rem 0.9rem;
+    font-size: var(--fs-sm);
+  }
+  .boxel-screen__head {
+    position: relative;
+    padding-right: 2.6rem;
+  }
+  .boxel-screen__head .modal-close {
+    position: absolute;
+    top: 0.4rem;
+    right: 0.4rem;
+  }
+}
+
+.boxel-notables {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.boxel-from-index {
+  color: var(--text-dim);
+}
+.boxel-from-index .boxel-notable {
+  color: inherit;
+  font-weight: 600;
+}
+
+/* One search bar and what it searches (owner, 2026-10-05). */
+.boxel-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.boxel-filter__kind {
+  min-width: 10rem;
+}
+.boxel-filter__input {
+  flex: 1 1 16rem;
+  font-size: var(--fs-sm);
+}
+.boxel-plan {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.boxel-plan input {
+  flex: 0 1 22rem;
+  min-width: 0;
+  width: min(22rem, 40vw);
+}
+
+/* Previous boxels: every one flown through, notable first (owner, 2026-10-05). */
+.boxel-prev {
+  display: grid;
+  gap: 0.4rem;
+}
+.boxel-prev:empty {
+  display: none;
+}
+.boxel-side__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.boxel-side__tabs .disc-tab {
+  flex: 1 1 auto;
+}
+.boxel-prev__range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.boxel-prev__item {
+  grid-template-columns: 1fr;
+}
+.boxel-prev__item > * {
+  grid-column: 1;
+}
+.boxel-prev__why {
+  font-size: var(--fs-xs);
+}
+
+.boxel-lookup-status {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* ---- Mass code tables (behind the [?]) and Looking for (owner, 2026-10-05) ------------------- */
+
+.boxel-help {
+  margin: 0 var(--s-4) var(--s-2);
+  max-height: 45vh;
+  overflow: auto;
+}
+.boxel-rates__wrap {
+  overflow-x: auto;
+  margin: 0 0 0.6rem;
+}
+.boxel-rates {
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.boxel-rates caption {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 0 0.25rem;
+}
+.boxel-rates th,
+.boxel-rates td {
+  padding: 0.12rem 0.45rem;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--accent-a12, rgba(255, 255, 255, 0.06));
+}
+.boxel-rates th[scope="row"],
+.boxel-rates thead th:first-child {
+  text-align: center;
+  color: var(--accent-bright);
+}
+.boxel-best {
+  color: var(--ok-bright, var(--ok));
+  font-weight: 700;
+}
+
+.boxel-advice {
+  margin: 0 var(--s-4) var(--s-2);
+}
+.boxel-advice__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+.boxel-advice__seg {
+  display: inline-flex;
+  gap: 0.2rem;
+}
+.boxel-advice__ranks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.boxel-advice__out {
+  margin-top: 0.4rem;
+  padding: 0.4rem 0.7rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-a06);
+  font-size: var(--fs-sm);
+}
+.boxel-advice__out p {
+  margin: 0;
+}
+.boxel-advice__lists {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 2rem;
+}
+.boxel-advice__lists h4 {
+  margin: 0 0 0.2rem;
+  font-size: var(--fs-sm);
+}
+.boxel-advice__lists ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.boxel-advice__item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0;
+}
+.boxel-advice__item .fdb-chip {
+  margin-left: auto;
+}
+.boxel-advice__lists > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+/* Save as a floppy disk (owner, 2026-10-06) */
+.boxel-advice__save {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.32rem;
+}
+.boxel-advice__save svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+/* "Not guaranteed": said where the eye is, the how on hover */
+.boxel-advice__disclaimer {
+  margin: 0.3rem 0 0;
+  color: var(--warn, var(--text-dim));
+  cursor: help;
+}
+.boxel-help__lead {
+  margin: 0 0 0.4rem;
+  cursor: help;
+}
+
+/* A saved boxel at a golden place (BoxelAdvice GoldenTag). */
+.boxel-golden {
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  font-size: var(--fs-xs);
+  color: var(--ok-bright, var(--ok));
+  border: 1px solid var(--ok, currentColor);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+/* Looking for folds away (BoxelAdvice) */
+.boxel-advice__toggle {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.boxel-advice__toggle:hover {
+  color: var(--accent-bright);
+}
+/* A phone: three suggestions a list, the rest on a bigger screen (owner, 2026-10-06: crowded) */
+@media (max-width: 760px) {
+  .boxel-advice__lists li:nth-child(n + 4) {
+    display: none;
+  }
+}
+
+/* A page of History on its way (owner, 2026-10-06): a small turning circle at the end of the list. */
+.boxel-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.6rem 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+.boxel-loading__spin {
+  width: 0.95rem;
+  height: 0.95rem;
+  border: 2px solid var(--accent-a22);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: boxel-spin 0.8s linear infinite;
+}
+@keyframes boxel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boxel-loading__spin {
+    animation-duration: 2.4s;
+  }
+}
+
+/* "Show Next boxel in the main screen" (owner, 2026-10-11). */
+.boxel-header-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.2rem 0 0.4rem;
+  cursor: pointer;
+}

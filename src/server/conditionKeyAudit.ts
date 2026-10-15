@@ -118,6 +118,7 @@ const PARSED_CRITERION_KEYS: readonly string[] = [
   "maxPressure",
   "surfacePressureMin",
   "surfacePressureMax",
+  "maxPressureByAtmosphere",
   // volcanism
   "volcanismIncludes",
   "volcanism",
@@ -148,6 +149,9 @@ const PARSED_CRITERION_KEYS: readonly string[] = [
   "knownSystems",
   "outside_signal_count",
   "outsideSignalCount",
+  // every condition known and met, or not listed (Crystalline Shards)
+  "all_conditions_required",
+  "allConditionsRequired",
   // distance from the arrival star
   "distanceFromArrivalLs",
   "distance_from_arrival",

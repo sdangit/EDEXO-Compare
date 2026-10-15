@@ -87,12 +87,22 @@ module.exports = {
     "electron/foregroundWatch.cjs",
     "electron/windowGuards.cjs",
     "electron/keybinds.cjs",
+    "electron/tabWindows.cjs",
+    // The EDEXO browser (plan 9).
+    "electron/browserTabs.cjs",
+    "electron/browserPrefs.cjs",
+    "electron/browserBlocker.cjs",
     "electron/updater.cjs",
+    // The server's own process (2026-10-09): main.cjs starts app.cjs through it.
+    "electron/serverChild.cjs",
+    "electron/atomicWrite.cjs",
     ...(process.env.EDEXO_DIAG === "1" ? ["electron/diag.cjs"] : []),
     "package.json",
   ],
   extraResources: [
     { from: "build/app.cjs", to: "edexo/app.cjs" },
+    // The EDEXO browser's blocking engine (plan 9.1): outside the asar, a worker thread loads it.
+    { from: "build/browser-adblock.cjs", to: "edexo/browser-adblock.cjs" },
     { from: "dist/eb-staging/web", to: "web" },
     { from: "dist/eb-staging/data", to: "data" },
     { from: "public/edexo-icon.png", to: "edexo/icon.png" },
@@ -112,6 +122,12 @@ module.exports = {
     { from: "node_modules/sql.js/dist/sql-wasm.wasm", to: "sql-wasm/sql-wasm.wasm" },
   ],
   win,
+  /*
+    Chromium's own menu and dialog texts in English only (owner, 2026-10-06): the app is English, and
+    the other 54 locale packs were 47 MB of the install. Number and date formatting is ICU
+    (icudtl.dat), not these packs.
+  */
+  electronLanguages: ["en-US"],
   /*
     Linux (owner, 2026-09-28; docs/linux-plan-28092026.md Phase B): an AppImage, built in WSL by
     scripts/dist-linux-appimage.mjs. `executableName` lower-case, as Linux expects; main.cjs runs it

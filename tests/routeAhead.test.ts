@@ -11,7 +11,9 @@ const roles: StarRolesConfig = {
 
 /** Seven systems 10 ly apart in a line: A(K) B(T) C(M) D(K) E(T) F(N) G(K). */
 function route(): NavRouteWaypointDTO[] {
-  const classes = ["K", "T", "M", "K", "T", "N", "K"];
+  return routeOf(["K", "T", "M", "K", "T", "N", "K"]);
+}
+function routeOf(classes: string[]): NavRouteWaypointDTO[] {
   return classes.map((c, i) => ({
     systemAddress: i + 1,
     starSystem: String.fromCharCode(65 + i),
@@ -21,9 +23,9 @@ function route(): NavRouteWaypointDTO[] {
 }
 
 /** The last jump burned 1 t over 10 ly, so every leg here costs 1 t. */
-function analyse(fuelTotalT: number | null, currentSystemAddress = 1) {
+function analyse(fuelTotalT: number | null, currentSystemAddress = 1, classes?: string[]) {
   return analyzeNavRouteFuel({
-    route: route(),
+    route: classes ? routeOf(classes) : route(),
     currentSystemAddress,
     fuelTotalT,
     lastFsdFuelT: 1,
@@ -43,31 +45,95 @@ describe("route strip: the hops ahead and the refuel mark", () => {
     expect(a?.refuelLevel).toBe("none");
   });
 
-  it("puts the pump on the last scoop the tank still reaches (the web UI's rule)", () => {
-    // budget 3 t → three legs reachable (B, C, D); scoops at C and D → the pump sits on D
+  /*
+    The rule (owner, 2026-10-13, after 1.2.15 drew two pumps and a red one on routes with no trap): one pump.
+    Yellow on the last system the tank reaches when it is scoopable (1.2.14's mark); red, blinking, on the last
+    scoopable star before it when it is not, since past that star the tank runs dry with nowhere to scoop.
+  */
+  it("yellow only, on the last system the tank reaches, when that one is scoopable", () => {
+    // 3 t: B, C, D in reach; D (K) is the last and scoopable.
     const a = analyse(3.06);
     expect(a?.fuelCanFinishPlottedRoute).toBe(false);
-    expect(a?.jumpsToLastScoopableOnRoute).toBe(3);
     expect(a?.refuelInHops).toBe(3);
     expect(a?.refuelLevel).toBe("yellow");
     expect(a?.ahead[2]).toMatchObject({ starClass: "K", refuel: "yellow" });
     expect(a?.ahead.filter((h) => h.refuel !== "none")).toHaveLength(1);
+    expect(a?.routeRefuelAlert).not.toBe("red");
   });
 
-  it("keeps the web UI's colour: two jumps of margin is still yellow", () => {
-    // budget 2 t → B (no scoop) and C (scoop) reachable; the pump sits on C, the alert says yellow
+  it("yellow only when the last reachable system is scoopable, even with another scoop right after", () => {
+    // 2 t: B (T) and C (M) in reach; C is the last and scoopable.
     const a = analyse(2.06);
     expect(a?.refuelInHops).toBe(2);
     expect(a?.refuelLevel).toBe("yellow");
-    expect(a?.ahead[1]?.refuel).toBe("yellow");
+    expect(a?.ahead.filter((h) => h.refuel !== "none").map((h) => h.refuel)).toEqual(["yellow"]);
   });
 
-  it("goes red with no scoop within reach", () => {
-    // budget 1 t → only B (a brown dwarf) is reachable: nothing to scoop before running dry
+  it("red on the last scoopable star when the tank runs out on one that is not: a trap", () => {
+    // 4 t: B, C, D, E in reach; E (T) is the last and cannot be scooped, so D (K) is the last chance.
+    const a = analyse(4.06);
+    expect(a?.refuelInHops).toBe(3);
+    expect(a?.refuelLevel).toBe("red");
+    expect(a?.ahead[2]).toMatchObject({ starClass: "K", refuel: "red" });
+    expect(a?.ahead.filter((h) => h.refuel !== "none")).toHaveLength(1);
+  });
+
+  it("never red on a route where every star can be scooped", () => {
+    const a = analyse(3.06, 1, ["K", "G", "F", "K", "M", "A", "K", "G"]);
+    expect(a?.fuelCanFinishPlottedRoute).toBe(false);
+    expect(a?.refuelLevel).toBe("yellow");
+    expect(a?.ahead.some((h) => h.refuel === "red")).toBe(false);
+    expect(a?.routeRefuelAlert).not.toBe("red");
+  });
+
+  it("red on the one scoopable star before ten that are not", () => {
+    // At A (K) with 4 t, then ten T dwarfs: past A the tank runs dry among them.
+    const a = analyse(4.06, 1, ["K", ...Array(10).fill("T"), "K"]);
+    expect(a?.refuelInHops).toBe(0);
+    expect(a?.refuelLevel).toBe("red");
+    expect(a?.routeRefuelAlert).toBe("red");
+  });
+
+  it("goes red on the star the ship is at when it is the last scoop the tank reaches", () => {
+    // At A (K) with 1 t: B (a brown dwarf) is the only hop in reach, so A is the last scoop. It used
+    // to read "no scoopable star within reach", drawn at the end of the strip (owner, 2026-10-12).
     const a = analyse(1.06);
+    expect(a?.refuelInHops).toBe(0);
+    expect(a?.refuelLevel).toBe("red");
+    expect(a?.routeRefuelAlert).toBe("red");
+    expect(a?.ahead.every((h) => h.refuel === "none")).toBe(true);
+  });
+
+  it("goes red with no scoop within reach, here included", () => {
+    // At B (T) with 0.5 t: not even C is in reach, and B cannot be scooped.
+    const a = analyse(0.56, 2);
     expect(a?.refuelInHops).toBeNull();
     expect(a?.refuelLevel).toBe("red");
     expect(a?.ahead.every((h) => h.refuel === "none")).toBe(true);
+  });
+
+  it("costs a supercharged first jump as the ordinary jump it is, not a red ! (review 1.2.16)", () => {
+    // From a neutron star: 120 ly to a K star, then 10 ly on. Unboosted that is out of range (50 ly) and 144 t.
+    const legs: NavRouteWaypointDTO[] = [
+      { systemAddress: 1, starSystem: "PSR", starPos: [0, 0, 0], starClass: "N" },
+      { systemAddress: 2, starSystem: "Far K", starPos: [120, 0, 0], starClass: "K" },
+      { systemAddress: 3, starSystem: "Next T", starPos: [130, 0, 0], starClass: "T" },
+    ];
+    const run = (boost: number | null) =>
+      analyzeNavRouteFuel({
+        route: legs,
+        currentSystemAddress: 1,
+        fuelTotalT: 20,
+        lastFsdFuelT: 1,
+        lastFsdDistLy: 10,
+        loadoutMaxJumpLy: 50,
+        firstLegBoost: boost,
+        starRoles: roles,
+      });
+    expect(run(null)?.refuelLevel).toBe("red");
+    const boosted = run(4);
+    expect(boosted?.fuelCanFinishPlottedRoute).toBe(true);
+    expect(boosted?.refuelLevel).not.toBe("red");
   });
 
   it("is empty off the plot", () => {

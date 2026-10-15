@@ -54,6 +54,32 @@ export function directParentBodyId(parents: unknown): number | null {
   return null;
 }
 
+/**
+ * The barycentre a moon shares with its twin: `Parents[0]` a barycentre whose own parent is a planet.
+ * Only such pairs share their biology (owner, 2026-10-04, overnight Q13: "only for moons that have a
+ * barycentre"); moons of one planet are not twins. Null for anything else.
+ */
+export function moonPairBarycentreId(parents: unknown): number | null {
+  if (!Array.isArray(parents) || parents.length < 2) return null;
+  const p0 = parents[0] as Record<string, unknown>;
+  const p1 = parents[1] as Record<string, unknown>;
+  if (typeof p0?.Null !== "number" || typeof p1?.Planet !== "number") return null;
+  return p0.Null;
+}
+
+/**
+ * True when a body orbits a star (or a barycentre of stars), not a planet: `Parents` read past any
+ * barycentre to the first planet or star. Unknown parents: false.
+ */
+export function orbitsAStar(parents: unknown): boolean {
+  if (!Array.isArray(parents)) return false;
+  for (const p of parents as Record<string, unknown>[]) {
+    if (typeof p?.Planet === "number") return false;
+    if (typeof p?.Star === "number") return true;
+  }
+  return false;
+}
+
 /** Immediate orbit body when this object is a moon of a planet — excludes primary-only orbits of a star. */
 export function directParentPlanetId(parents: unknown): number | null {
   if (!Array.isArray(parents) || parents.length === 0) return null;

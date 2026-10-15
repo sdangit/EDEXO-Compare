@@ -5,11 +5,12 @@
 import { useEffect, useState } from "react";
 import type { GalaxyMySystemDTO, GalaxySectorDTO, GalaxySystemDTO } from "@shared/types";
 import { formatCount, formatValue } from "./clusters";
+import { fmtCrExact, fmtLy } from "@shared/format";
 import type { CodexMapSystemDTO } from "@shared/dto/codexMap.js";
 import { CopySystemButton } from "../CopySystemButton";
 import { SystemBookmarkButton } from "../BookmarkButton";
 
-const cr = (n: number | null) => (n == null ? "—" : `${Math.round(n).toLocaleString()} CR`);
+const cr = fmtCrExact;
 
 /** Fetch JSON for a key; "loading" while it runs, "error" when it fails. */
 function useJson<T>(url: string | null): T | "loading" | "error" | null {
@@ -74,7 +75,7 @@ export function IndexRecord({
         </>
       ) : null}
       <p className="g3d-panel__meta">
-        {d.region ?? "Outside the named regions"} · {Math.round(d.distanceFromSolLy).toLocaleString()} ly from Sol
+        {d.region ?? "Outside the named regions"} · {fmtLy(d.distanceFromSolLy)} from Sol
         {d.bodyCount ? ` · ${d.bodyCount} bodies` : ""}
       </p>
       <p className="g3d-panel__chips">
@@ -137,7 +138,7 @@ export function MySystemRecord({ addr }: { addr: string }) {
         {f & 2 ? <span className="g3d-chip">All bodies found</span> : null}
         {f & 4 ? <span className="g3d-chip g3d-chip--dss">You mapped (DSS)</span> : null}
         {f & 8 ? <span className="g3d-chip g3d-chip--you">You scanned plants</span> : null}
-        {f & 32 ? <span className="g3d-chip g3d-chip--codex">First discovery</span> : null}
+        {f & 32 ? <span className="g3d-chip g3d-chip--codex">◆ First discovery</span> : null}
         {f & 64 ? <span className="g3d-chip g3d-chip--codex">First footfall</span> : null}
       </p>
       {d.unfinishedFloorCr != null ? (

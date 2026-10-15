@@ -1,16 +1,17 @@
 /**
  * The body pane: glance bar, planetary facts, sell range, candidate species (7.3).
  */
+import type { UnknownPlantSlot } from "@shared/unknownPlants";
 import { nextTempUnit, usePressUnit, useTempUnit } from "./useUnits";
 import { codexFirstTitle, codexMarkTitle } from "./codexMark";
 import { ArrivalTrip } from "@shared/systemTriage";
-import { fmtCrRangeShort, fmtCrShort } from "./credits";
+import { fmtCrRangeShort, fmtCrShort, fmtLsExact } from "@shared/format";
 import { FootfallContext } from "./footfallContext";
 import { RowContext, LiveRun } from "./rowContext";
 import { settledMultiplier } from "@shared/footfallValue";
 import { readableAtmosphereLead } from "@shared/atmosphereLabel";
 import { footfallCertainty } from "@shared/footfallValue";
-import { useCallback, memo, Suspense, useEffect, useMemo, useState } from "react";
+import { useCallback, memo, Suspense, useMemo, useState } from "react";
 import { ExoPayoutRangePanel, payoutHeadline } from "./ExoPayoutRangePanel";
 import { FoldPanel } from "./ui/Fold";
 import { SnapshotButton } from "./SnapshotButton";
@@ -26,15 +27,32 @@ import {
   pressHeatStyle,
   tempHeatStyle,
 } from "./planetDisplayUtils";
+import { TemperatureLabel } from "./TemperatureLabel";
 import { exomasteryDetailHasContent, groupedSortedMatches } from "./speciesMatchHelpers";
 import { bodyGenusProgress, genusProgressTag } from "@shared/genusProgress";
 import { ExomasteryHabitatMatchModal } from "./SharedModals";
 import { candidateSpeciesDenomFromFss, genusHintIsDssOrphan, tripRankLabel } from "./bodyHelpers";
-import { EDEXO_CODEX_NEW_ONLY_LS, EDEXO_COMPACT_CANDIDATE_VIEW_LS, readLsBool, writeLsBool } from "./lsPrefs";
+import { EDEXO_CODEX_NEW_ONLY_LS, readLsBool, writeLsBool } from "./lsPrefs";
+import { oneOf, usePersistedState } from "./usePersistedState";
 import { GenusTag, GlanceGenera, genusRowSpecies, LandableBadge } from "./BodyGlance";
 import { ExoPayoutRangeDetailModal } from "./ExoPayoutRangeDetailModal";
 import { GenusMatchGroup } from "./GenusMatchGroup";
+import { VolcanismFact } from "./VolcanismFact";
+import { JumponiumFact } from "./JumponiumFact";
+import type { JumponiumDTO } from "@shared/jumponium";
 export { GlanceGenera } from "./BodyGlance";
+
+/*
+  The game's DSS names some genera by one of their species: every Sinuous Tubers body comes back "Roseum Sinuous
+  Tubers" and every Anemone "Luteolum Anemone" — the genus's codex name, not what grows there (owner, 2026-10-14:
+  Laso GI-J d9-93 A 4 said Roseum after the DSS and was Prasinum on foot; Spansh's Blatteum bodies carry the same
+  token). Said on hover, so the label is not taken for the species.
+*/
+function dssLabelNote(label: string | null | undefined, genus: string): string | undefined {
+  const l = (label ?? "").trim();
+  if (!l || l.toLowerCase() === genus.trim().toLowerCase() || !l.toLowerCase().includes(genus.trim().toLowerCase().split(" ")[0]!)) return undefined;
+  return `The game's scan calls this genus "${l}" on every body: that is its name for the genus, not the species. The species is known once you scan one on foot.`;
+}
 
 export const BodyPane = memo(function BodyPane({
   body,
@@ -42,8 +60,11 @@ export const BodyPane = memo(function BodyPane({
   trip,
   includeBacteriumInSearch,
   onToggleIncludeBacterium,
+  jumponium,
 }: {
   body: BodyComputed;
+  /** Jumponium aboard (shared/jumponium.ts), for the Jumponium field's hover. */
+  jumponium?: JumponiumDTO | null;
   /** The sampling run in progress on this body, for the rows' n/3 progress; null otherwise. */
   liveRun: LiveRun | null;
   /** This body's flight from the arrival star, against the system's other biological bodies (A2). */
@@ -60,14 +81,18 @@ export const BodyPane = memo(function BodyPane({
    */
   const [showUnlikely, setShowUnlikely] = useState(false);
   /**
-   * Compact is the default now.
+   * Rows by default from three candidates up (owner, 2026-10-04, plan 3.1), cards below that; the
+   * Compact button is the commander's own choice and sticks.
    *
    * On a body with 30 candidates the hero layout renders 11,481 DOM elements and 22,288 px of
-   * cards; compact renders 2,185 and 8,544 — the same answers in a fifth of the nodes. The toggle
-   * is still there, and anyone who has already set it keeps their choice.
+   * cards; compact renders 2,185 and 8,544 — the same answers in a fifth of the nodes. A new key:
+   * the old one was written on every start whatever was clicked, so it cannot tell a choice from
+   * the default.
    */
-  const [compactCandidateView, setCompactCandidateView] = useState(() =>
-    readLsBool(EDEXO_COMPACT_CANDIDATE_VIEW_LS, false),
+  const [candidateView, setCandidateView] = usePersistedState<"auto" | "rows" | "cards">(
+    "edexo.candidateView",
+    "auto",
+    oneOf("auto", "rows", "cards"),
   );
   const [tempUnit, setTempUnit] = useTempUnit();
   const [pressUnit, setPressUnit] = usePressUnit();
@@ -101,10 +126,7 @@ export const BodyPane = memo(function BodyPane({
     sc?.distanceFromArrivalLs != null && Number.isFinite(sc.distanceFromArrivalLs)
       ? sc.distanceFromArrivalLs
       : null;
-  const fromArrivalDisplay =
-    arrivalLs != null
-      ? `${arrivalLs === 0 ? "0" : arrivalLs.toLocaleString(undefined, { maximumFractionDigits: 2 })} Ls`
-      : "—";
+  const fromArrivalDisplay = arrivalLs != null ? fmtLsExact(arrivalLs) : "—";
 
   const landShort = sc == null ? "No detailed scan" : sc.Landable === true ? "Landable" : "Not landable";
 
@@ -180,7 +202,10 @@ export const BodyPane = memo(function BodyPane({
   const codexNewCount = useMemo(() => body.matches.filter((m) => m.codexNew === true).length, [body.matches]);
   const hasEvidence = useCallback(
     (m: BodyComputed["matches"][0]) =>
-      m.provenance != null && (m.provenance.firstHand || m.provenance.corpusInSystem > 0),
+      // The composition scanner naming it here counts (owner, 2026-10-06), as does any log on the body.
+      m.confirmedByCompositionScan === true ||
+      m.loggedBy != null ||
+      (m.provenance != null && (m.provenance.firstHand || m.provenance.corpusInSystem > 0)),
     [],
   );
   const evidenceCount = useMemo(() => body.matches.filter(hasEvidence).length, [body.matches, hasEvidence]);
@@ -198,6 +223,9 @@ export const BodyPane = memo(function BodyPane({
     has proved is on this body does not belong behind "show unlikely (N)".
   */
   const likelyMatches = useMemo(() => shownMatches.filter((m) => !m.unlikely || m.sampledHere === true), [shownMatches]);
+  const compactCandidateView = candidateView === "auto" ? likelyMatches.length >= 3 : candidateView === "rows";
+  const setCompactCandidateView = (next: (v: boolean) => boolean) =>
+    setCandidateView(next(compactCandidateView) ? "rows" : "cards");
   const unlikelyMatches = useMemo(() => shownMatches.filter((m) => m.unlikely && m.sampledHere !== true), [shownMatches]);
   // Genus order from the co-occurrence solver, most likely first. Ordering only — the probabilities
   // behind it are not calibrated, so nothing here renders a number.
@@ -205,6 +233,8 @@ export const BodyPane = memo(function BodyPane({
   // Grouped once per change, not in the JSX on every render (UI review P3) — the groups are new objects
   // each time, which also made memo(GenusMatchGroup) never skip.
   const likelyGroups = useMemo(() => groupedSortedMatches(likelyMatches, genusOrder), [likelyMatches, genusOrder]);
+  // Computed with the snapshot (shared/unknownPlants.ts), so the HUD shows the same rows.
+  const unknownSlots = body.unknownPlants ?? [];
   const unlikelyGroups = useMemo(() => groupedSortedMatches(unlikelyMatches, genusOrder), [unlikelyMatches, genusOrder]);
 
   // The body's first-footfall answer, shared with every species card below (WEBUI-REDESIGN 1.2).
@@ -214,10 +244,6 @@ export const BodyPane = memo(function BodyPane({
         commanderFirstFootfall: body.exoPayoutRange.commanderFirstFootfall,
       })
     : "unknown";
-
-  useEffect(() => {
-    writeLsBool(EDEXO_COMPACT_CANDIDATE_VIEW_LS, compactCandidateView);
-  }, [compactCandidateView]);
 
   return (
     <FootfallContext.Provider value={bodyFootfall}>
@@ -245,14 +271,19 @@ export const BodyPane = memo(function BodyPane({
               {likelyMatches.length} <small>cand</small> / {body.state.biologicalSignals ?? "?"}{" "}
               <small>bio</small>
             </span>
-            <span className="glance-item">
-              <small>DSS</small> {body.state.dssComplete ? "yes" : "no"}
+            {/* The same mark as the Exo-signals card (review V5). */}
+            <span
+              className="glance-item"
+              title={body.state.dssComplete ? "Mapped with the DSS" : "Not mapped with the DSS yet"}
+            >
+              <small>DSS</small> {body.state.dssComplete ? "✓" : "✗"}
             </span>
             <GlanceGenera rows={genusRows} />
             {arrivalLs != null ? (
               <span className="glance-item">
                 {arrivalLs === 0 ? "0" : arrivalLs.toLocaleString(undefined, { maximumFractionDigits: 0 })}{" "}
-                <small>ls</small>
+                {/* The game's spelling, Ls, as in the cards (review V5); the glance bar's capitals skip it. */}
+                <small className="glance-unit-ls">Ls</small>
               </span>
             ) : null}
           </div>
@@ -320,7 +351,9 @@ export const BodyPane = memo(function BodyPane({
                   title="Cycles Kelvin → Celsius → Fahrenheit (display only; matching still uses journal Kelvin)"
                 >
                   <span className="fact-k">Temperature</span>
-                  <span className="fact-v">{tempLine}</span>
+                  <span className="fact-v">
+                    <TemperatureLabel journalK={Number.isFinite(tempK) ? tempK : null} est={est} unit={tempUnit} />
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -360,6 +393,8 @@ export const BodyPane = memo(function BodyPane({
                     ) : null}
                   </span>
                 </div>
+                <VolcanismFact geology={body.geology} />
+                <JumponiumFact materials={body.mergedScan?.materials} stock={jumponium} />
               </div>
 
               {body.ambiguityNote ? <p className="warn tiny">{body.ambiguityNote}</p> : null}
@@ -502,7 +537,11 @@ export const BodyPane = memo(function BodyPane({
                         className={`genus-progress-row genus-progress-row--${r.status}`}
                         role="row"
                       >
-                        <span className="genus-progress-genus" role="cell">
+                        <span
+                          className="genus-progress-genus"
+                          role="cell"
+                          title={dssLabelNote(r.hint?.Genus_Localised, r.genus)}
+                        >
                           {r.genus}
                           {r.hint && genusHintIsDssOrphan(r.hint, body.dssGenusOrphanHints) ? (
                             <span
@@ -572,7 +611,7 @@ export const BodyPane = memo(function BodyPane({
                     <strong>Bacterium</strong> is off by default because it is low value on most routes; off
                     means off, even for a bacterium the catalog remembers from a similar body.{" "}
                     <strong>Evidence</strong> keeps only rows something has actually observed: scanned by you
-                    on this body, or confirmed in this system by Spansh. It filters on evidence, not on
+                    on this body (on foot or by the composition scanner), or confirmed in this system by Spansh. It filters on evidence, not on
                     likelihood. <strong>Codex new</strong> keeps only species that would be a new entry in
                     your codex (the ones tagged [CODEX]).
                   </p>
@@ -603,22 +642,29 @@ export const BodyPane = memo(function BodyPane({
                     type="button"
                     className={`candidate-species-compact-toggle btn-top-toggle${compactCandidateView ? " btn-top-toggle--on" : ""}`}
                     onClick={() => setCompactCandidateView((v) => !v)}
-                    title="Compact rows; click a row for its full card."
+                    aria-pressed={compactCandidateView}
+                    title={
+                      candidateView === "auto"
+                        ? "Rows from three candidates up, cards below; click to choose for yourself. Click a row for its full card."
+                        : "Compact rows; click a row for its full card."
+                    }
                   >
-                    {compactCandidateView ? "Compact ✓" : "Compact ✗"}
+                    Compact
                   </button>
                   <button
                     type="button"
                     className={`candidate-species-bacterium-toggle btn-top-toggle${includeBacteriumInSearch ? " btn-top-toggle--on" : ""}`}
                     onClick={onToggleIncludeBacterium}
+                    aria-pressed={includeBacteriumInSearch}
                     title="Include bacterium species (off by default: low value)."
                   >
-                    {includeBacteriumInSearch ? "Bacterium ✓" : "Bacterium ✗"}
+                    Bacterium
                   </button>
                   <button
                     type="button"
                     className={`candidate-species-evidence-toggle btn-top-toggle${evidenceOnly ? " btn-top-toggle--on" : ""}`}
                     onClick={() => setEvidenceOnly((v) => !v)}
+                    aria-pressed={evidenceOnly}
                     disabled={evidenceCount === 0 && !evidenceOnly}
                     title={
                       evidenceCount === 0
@@ -626,12 +672,13 @@ export const BodyPane = memo(function BodyPane({
                         : `Only the ${evidenceCount} row${evidenceCount === 1 ? "" : "s"} confirmed by you or by Spansh.`
                     }
                   >
-                    {evidenceOnly ? `Evidence ✓ (${evidenceCount})` : "Evidence ✗"}
+                    {evidenceOnly ? `Evidence (${evidenceCount})` : "Evidence"}
                   </button>
                   <button
                     type="button"
                     className={`candidate-species-codex-toggle btn-top-toggle${codexNewOnly ? " btn-top-toggle--on" : ""}`}
                     onClick={() => setCodexNewOnly(!codexNewOnly)}
+                    aria-pressed={codexNewOnly}
                     disabled={codexNewCount === 0 && !codexNewOnly}
                     title={
                       codexNewCount === 0
@@ -639,16 +686,26 @@ export const BodyPane = memo(function BodyPane({
                         : `Only the ${codexNewCount} species that would be new in your codex here.`
                     }
                   >
-                    {codexNewOnly ? `Codex new ✓ (${codexNewCount})` : "Codex new ✗"}
+                    {codexNewOnly ? `Codex new (${codexNewCount})` : "Codex new"}
                   </button>
                 </div>
               }
             >
-              {body.matches.length === 0 ? (
-                <p className="dim">
-                  No matches — adjust per-species rows in your genus JSON under data/species/, or get journal
-                  scan fields that satisfy those gates.
+              {body.state.autoScanOnly ? (
+                // AutoScanned only (owner, 2026-10-05): no signal count, so no candidates until the FSS.
+                <p className="autoscan-note" role="note">
+                  <span className="autoscan-note__icon" aria-hidden>
+                    ◎
+                  </span>
+                  Unknown number of signals: the ship only AutoScanned this body. Scan the planet with the FSS to
+                  see its possible exobiology.
                 </p>
+              ) : body.matches.length === 0 ? (
+                unknownSlots.length ? (
+                  <UnknownPlantCards slots={unknownSlots} />
+                ) : (
+                  <p className="dim">No candidates for this body.</p>
+                )
               ) : (
                 <>
                   {likelyMatches.length === 0 ? (
@@ -676,6 +733,7 @@ export const BodyPane = memo(function BodyPane({
                       ))}
                     </div>
                   )}
+                  {unknownSlots.length ? <UnknownPlantCards slots={unknownSlots} /> : null}
                   {unlikelyMatches.length > 0 ? (
                     <div className="candidate-species-unlikely">
                       <button
@@ -741,3 +799,38 @@ export const BodyPane = memo(function BodyPane({
     </FootfallContext.Provider>
   );
 });
+
+/** One card per signal the candidate list cannot fill (client/unknownPlants.ts). */
+export function UnknownPlantCards({ slots }: { slots: readonly UnknownPlantSlot[] }) {
+  return (
+    <div className="species-list species-list--unknown">
+      {slots.map((slot, i) => (
+        <article key={i} className="species-card species-card--unknown">
+          <div className="species-unknown-mark" aria-hidden>
+            ?
+          </div>
+          <div className="species-unknown-text">
+            <strong>
+              {slot.genus && slot.maybeBacterium
+                ? `${slot.genus} — switched off in the search`
+                : slot.genus
+                  ? `Unknown ${slot.genus}`
+                  : slot.maybeBacterium
+                    ? "Unknown plant — probably Bacterium"
+                    : "Unknown plant"}
+            </strong>
+            <span className="dim tiny">
+              {slot.genus && slot.maybeBacterium
+                ? "The scanner named Bacterium here. Switch Bacterium on above the list to see which one."
+                : slot.genus
+                ? "The scanner named this genus, and no species in the data fits this body. Worth a look: it may be a new find."
+                : slot.maybeBacterium
+                  ? "A signal with no candidate. Bacterium is switched off in the search; if it is not that, it may be a new find."
+                  : "A signal with no candidate the data knows. Worth a look: it may be a new find."}
+            </span>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}

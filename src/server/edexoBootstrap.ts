@@ -1,3 +1,10 @@
+import { flushNavRouteLog, navRouteLog, recordNavRoute } from "./navRouteLog.js";
+import { enablePredictionAudit, flushPredictionAudit, predictionRecords } from "./predictionAuditLog.js";
+import { predictionQuality } from "./predictionQuality.js";
+import { cardVerdictsFor } from "./cardVerdicts.js";
+import { clearExpeditionCache } from "./expeditionService.js";
+import { flushSurfaceMarks } from "./surfaceMarksFile.js";
+import { startEddnLedgerWatch } from "./eddnLedger.js";
 import path from "node:path";
 import {
   achievementDetail,
@@ -5,6 +12,7 @@ import {
   achievementsList,
   clearAchievementsCache,
 } from "./achievements.js";
+import { achievementNoticeText, createAchievementWatch } from "./achievementNotices.js";
 import {
   buildCodexExport,
   buildExomasteryExport,
@@ -14,7 +22,7 @@ import {
   ownCodexBackupKeys,
 } from "./sharedExomastery.js";
 import { ownFootEntriesWithBackups } from "./footScannedCatalog.js";
-import { existsSync, watchFile, unwatchFile, writeFileSync, readFileSync, readdirSync, watch, statSync } from "node:fs";
+import { existsSync, watchFile, unwatchFile, readFileSync, watch, statSync } from "node:fs";
 import type {
   AppSnapshot,
   AppStatusDTO,
@@ -53,6 +61,7 @@ import { isLoopbackHostName } from "./lanAuth.js";
 import { applyPendingRestore } from "./backup.js";
 import { createBackupService } from "./backupService.js";
 import { APP_VERSION } from "./appVersion.js";
+import os from "node:os";
 import {
   edsmCredentialsStatus,
   forgetEdsmCredentials,
@@ -71,6 +80,7 @@ import {
   organicLiveSummary,
   findSpeciesEntryForEncyclopedia,
   getCachedSpeciesDatabase,
+  setCodexFirstLowChanceKept,
   loadSpeciesDatabase,
   getCachedPrices,
 } from "./snapshot.js";
@@ -93,7 +103,12 @@ import {
 import { clearHostStarObservationsCache } from "./speciesHostStarObservations.js";
 import { clearPlanetClassObservationsCache } from "./speciesPlanetClassObservations.js";
 import { clearStarlightRangesCache } from "./starlightRanges.js";
+import { clearObservedEnvelopeCache } from "./observedEnvelope.js";
 import { clearBodyTypePriorCache } from "./bodyTypePrior.js";
+import { clearSpeciesSplitCache } from "./speciesSplit.js";
+import { clearGenusPriorCache } from "./genusPrior.js";
+import { resetGenusBodySplitCache } from "./genusBodySplit.js";
+import { clearLikelihoodDataCache } from "./likelihoodData.js";
 import { clearGenusPhotosFolderCache, getSpeciesDataWarnings } from "./speciesTreeLoader.js";
 import {
   parseStatusJsonDestination,
@@ -102,8 +117,22 @@ import {
   readStatusJsonFootFixText,
 } from "./footTravelStatus.js";
 import { parseNavRouteJson } from "./navRouteFuel.js";
-import { getProjectRoot, resolveLanKeyPath, resolveUserSettingsJsonPath, resolveExoOutlierLogPath, USER_SETTINGS_FILENAME, getSpeciesDataDir, reapplySpeciesDataDirDiscoveryFromDisk, resolveImportDumpLedgerPath } from "./paths.js";
-import { persistJournalDirPreference, resolveInitialJournalDir } from "./journalDirPreference.js";
+import {
+  getProjectRoot,
+  resolveLanKeyPath,
+  resolveUserSettingsJsonPath,
+  resolveExoOutlierLogPath,
+  USER_SETTINGS_FILENAME,
+  getSpeciesDataDir,
+  reapplySpeciesDataDirDiscoveryFromDisk,
+  resolveImportDumpLedgerPath,
+} from "./paths.js";
+import { guarded } from "./guarded.js";
+import {
+  loadPersistedJournalDir,
+  persistJournalDirPreference,
+  resolveInitialJournalDir,
+} from "./journalDirPreference.js";
 import {
   buildExoMinimapDto,
   buildExoOrganicOverlayDto,
@@ -114,7 +143,10 @@ import { clearEddsnColourVariantsCache } from "./eddsnColourVariants.js";
 import { clearPhotoCreditsCache } from "./photoCredits.js";
 import { clearRegionSpeciesCache } from "./regionSpeciesData.js";
 import { perfTime, startPerfReporter } from "./perf.js";
-import { loadOrganicSampleSessionFromDisk } from "./organicSampleSessionFile.js";
+import {
+  flushPendingOrganicSampleSession,
+  loadOrganicSampleSessionFromDisk,
+} from "./organicSampleSessionFile.js";
 import {
   buildJournalFileManifest,
   removeJournalMergeCache,
@@ -124,23 +156,43 @@ import {
 import { fetchEdsmBodiesAsExplorationRecords, searchEdsmSystemsByName } from "./edsmSystemHydration.js";
 import { fetchSpanshBodiesAsExplorationRecords, searchSpanshSystemsByName } from "./spanshSystemHydration.js";
 import { SessionLog } from "./sessionLog.js";
-import { backlogMap, firstDiscoveryBacklogWithDistance } from "./firstDiscoveryBacklog.js";
+import {
+  backlogMap,
+  firstDiscoveryBacklogNow,
+  firstDiscoveryBacklogSliced,
+  firstDiscoveryBacklogWithDistance,
+} from "./firstDiscoveryBacklog.js";
 import { galaxySpeciesCatalogue, galaxyValueSearch } from "./galaxyValueSearch.js";
 import { galaxyBodyScan, galaxyRegions } from "./galaxyBodyScan.js";
-import { loadBioIndex } from "./bioIndex.js";
-import { mySystemDetail, mySystemsDto, sessionRouteDto } from "./galaxyMine.js";
+import { loadBioIndex, peekBioIndex } from "./bioIndex.js";
+import { importedSystems, loadVisitedImport } from "./visitedCache.js";
+import { mySystemDetail, mySystemsDto, sessionRouteDto, visitedSystemsDto } from "./galaxyMine.js";
 import { commanderSectorsDto } from "./galaxySectorTiers.js";
 import { runEdsmCatchUp, type EdsmCatchUpScope } from "./edsmCatchUp.js";
 import { createUpdateChecker, currentReleaseForm } from "./updateCheck.js";
 import { createAppUpdater, resolveUpdateDir } from "./appUpdater.js";
+import { createWhatsNew } from "./whatsNew.js";
+import { buildDiagnosticsText, installLogRing, loggedLines } from "./diagnostics.js";
+import { createUnknownExobioLog } from "./exobioUnknown.js";
 import { fetchRemoteSystem, readRemoteSystemsCache, writeRemoteSystemToCache } from "./remoteSystems.js";
 import { parseHost, parsePort } from "./cliOptions.js";
 import type { CliOptions } from "./cliOptions.js";
 import { showEdexoNativeFixInfo, logFatal, assertResourceLayout } from "./startupChecks.js";
 import { backfillCommanderPosition } from "./commanderPositionBackfill.js";
+import { fullJumpRange } from "../shared/jumpRange.js";
+import { createGggResearch } from "./gggResearch.js";
 import { createNoticesService, type CodexFirstFind, type NoticesContext } from "./notices.js";
 import { createBookmarksService } from "./bookmarks.js";
+import { spawn } from "node:child_process";
+import { createBoxelRun } from "./boxelRun.js";
 import { createSavedBoxels } from "./savedBoxels.js";
+import { createNeutronLive, parseLiveHops } from "./neutronLive.js";
+import { neutronShip } from "./neutronShip.js";
+import { loadNeutronIndex } from "./neutronIndex.js";
+import { applyJumponium, planNeutronRoute } from "./neutronRoute.js";
+import { touchGalaxyMemory } from "./galaxyMemory.js";
+import { fsdWearEstimate, FSD_WARN } from "../shared/fsdWear.js";
+import { jumponiumView, recipeFor } from "../shared/jumponium.js";
 import { createGreenGiantMarks, greenGiantForRecord, type GreenGiantSources } from "./greenGiants.js";
 import { setNotableOptionsProvider } from "./notableOptions.js";
 import { BODY_FEATURES } from "../shared/bodyFeatures.js";
@@ -151,12 +203,16 @@ import { edastroGreenFor, nearbyNsp, nspK10Systems } from "./edastroNsp.js";
 import { nspOutlook } from "./nspOutlook.js";
 import { regionForSystem } from "./regionMapData.js";
 import { fetchGalacticRecords, galacticRecords, readGalacticRecordsStatus } from "./galacticRecords.js";
+import { bodyKey } from "../shared/bodyKey.js";
+import { mainStarRecord } from "../shared/mainStar.js";
+import { journalFolderIsReadable, makeReplayLineApplier } from "./journalReplayGuards.js";
 import {
   applyPersistedUserPrefs as applyUserPrefs,
   persistUserPreferences as writeUserPrefs,
   tryReadUserPrefs,
   type PersistedUserPrefs,
 } from "./userPrefsFile.js";
+import { writeFileAtomic } from "./atomicWrite.js";
 export { backfillCommanderPosition } from "./commanderPositionBackfill.js";
 export { logFatal, assertResourceLayout } from "./startupChecks.js";
 export { parseHost, parsePort, parseCli } from "./cliOptions.js";
@@ -180,6 +236,17 @@ export type EdexoRuntime = {
   flushNow: () => void;
   /** Tell the app pages to do something the commander asked for with a key bind. */
   uiCommand: (cmd: UiCommand) => void;
+  /** The Clear notices key (owner, 2026-10-05): every notice marked read, then the read ones cleared. */
+  clearNotices: () => number;
+  /**
+   * Boxel scanning keys (server/boxelRun.ts): copy the next system to fly, step to the previous / next
+   * one still to fly, start or finish a run. Each returns the name copied (or the run's state).
+   */
+  boxelCopyNext: () => string | null;
+  boxelStep: (dir: -1 | 1) => string | null;
+  boxelRunToggle: () => { running: boolean; boxel: string; copied: string | null } | null;
+  /** The clipboard writer: the desktop app subscribes; returns an unsubscribe. */
+  onBoxelNext: (cb: (name: string) => void) => () => void;
   /**
    * The downloaded, checked update waiting for a restart, and the folder it sits in; null when there
    * is none (appUpdater.ts). Electron installs it on the way out (electron/updater.cjs).
@@ -203,6 +270,7 @@ function reloadSpeciesDerivedCaches(): void {
   clearExomasteryProfileCache();
   clearEncyclopediaPayloadCache();
   clearFieldGuideCache();
+  clearExpeditionCache();
   clearSpeciesPhotoCache();
   clearGenusPhotosFolderCache();
   clearEddsnColourVariantsCache();
@@ -211,20 +279,24 @@ function reloadSpeciesDerivedCaches(): void {
   clearHostStarObservationsCache();
   clearPlanetClassObservationsCache();
   clearStarlightRangesCache();
+  clearObservedEnvelopeCache();
   clearBodyTypePriorCache();
+  // The fitted which-of-the-genus tables (data/exomastery/species-split.json, speciesSplit.ts).
+  clearSpeciesSplitCache();
   clearAchievementsCache();
+  // Code review B10 (2026-10-14): the genus chances and limits, the Brain Tree / Tubers split and the
+  // ranking's edges and prevalence were kept until a restart.
+  clearGenusPriorCache();
+  resetGenusBodySplitCache();
+  clearLikelihoodDataCache();
 }
 
 /** The journal folder is there and can be listed (a drive not mounted yet is not an empty folder). */
-function journalFolderIsReadable(dir: string): boolean {
-  try {
-    return statSync(dir).isDirectory() && Array.isArray(readdirSync(dir));
-  } catch {
-    return false;
-  }
-}
-
 export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
+  // The app's own prediction log (predictionAuditLog.ts); scripts that run the snapshot code never write it.
+  enablePredictionAudit();
+  // First, so the warnings of the start are in Copy diagnostics too (diagnostics.ts).
+  installLogRing();
   assertResourceLayout();
   startPerfReporter();
 
@@ -240,16 +312,45 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
   const projectRoot = getProjectRoot();
   const updateChecker = createUpdateChecker();
-  const appUpdater = createAppUpdater({ newerAsset: () => updateChecker.newerAsset(), form: currentReleaseForm() });
+  const appUpdater = createAppUpdater({
+    newerAsset: () => updateChecker.newerAsset(),
+    form: currentReleaseForm(),
+  });
+  const whatsNew = createWhatsNew({
+    check: () => updateChecker.check(false),
+    notesBetween: (from, to) => updateChecker.notesBetween(from, to),
+    lastError: () => updateChecker.lastError(),
+  });
 
   let journalDir = resolveInitialJournalDir(projectRoot);
   let journalPath: string | null = null;
   let journalFilesMerged = 0;
 
+  /** The live route into the store, and a new one into the NavRoute star finder's log (navRouteLog.ts). */
+  function applyNavRoute(waypoints: ReturnType<typeof readLiveNavRouteWaypoints>): boolean {
+    const changed = store.applyLiveNavRoute(waypoints);
+    if (changed && recordNavRoute(waypoints)) store.boxelsRevision++;
+    return changed;
+  }
+  /*
+    Read on every Status tick (10 a second at the commander's 100 ms, plus every watch event), and a
+    plotted route makes it a large file: re-read only when its size or mtime moved, the last parse
+    standing in between (code review D6, 2026-10-14). A missing file still reads as no route.
+  */
+  let navRouteFileSeen: { key: string; waypoints: NonNullable<ReturnType<typeof parseNavRouteJson>> } | null =
+    null;
   function readLiveNavRouteWaypoints() {
+    const file = path.join(journalDir, "NavRoute.json");
     try {
-      return parseNavRouteJson(readFileSync(path.join(journalDir, "NavRoute.json"), "utf8"));
+      const st = statSync(file);
+      const key = `${file}|${st.size}|${st.mtimeMs}`;
+      if (navRouteFileSeen?.key === key) return navRouteFileSeen.waypoints;
+      const waypoints = parseNavRouteJson(readFileSync(file, "utf8"));
+      // Only a route is kept: no route also reads as null for a file caught mid-write, and that must retry.
+      navRouteFileSeen = waypoints ? { key, waypoints } : null;
+      return waypoints;
     } catch {
+      navRouteFileSeen = null;
       return null;
     }
   }
@@ -270,7 +371,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
   /** Re-read `NavRoute.json` + `Status.json` after a full journal replay (new log file / resync). */
   function refreshLiveHudFromJournalDir(): void {
-    store.applyLiveNavRoute(readLiveNavRouteWaypoints());
+    applyNavRoute(readLiveNavRouteWaypoints());
     try {
       const raw = readFileSync(path.join(journalDir, "Status.json"), "utf8");
       const fuel = parseStatusJsonFuel(raw);
@@ -311,7 +412,19 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   // used to run with no key at all because only 0.0.0.0 counted (combined plan 1.4).
   const lanExposed = !isLoopbackHostName(bindHost);
   const lanKey = lanExposed ? loadOrCreateLanKey(resolveLanKeyPath()) : null;
-  const lanUrlsWithKey = (): string[] => getLanIPv4s(port).map((u) => lanUrlWithKey(u, lanKey));
+  /*
+    Read for every snapshot and every status poll in LAN mode, and `os.networkInterfaces()` is slow on
+    Windows with VPN or Hyper-V adapters; the addresses change rarely, so 30 s old is fresh enough
+    (code review D7, 2026-10-14).
+  */
+  let lanUrlsCache: { at: number; urls: string[] } | null = null;
+  const lanUrlsWithKey = (): string[] => {
+    const now = Date.now();
+    if (!lanUrlsCache || now - lanUrlsCache.at > 30_000) {
+      lanUrlsCache = { at: now, urls: getLanIPv4s(port).map((u) => lanUrlWithKey(u, lanKey)) };
+    }
+    return lanUrlsCache.urls;
+  };
 
   let journalBootProgress: JournalBootProgressDTO | null = {
     percent: 0,
@@ -322,13 +435,163 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   };
 
   const sessionLog = new SessionLog();
+  // New exobiology journal shapes (the Nomad, the Mk II scanner) kept for teaching the app (F-5.13).
+  const unknownExobio = createUnknownExobioLog(
+    path.join(path.dirname(resolveUserSettingsJsonPath()), "unknown-exobiology-events.jsonl"),
+    (key) => console.warn(`[edexo-compare] unknown exobiology journal line kept: ${key}`),
+  );
   /* "Notify me" (guild tester report, 2026-09-30): the mail icon's notices and the record marks. */
+  /*
+    Achievement notices (owner, 2026-10-05): only steps reached after this start — primed before the
+    first live line, read again when a set it counts from grows (server/achievementNotices.ts).
+  */
+  const achievementWatch = createAchievementWatch({
+    read: () => {
+      const l = achievementsList(getProjectRoot(), store, getCachedSpeciesDatabase().species);
+      return l.available ? l.achievements : null;
+    },
+    version: () => `${store.achievementDone.size}|${store.codexMapLogged.size}|${store.visitedSystems.size}`,
+  });
   const notices = createNoticesService({
     filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-notices.json"),
   });
+  setCodexFirstLowChanceKept(() => notices.prefs().codexFirstLowChance ?? true);
+  /* The nudge research log: the developer's PC only, where `ggg-research.on` is (server/gggResearch.ts). */
+  const gggResearch = createGggResearch({
+    dir: path.dirname(resolveUserSettingsJsonPath()),
+    notify: (n, at) => notices.announceGggResearch(n, at),
+  });
   const savedBoxels = createSavedBoxels({
     filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-boxels.json"),
+    // A boxel run takes the clipboard over from a neutron route being flown (plan 8.5).
+    onRun: (id) => {
+      if (id && neutronLive.active()) {
+        neutronLive.stop();
+        neutronStopped();
+      }
+    },
   });
+  /*
+    Boxel scanning (owner, 2026-10-06, after EDJP's routing mode; server/boxelRun.ts): the next system to
+    fly goes to the clipboard after each jump, and key binds start / finish a run and step through the
+    boxel. The desktop app writes the clipboard (it subscribes); without it, on Windows, `clip` does.
+  */
+  const boxelNextListeners = new Set<(name: string) => void>();
+  const deliverToClipboard = (name: string, source: "boxel" | "neutron" = "boxel"): void => {
+    // The HUD's next-jump card says what is on the clipboard: a key press in the game shows nothing else.
+    store.boxelCopied = {
+      name,
+      at: new Date().toISOString(),
+      run: source === "boxel" && savedBoxels.runId() != null,
+      source,
+    };
+    store.boxelsRevision++;
+    queueMicrotask(() => push());
+    if (boxelNextListeners.size) {
+      for (const cb of boxelNextListeners) cb(name);
+      return;
+    }
+    if (process.platform !== "win32") return;
+    try {
+      const clip = spawn("clip", [], { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] });
+      clip.on("error", () => {});
+      clip.stdin.end(name);
+    } catch {
+      /* no clipboard: nothing to do */
+    }
+  };
+  const boxelRun = createBoxelRun({
+    saved: savedBoxels,
+    visited: () => store.visitedSystems.entries(),
+    sightings: () => [...navRouteLog().systems, ...store.targetedSystems.values()],
+    currentSystem: () => store.currentSystem,
+    deliver: deliverToClipboard,
+  });
+  /*
+    A neutron route being flown (plan 8.5, server/neutronLive.ts): its next stop goes to the clipboard after each
+    jump onto a stop, the same way; starting one ends the boxel run.
+  */
+  const neutronLive = createNeutronLive({
+    filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-neutron-live.json"),
+    deliver: (name) => deliverToClipboard(name, "neutron"),
+    onStart: () => {
+      if (savedBoxels.runId()) savedBoxels.setRun(null);
+    },
+    onDone: () => neutronStopped(),
+  });
+  const shipHere = () => ({ name: store.currentSystem ?? null, pos: store.commanderPos ?? null });
+  /** Stopped: the HUD's "Copied … · neutron route" line goes with it (owner, 2026-10-13: it stayed). */
+  const neutronStopped = (): void => {
+    if (store.boxelCopied?.source === "neutron") store.boxelCopied = null;
+    store.boxelsRevision++;
+    push();
+  };
+  /*
+    Off the route (owner, 2026-10-13: "always taking into consideration your current location"): planned again from
+    where the ship is to the stops not reached yet, with the ship as the journals know it now. One at a time; the
+    HUD says "re-plotting" meanwhile, and the new next stop goes to the clipboard.
+  */
+  /*
+    One re-plot at a time, whatever the route does meanwhile (review 1.2.16): Stop cleared the route's own flag while
+    a search still ran, so a second one could start; and one that finished after a new route was started replaced
+    the new route — it lands only if the route is still the one it was asked for (its version).
+  */
+  let replanBusy = false;
+  const replanNeutron = async (): Promise<void> => {
+    if (replanBusy) return;
+    const here = shipHere();
+    const left = neutronLive.remaining();
+    if (!here.pos || !left) return;
+    replanBusy = true;
+    const version = neutronLive.version();
+    touchGalaxyMemory();
+    let index;
+    try {
+      index = loadNeutronIndex();
+    } catch {
+      return;
+    }
+    if (!index) return;
+    const s = neutronShip(store);
+    const jumpsPerTank = s.jumpsPerTank ?? 4;
+    neutronLive.setReplanning(true);
+    push();
+    try {
+      const route = await planNeutronRoute(
+        index,
+        [{ name: here.name ?? "Your ship", ...here.pos }, ...left.targets],
+        {
+          // The range the route was planned with (he may have typed one for another ship), else the journals'.
+          rangeLy: left.rangeLy ?? s.rangeLy,
+          boost: left.boost ?? s.boostFactor,
+          jumpsPerTank,
+          jumpsNow: Math.min(jumpsPerTank, Math.max(0, s.jumpsNow ?? jumpsPerTank)),
+          fsdHealth: s.fsdHealth,
+          wearPerBoost: s.wearPerBoost,
+        },
+      );
+      // Planned with FSD injections: the re-plot keeps them (shared/jumponium.ts).
+      const planned = left.useJumponium
+        ? applyJumponium(
+            route,
+            left.rangeLy ?? s.rangeLy ?? 50,
+            left.boost ?? s.boostFactor ?? 4,
+            (t) => recipeFor(store.jumponium, t),
+            store.jumponium?.raw ?? null,
+          ).route
+        : route;
+      const hops = parseLiveHops(planned.hops);
+      if (hops && neutronLive.active() && neutronLive.version() === version)
+        neutronLive.replace(hops, left.targets);
+    } catch (e) {
+      console.warn("[edexo-compare] neutron re-plot failed:", e);
+    } finally {
+      replanBusy = false;
+      if (neutronLive.version() === version) neutronLive.setReplanning(false);
+      touchGalaxyMemory();
+      push();
+    }
+  };
   const bookmarks = createBookmarksService({
     filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-bookmarks.json"),
   });
@@ -348,17 +611,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   });
   const scanOf = (k: string) => store.explorationScans.get(k) ?? store.soldExplorationScans.get(k) ?? null;
   /** The arrival star's type (distance 0), else the lowest-numbered star scanned: the phenomena model's main star. */
-  const mainStarTypeOf = (addr: number): string | null => {
-    let best: { id: number; type: string; arrival: boolean } | null = null;
-    for (const r of [...store.liveScansInSystem(addr), ...store.soldScansInSystem(addr)]) {
-      if (!r.starType) continue;
-      const arrival = r.distanceFromArrivalLs === 0;
-      if (!best || (arrival && !best.arrival) || (arrival === best.arrival && r.bodyId < best.id)) {
-        best = { id: r.bodyId, type: r.starType, arrival };
-      }
-    }
-    return best?.type ?? null;
-  };
+  const mainStarTypeOf = (addr: number): string | null =>
+    mainStarRecord([...store.liveScansInSystem(addr), ...store.soldScansInSystem(addr)])?.starType ?? null;
   // The Notable card: green gas giants always (they are notable like an Earth-like), features as chosen.
   setNotableOptionsProvider(() => {
     const on = notices.prefs().features;
@@ -375,11 +629,18 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     },
     currentSystem: () => ({ name: store.currentSystem ?? "", address: store.currentSystemAddress ?? null }),
     loadoutJumpLy: () => store.loadoutMaxJumpRangeLy,
+    fullJumpLy: () => fullJumpRange(store.jumpRange),
     // Both read the commander's own EDAstro downloads; with none fetched they find nothing.
     nearbyPois: (origin, radiusLy, groups) =>
       queryPoi({ origin, groups, limit: 50 })
         .filter((r) => r.distanceLy != null && r.distanceLy <= radiusLy)
-        .map((r) => ({ key: r.key, name: r.name, system: r.system, typeLabel: r.typeLabel, distanceLy: r.distanceLy! })),
+        .map((r) => ({
+          key: r.key,
+          name: r.name,
+          system: r.system,
+          typeLabel: r.typeLabel,
+          distanceLy: r.distanceLy!,
+        })),
     nearbyCarriers: (origin, radiusLy) =>
       queryCarriers({ origin, limit: 100 })
         .filter((r) => r.distanceLy != null && r.distanceLy <= radiusLy)
@@ -396,6 +657,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     galacticRecord: (key) => galacticRecords().get(key) ?? null,
     greenGiant: (rec) => greenGiantForRecord(rec, greenSources()),
     scanOf,
+    rawStock: () => store.jumponium.raw,
   };
   const notifySettings = (): NotifySettingsDTO => ({
     prefs: notices.prefs(),
@@ -417,7 +679,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         sessionLog.toDto(),
       );
       // Neither while the history replays: the boot screen covers both (plan 2.3, Opus 20).
-      snap.notices = snap.journalBoot ? undefined : notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
+      snap.notices = snap.journalBoot
+        ? undefined
+        : notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
       {
         // The NSP card (2026-09-30): what he saw, what EDAstro has, else a guess from the neighbourhood.
         const addr = store.viewingSystemAddress ?? store.currentSystemAddress ?? null;
@@ -431,35 +695,28 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
                   seen: store.nspSeen.get(addr) ?? [],
                   region: (() => {
                     const pos = store.systemPositions.get(addr);
-                    return pos ? regionForSystem(getProjectRoot(), pos.x, pos.y, pos.z) : (snap.currentRegion?.name ?? null);
+                    return pos
+                      ? regionForSystem(getProjectRoot(), pos.x, pos.y, pos.z)
+                      : (snap.currentRegion?.name ?? null);
                   })(),
                   starType: mainStarTypeOf(addr),
                 }),
               );
       }
-      // [CODEX FIRST] candidates in the system he is in go to the bell, once each (owner, 2026-09-30).
-      if (!snap.journalBoot && store.currentSystemAddress != null && notices.prefs().codexFirst) {
-        const finds: CodexFirstFind[] = [];
-        for (const b of snap.bodies ?? []) {
-          if (b.state.systemAddress !== store.currentSystemAddress) continue;
-          for (const m of b.matches ?? []) {
-            if (!m.codexFirst || m.unlikely || !m.codexRegion) continue;
-            finds.push({
-              bodyKey: b.state.key,
-              systemAddress: b.state.systemAddress,
-              system: b.state.starSystem || store.currentSystem || "",
-              body: b.tabLabel || b.state.bodyName,
-              species: m.entry.displayName,
-              speciesId: m.entry.id,
-              colours: m.codexFirstColours ?? [],
-              region: m.codexRegion,
-            });
-          }
-        }
-        if (finds.length && notices.announceCodexFirst(finds, new Date().toISOString())) {
-          snap.notices = notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
-        }
+      snap.neutronLive = snap.journalBoot ? null : neutronLive.view(shipHere());
+      {
+        const w = fsdWearEstimate(store.fsdWear);
+        snap.fsdHealth =
+          snap.journalBoot || w.health == null
+            ? null
+            : {
+                health: w.health,
+                warn: w.health < FSD_WARN,
+                boostsSince: w.boostsSince,
+                estimate: w.boostsSince > 0 && w.wearIsDefault,
+              };
       }
+      snap.jumponium = snap.journalBoot ? null : jumponiumView(store.jumponium);
       snap.bookmarksHere = bookmarks.forSystem(
         store.viewingSystemAddress ?? store.currentSystemAddress ?? null,
         snap.viewingSystemName ?? store.currentSystem ?? null,
@@ -538,7 +795,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         const finishedAt = new Date().toISOString();
         const lastImport = { file, finishedAt, fileMtimeIso: fileMtimeIso(file), apply };
         try {
-          writeFileSync(resolveImportDumpLedgerPath(), JSON.stringify(lastImport), "utf8");
+          writeFileAtomic(resolveImportDumpLedgerPath(), JSON.stringify(lastImport), "utf8");
         } catch {
           /* the status still says it; only the memory across runs is lost */
         }
@@ -644,10 +901,47 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
    * called — whichever poller arrived first swallowed the key, so "focus the body you just
    * scanned" silently failed and, with two clients, at most one ever saw it.
    */
-  const broadcastSnapshot = () => {
-    broadcast(getSnapshot());
-    store.clearPendingUiAutoSelectBodyKey();
+  /*
+    The codex-first announcement writes the notices file, so it runs with the push, never on a read:
+    GET /api/state used to write it too (code review 2026-10-10, A6), the same reason the one-shot
+    auto-select moved out of the snapshot.
+  */
+  const announceCodexFirstIn = (snap: ReturnType<typeof getSnapshot>) => {
+    // [CODEX FIRST] candidates in the system he is in go to the bell, once each (owner, 2026-09-30),
+    // and leave it when the body's candidates no longer hold them (owner, 2026-10-04).
+    if (!snap.journalBoot && store.currentSystemAddress != null && notices.prefs().codexFirst) {
+      const finds: CodexFirstFind[] = [];
+      const evaluated = new Set<string>();
+      for (const b of snap.bodies ?? []) {
+        if (b.state.systemAddress !== store.currentSystemAddress) continue;
+        evaluated.add(b.state.key);
+        for (const m of b.matches ?? []) {
+          if (!m.codexFirst || m.unlikely || !m.codexRegion) continue;
+          finds.push({
+            bodyKey: b.state.key,
+            systemAddress: b.state.systemAddress,
+            system: b.state.starSystem || store.currentSystem || "",
+            body: b.tabLabel || b.state.bodyName,
+            species: m.entry.displayName,
+            speciesId: m.entry.id,
+            colours: m.codexFirstColours ?? [],
+            region: m.codexRegion,
+          });
+        }
+      }
+      if (notices.announceCodexFirst(finds, new Date().toISOString(), evaluated)) {
+        snap.notices = notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
+      }
+    }
   };
+
+  // Guarded: it runs on timers too, and a throw there would end the server process (guarded.ts).
+  const broadcastSnapshot = guarded("snapshot push", () => {
+    const snap = getSnapshot();
+    announceCodexFirstIn(snap);
+    broadcast(snap);
+    store.clearPendingUiAutoSelectBodyKey();
+  });
 
   /**
    * Coalesce journal-driven pushes: fire at once when idle, then at most one per window while
@@ -772,7 +1066,10 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     }
     footStatusArmedMs = next;
     const tick = footStatusTick;
-    footStatusPollTimer = setInterval(() => tick(), next);
+    footStatusPollTimer = setInterval(
+      guarded("Status.json poll", () => tick()),
+      next,
+    );
   }
 
   /**
@@ -905,6 +1202,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   }, EDSM_LIVE_INTERVAL_MS);
   edsmLiveTimer.unref?.();
 
+  // The EDDN collector's codex ledger, when one runs on this machine: fresher [CODEX FIRST] (eddnLedger.ts).
+  startEddnLedgerWatch(getProjectRoot());
+
   /**
    * Contributing discoveries back to Canonn, when the commander has asked for it.
    *
@@ -1022,19 +1322,40 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       try {
         // Before the store applies it: a body the store already has is a re-scan, not a find.
         notices.observe(line, noticesContext);
+        gggResearch.observe(line);
         // Read before apply() closes the run: the tracker files an Analyse under the run's body too.
         const ownLine = store.ownBodyForAnalyse(line);
+        achievementWatch.prime();
         store.applyLive(line);
+        for (const a of achievementWatch.check()) {
+          if (
+            notices.announceAchievement(
+              { id: a.id, step: a.step, ...achievementNoticeText(a) },
+              String(line.timestamp ?? new Date().toISOString()),
+            )
+          )
+            push();
+        }
         // Live lines only. The historical replay calls store.apply directly, which is what keeps a
         // first run from asking EDSM about every system the commander has ever visited.
         maybeAutoFetchOnArrival(line);
         canonnUploader.offer(line);
         eddnUploader.offer(line);
         const side = liveSideFiles();
-        store.applyLiveNavRoute(side.route);
+        applyNavRoute(side.route);
+        if (line.event === "FSDJump") {
+          // A neutron route being flown owns the clipboard; else the boxel run or the saved boxel's next.
+          const flying = neutronLive.active();
+          const onStop = neutronLive.onJump(shipHere()) != null;
+          if (flying && !onStop && neutronLive.offRoute(shipHere())) void replanNeutron();
+          if (!flying) boxelRun.onJump();
+          // A run can end on a jump (its last system flown): the HUD line says so.
+          if (store.boxelCopied) store.boxelCopied.run = savedBoxels.runId() != null;
+        }
         const footFix = side.status ? parseStatusJsonFootFix(side.status) : null;
         ingestExoOrganicJournalLine(store, ownLine, footFix, projectRoot, getCachedSpeciesDatabase());
         sessionLog.record(line, store, getCachedPrices());
+        unknownExobio.offer(line);
         backupService.onJournalLine(typeof line.event === "string" ? line.event : undefined);
         gamePresence.onJournalLine(typeof line.event === "string" ? line.event : undefined);
         push();
@@ -1059,13 +1380,17 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     bootClock.marks.push([label, now - bootClock.last]);
     bootClock.last = now;
   };
+  /** The last journal boot's path and timings, for Copy diagnostics. */
+  let lastBoot: { path: string; summary: string; at: string } | null = null;
   const bootReport = (path: string): void => {
-    if (quietConsole) return;
     const total = performance.now() - bootClock.t0;
     const parts = bootClock.marks.map(
       ([l, ms]) => `${l} ${ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms) + " ms"}`,
     );
-    console.info(`Journal boot (${path}): ${parts.join(" · ")} · total ${(total / 1000).toFixed(1)} s`);
+    const summary = `${parts.join(" · ")} · total ${(total / 1000).toFixed(1)} s`;
+    lastBoot = { path, summary, at: new Date().toISOString() };
+    if (quietConsole) return;
+    console.info(`Journal boot (${path}): ${summary}`);
   };
 
   /**
@@ -1106,7 +1431,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     // replays the new file's Fileheader and LoadGame here, where the live tail never sees them.
     const run = resyncAllJournalFilesInner()
       .then(primeEddnFromNewestJournal)
-      .then((): JournalTailSeed | null => (journalPath !== null ? { path: journalPath, size: journalSeedBytes } : null))
+      .then((): JournalTailSeed | null =>
+        journalPath !== null ? { path: journalPath, size: journalSeedBytes } : null,
+      )
       .finally(() => {
         if (resyncInFlight?.run === run) resyncInFlight = null;
       });
@@ -1162,26 +1489,28 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       actually reached, and the live tail must start there, or lines are applied twice or never.
     */
     const consumed = new Map<string, number>();
-    /*
-      One bad line must not end the merge (combined plan 1.2): a throw here used to abort the replay,
-      and the pipeline never reached its watcher, so nothing live arrived until a restart. The live
-      path already catches per line.
-    */
-    let replayErrors = 0;
-    const applyReplayLine = (line: JournalLine): void => {
-      try {
-        store.apply(line);
-      } catch (e) {
-        replayErrors += 1;
-        if (replayErrors <= 3) console.error("[edexo-compare] journal line skipped in replay:", line.event, e);
-      }
-    };
+    // One bad line must not end the merge (combined plan 1.2; journalReplayGuards.ts).
+    const replayApplier = makeReplayLineApplier((line) => {
+      store.apply(line);
+      unknownExobio.offer(line);
+    });
+    const applyReplayLine = replayApplier.apply;
     const settleManifest = (): void => {
       for (let i = 0; i < files.length; i++) {
         const end = consumed.get(files[i]!);
         if (end !== undefined) manifest[i] = { ...manifest[i]!, size: end };
       }
       journalSeedBytes = manifest[manifest.length - 1]!.size;
+    };
+    /** The end of a replay, from the cache or from every file: tail the newest log, restore the session, push. */
+    const finishReplay = (): void => {
+      settleManifest();
+      journalPath = files[files.length - 1]!;
+      store.resetFootTravelRuntime();
+      loadOrganicSampleSessionFromDisk(projectRoot, store, getCachedSpeciesDatabase());
+      journalBootProgress = null;
+      refreshLiveHudFromJournalDir();
+      pushFlush();
     };
     bootMark("manifest");
     const cacheResult =
@@ -1235,7 +1564,10 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
           pushFlush();
           for (const step of cacheResult.steps) {
             if (step.kind === "tail") {
-              consumed.set(step.path, await readJournalFromOffset(step.path, step.startByte, applyReplayLine));
+              consumed.set(
+                step.path,
+                await readJournalFromOffset(step.path, step.startByte, applyReplayLine),
+              );
             } else {
               consumed.set(step.path, await readJournalFull(step.path, applyReplayLine));
             }
@@ -1262,16 +1594,16 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         }
         await backfillCommanderPosition(store, files);
         bootMark("position backfill");
-        settleManifest();
-        journalPath = files[files.length - 1]!;
-        store.resetFootTravelRuntime();
-        loadOrganicSampleSessionFromDisk(projectRoot, store, getCachedSpeciesDatabase());
-        journalBootProgress = null;
-        refreshLiveHudFromJournalDir();
-        pushFlush();
+        finishReplay();
         bootMark("session + first push");
         if (cacheResult.steps.length > 0 || cacheResult.loadedFromLegacy) {
-          await saveJournalMergeCache(journalDirNorm, manifest, store, projectRoot, store.journalHistoryPreset);
+          await saveJournalMergeCache(
+            journalDirNorm,
+            manifest,
+            store,
+            projectRoot,
+            store.journalHistoryPreset,
+          );
           bootMark("cache save");
         }
         bootReport("cache");
@@ -1317,14 +1649,11 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       };
       pushMergeProgress();
     }
-    settleManifest();
-    journalPath = files[files.length - 1]!;
-    store.resetFootTravelRuntime();
-    loadOrganicSampleSessionFromDisk(projectRoot, store, getCachedSpeciesDatabase());
-    journalBootProgress = null;
-    refreshLiveHudFromJournalDir();
-    pushFlush();
+    finishReplay();
+    bootMark(`replay ${files.length} file(s)`);
     await saveJournalMergeCache(journalDirNorm, manifest, store, projectRoot, store.journalHistoryPreset);
+    bootMark("cache save");
+    bootReport("full read");
   }
 
   /*
@@ -1501,19 +1830,39 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     bindHost,
     lanKey,
     getSnapshot,
+    getJournalDir: () => journalDir,
     getStatus,
     getCommanderPosition: () => store.commanderPos,
     getFirstDiscoveryBacklog: () => firstDiscoveryBacklogWithDistance(store),
-    getBacklogMap: () => backlogMap(store),
+    getBacklogMap: async () => backlogMap(store, await firstDiscoveryBacklogSliced(store)),
     getDiscoveries: () => buildDiscoveries(store, getProjectRoot(), greenExtras),
     searchGalaxyByValue: (query, limit) => galaxyValueSearch({ ...query, from: store.commanderPos, limit }),
     getGalaxySpecies: () => galaxySpeciesCatalogue(),
     getGalaxyRegions: () => galaxyRegions(),
     scanGalaxyBodies: (query, limit) => galaxyBodyScan({ ...query, from: store.commanderPos, limit }),
     getCommanderSectors: () => commanderSectorsDto(store),
-    getMySystems: () => mySystemsDto(store, backlogMap(store)),
-    getMySystem: (addr) => mySystemDetail(store, addr, backlogMap(store), loadBioIndex()),
+    // The last finished backlog, never a wait: the map asks for these at start (firstDiscoveryBacklog.ts).
+    getMySystems: () =>
+      mySystemsDto(
+        store,
+        backlogMap(store, firstDiscoveryBacklogNow(store)),
+        // The game's own visited list (plan 6.1): placed by the galaxy index only if it is already loaded.
+        importedSystems(
+          loadVisitedImport(),
+          new Set([...store.visitedSystems.keys(), ...store.systemPositions.keys()]),
+          peekBioIndex(),
+        ),
+      ),
+    getImportedSystems: () =>
+      importedSystems(
+        loadVisitedImport(),
+        new Set([...store.visitedSystems.keys(), ...store.systemPositions.keys()]),
+        peekBioIndex(),
+      ),
+    getMySystem: (addr) =>
+      mySystemDetail(store, addr, backlogMap(store, firstDiscoveryBacklogNow(store)), loadBioIndex()),
     getSessionRoute: () => sessionRouteDto(store, sessionLog.toDto().systems),
+    getVisitedSystems: (days) => visitedSystemsDto(store, days),
     getJournalStore: () => store,
     getCodexMapLogged: () => store.codexMapLogged,
     getAchievements: () => achievementsList(getProjectRoot(), store, getCachedSpeciesDatabase().species),
@@ -1540,23 +1889,30 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     getNotifySettings: notifySettings,
     bookmarks,
     savedBoxels,
+    neutronLive,
+    shipHere,
+    onNeutronStopped: neutronStopped,
     ownGreenGiants: () => {
       const out: { x: number; y: number; z: number; body: string; system: string }[] = [];
       const src = greenSources();
-      const keys = new Set([...store.greenCodexBodies.keys(), ...[...greenMarks.all()].filter(([, m]) => m.mark === "yes").map(([k]) => k)]);
+      const keys = new Set([
+        ...store.greenCodexBodies.keys(),
+        ...[...greenMarks.all()].filter(([, m]) => m.mark === "yes").map(([k]) => k),
+      ]);
       for (const k of keys) {
         const rec = scanOf(k);
         const pos = rec ? store.systemPositions.get(rec.systemAddress) : undefined;
         if (!rec || !pos) continue;
         const v = greenGiantForRecord(rec, src);
-        if (v?.level === "confirmed" && !v.gggNumber) out.push({ ...pos, body: rec.bodyName, system: rec.starSystem });
+        if (v?.level === "confirmed" && !v.gggNumber)
+          out.push({ ...pos, body: rec.bodyName, system: rec.starSystem });
       }
       return out;
     },
     setGreenGiantMark: (systemAddress, bodyId, mark) => {
-      const rec = scanOf(`${systemAddress}:${bodyId}`);
+      const rec = scanOf(bodyKey(systemAddress, bodyId));
       if (!rec) return false;
-      greenMarks.set(`${systemAddress}:${bodyId}`, mark, { body: rec.bodyName, system: rec.starSystem });
+      greenMarks.set(bodyKey(systemAddress, bodyId), mark, { body: rec.bodyName, system: rec.starSystem });
       return greenGiantForRecord(rec, greenSources());
     },
     getRecords: () => ({ rows: notices.records(noticesContext), galactic: readGalacticRecordsStatus() }),
@@ -1566,7 +1922,11 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     },
     systemPositionOf: (addr) => store.systemPositions.get(addr) ?? null,
     setNotifyPrefs: (raw) => {
+      const lowBefore = notices.prefs().codexFirstLowChance;
       notices.setPrefs(raw);
+      // The switch changes rows of bodies already computed.
+      if (notices.prefs().codexFirstLowChance !== lowBefore)
+        setCodexFirstLowChanceKept(() => notices.prefs().codexFirstLowChance ?? true);
       push();
       return notifySettings();
     },
@@ -1584,6 +1944,10 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       const n = notices.clearRead();
       if (n) push();
       return n;
+    },
+    sendTestNotice: () => {
+      notices.sendTest(new Date().toISOString());
+      push();
     },
     /*
       Clamped on the way in and the stored config handed straight back, so a figure the server
@@ -1624,6 +1988,18 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       store.setIncludeExplorationScanDataInDataValue(v);
       persistUserPreferences();
     },
+    setPranavAntalBonus: (v) => {
+      store.setPranavAntalBonus(v);
+      persistUserPreferences();
+    },
+    setSellAtFleetCarrier: (v) => {
+      store.setSellAtFleetCarrier(v);
+      persistUserPreferences();
+    },
+    setFleetCarrierIsOwn: (v) => {
+      store.setFleetCarrierIsOwn(v);
+      persistUserPreferences();
+    },
     setFootTravelOdometer: (v) => {
       store.setFootTravelOdometerEnabled(v);
       persistUserPreferences();
@@ -1642,7 +2018,12 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       this app's own views.
     */
     openAppView: (view) => {
-      const url = view === "phone" ? `http://127.0.0.1:${port}/?screen=triage` : `http://127.0.0.1:${port}/`;
+      const url =
+        view === "phone"
+          ? `http://127.0.0.1:${port}/?screen=triage`
+          : view === "stream"
+            ? `http://127.0.0.1:${port}/?view=stream`
+            : `http://127.0.0.1:${port}/`;
       openUrlInBrowser(url);
       return { ok: true };
     },
@@ -1713,6 +2094,18 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     },
     searchEdsmSystems: (query) => searchEdsmSystemsByName(query),
     getStatisticsScan,
+    getCardVerdicts: (scan, est, ctx) => {
+      const out: Record<string, ReturnType<typeof cardVerdictsFor>> = {};
+      for (const e of getCachedSpeciesDatabase().species) out[e.id] = cardVerdictsFor(e, scan, est, ctx);
+      return out;
+    },
+    getPredictionQuality: () => {
+      const byId = new Map(getCachedSpeciesDatabase().species.map((e) => [e.id, e]));
+      return predictionQuality(predictionRecords(), (id) => {
+        const e = byId.get(id);
+        return e ? { name: e.displayName, genus: e.genus ?? "" } : null;
+      });
+    },
     searchSpanshSystems: (query) => searchSpanshSystemsByName(query),
     hydrateSystemFromEdsm: async (systemAddress, systemName) => {
       const gate = hydrateGate(systemAddress, "EDSM");
@@ -1796,14 +2189,72 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     getFieldGuide: () => buildFieldGuide(projectRoot, getCachedSpeciesDatabase()),
     getEncyclopediaRegion: (name) =>
       Object.fromEntries(
-        getCachedSpeciesDatabase().species.map((e) => [e.id, regionalRarity(projectRoot, name, e.id)] as const),
+        getCachedSpeciesDatabase().species.map(
+          (e) => [e.id, regionalRarity(projectRoot, name, e.id)] as const,
+        ),
       ),
     getFeederStatus: () => buildFeederStatus(projectRoot, getCachedSpeciesDatabase()),
-    getUpdateInfo: async (force) => ({ ...(await updateChecker.check(force)), download: appUpdater.status() }),
+    getUpdateInfo: async (force) => ({
+      ...(await updateChecker.check(force)),
+      download: appUpdater.status(),
+    }),
     startUpdateDownload: () => {
       void appUpdater.start();
       return appUpdater.status();
     },
+    getWhatsNew: (any) => whatsNew.get(any),
+    getDiagnostics: async () => {
+      const st = getStatus();
+      const upd = await updateChecker.check(false);
+      const dl = appUpdater.status();
+      return buildDiagnosticsText({
+        now: new Date(),
+        version: APP_VERSION,
+        form:
+          process.env.EDEXO_ELECTRON_PACKAGED === "1"
+            ? currentReleaseForm()
+            : "pkg" in process
+              ? "console build"
+              : "source",
+        electron: process.versions.electron ?? null,
+        node: process.versions.node,
+        platform: process.platform,
+        osRelease: os.release(),
+        arch: process.arch,
+        memGb: Math.round(os.totalmem() / 2 ** 30),
+        journalDir: st.journalDir,
+        journalDirOk: st.journalDirConfiguredOk,
+        journalDirChosen: loadPersistedJournalDir(projectRoot) !== null,
+        journalFiles: st.journalFileCount,
+        currentJournal: st.journalPath ? path.basename(st.journalPath) : null,
+        historyPreset: st.journalHistoryPreset ?? "all",
+        lastEventIso: st.lastJournalEventIso,
+        boot: lastBoot,
+        booting: st.journalBoot ? `${st.journalBoot.phase} ${st.journalBoot.percent} %` : null,
+        mode: st.mode,
+        port: st.port,
+        bindHost: st.bindHost,
+        lanAccess: st.lanAccess,
+        gameRunning: process.env.EDEXO_ELECTRON === "1" ? gamePresence.running() : null,
+        uploads: {
+          edsmFetch: store.edsmAutoFetchEnabled,
+          edsmUpload: store.edsmUploadEnabled,
+          canonn: store.canonnUploadEnabled,
+          eddn: store.eddnUploadEnabled,
+        },
+        update: {
+          latest: upd.latest,
+          checkedAt: upd.checkedAt,
+          error: upd.error,
+          download: dl.supported ? `${dl.state}${dl.error ? ` (${dl.error})` : ""}` : null,
+        },
+        speciesCount: getCachedSpeciesDatabase().species.length,
+        speciesDataWarnings: st.speciesDataWarnings?.length ?? 0,
+        commander: store.commanderName,
+        log: loggedLines(),
+      });
+    },
+    markWhatsNewSeen: () => whatsNew.seen(),
     openUpdatePage: () => {
       const url = updateChecker.updatePageUrl();
       if (!url) return { ok: false, error: "No newer version known." };
@@ -1877,7 +2328,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         return true;
       };
       footStatusTick = () => {
-        const navChanged = store.applyLiveNavRoute(readLiveNavRouteWaypoints());
+        const navChanged = applyNavRoute(readLiveNavRouteWaypoints());
         const jumpChanged = jumpChangedNow();
         const statusPath = path.join(journalDir, "Status.json");
         let raw: string;
@@ -1925,6 +2376,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         const fuelChanged = store.applyLiveShipFuel(
           fuel != null ? fuel.fuelMain : null,
           fuel != null ? fuel.fuelReserve : null,
+          fuel?.cargo ?? null,
         );
         /*
           The radar goes out on every tick, at the commander's chosen poll rate, whether or not
@@ -2004,8 +2456,13 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
   const shutdown = async () => {
     if (warmUpTimer != null) clearTimeout(warmUpTimer);
-    // The foot catalog writes at most once a second; closing must not drop the last second.
+    // The foot catalog writes at most once a second; closing must not drop the last second. Nor the other
+    // debounced savers (code review 2026-10-10, A4): their timers die with the process.
     flushFootScannedCatalog();
+    flushPredictionAudit();
+    flushSurfaceMarks();
+    flushPendingOrganicSampleSession();
+    flushNavRouteLog();
     backupService.dispose();
     gamePresence.dispose();
     if (footStatusPollTimer != null) {
@@ -2018,8 +2475,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     if (speciesPollFallback) unwatchFile(speciesDataWatchRoot, onSpeciesTreeOrPricesChange);
     if (existsSync(priceListPath)) unwatchFile(priceListPath, onSpeciesTreeOrPricesChange);
     if (watcher) await watcher.close();
-    // A browser can still have a WebSocket open when its Terminal receives Ctrl+C.
-    if (process.platform === "darwin") closeConnections();
+    // Open sockets (a phone, a browser tab) would otherwise hold the close until the app ends the process.
+    closeConnections();
     await new Promise<void>((res) => {
       server.close(() => res());
     });
@@ -2036,6 +2493,27 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     gameRunning: () => gamePresence.running(),
     flushNow: () => flushFootScannedCatalog(),
     uiCommand: (cmd) => broadcastUiCommand(cmd),
+    clearNotices: () => {
+      const n = notices.markRead("all") + notices.clearRead();
+      if (n) push();
+      return n;
+    },
+    // F6: the neutron route's next stop while one is flown, else the boxel's next system.
+    boxelCopyNext: () => (neutronLive.active() ? neutronLive.copyNext() : boxelRun.copyNext()),
+    boxelStep: (dir) => boxelRun.step(dir),
+    boxelRunToggle: () => {
+      const r = boxelRun.toggle();
+      if (r && store.boxelCopied) store.boxelCopied.run = r.running;
+      if (r) {
+        store.boxelsRevision++;
+        push();
+      }
+      return r;
+    },
+    onBoxelNext: (cb) => {
+      boxelNextListeners.add(cb);
+      return () => boxelNextListeners.delete(cb);
+    },
     stagedUpdate: () => {
       const st = appUpdater.staged();
       return st ? { version: st.version, form: st.form, file: st.file, dir: resolveUpdateDir() } : null;
@@ -2064,11 +2542,7 @@ export function electronRuntimeOptions(
 ): { bindHost: string; port: number } {
   const explicitHost = electronHostIsExplicit(argv);
   return {
-    bindHost: explicitHost
-      ? parseHost([...argv])
-      : mode === "server" && lanAccess
-        ? "0.0.0.0"
-        : "127.0.0.1",
+    bindHost: explicitHost ? parseHost([...argv]) : mode === "server" && lanAccess ? "0.0.0.0" : "127.0.0.1",
     port: parsePort([...argv]),
   };
 }

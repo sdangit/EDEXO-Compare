@@ -72,6 +72,20 @@ export interface HostStarGate {
    */
   judgedOn?: "main";
   /**
+   * With `judgedOn: "main"`: the body's own host star passes it too. Electricae pluma is measured on
+   * the main star, but a body orbiting a white dwarf 81,000 ls from a G primary grows it as well
+   * (HIP 118062 B 6 g, EDDN ScanOrganic set, 2026-10-03).
+   */
+  orHost?: true;
+  /**
+   * With `judgedOn: "main"`: any star in the system that passes (class and luminosity) passes the gate.
+   * The Anemone colours were measured on the main star, but over 3,376 confirmed single-Anemone bodies
+   * (2026-10-05, EDAstro codex species) the main star fits the species' rule on 91-99 % and some star
+   * in the system on 97-100 %: Rubeum Bioluminescent 93.7 → 99.5 %, Puniceum 91.2 → 100 %; HIP 34326 D 2
+   * grows Blatteum round a B dwarf whose main star is a neutron star.
+   */
+  anyStar?: true;
+  /**
    * Yerkes luminosity classes allowed per star class, judged on the system's main star (so only on
    * `judgedOn: "main"` gates) — the Anemone colours split on it: a B dwarf makes Luteolum, a B giant
    * Roseum. Keyed by {@link hostStarClassKey}, or `AeBe` for a Herbig star, which that key folds into
@@ -116,6 +130,10 @@ const isHerbig = (type: string) => /^aebe$|herbig/i.test(type.trim());
  * of its bodies: the misses were bodies lit most by a nearby A, F or K dwarf, or a B dwarf in an O
  * system, whose colour was still the main star's. A third of Luteolum bodies orbit a Y or T dwarf.
  * Main star a black hole or neutron star (under 2 %) fails.
+ *
+ * **Since 2026-10-05, any star in the system** (`anyStar`): re-measured with EDAstro's species-level
+ * codex on 3,376 confirmed single-Anemone bodies, the main star fits each colour's rule on 91-99 % and
+ * some star in the system on 97-100 %. The counts in each gate's evidence are that measurement.
  */
 const B_DWARF: Record<string, readonly YerkesClass[]> = { B: ["IV", "V"] };
 const B_GIANT: Record<string, readonly YerkesClass[]> = { B: ["I", "II", "III"] };
@@ -160,8 +178,23 @@ export const HOST_STAR_GATES: { idIncludes: string; gate: HostStarGate }[] = [
      */
     idIncludes: "amphora",
     gate: {
+      /*
+        Judged on the main star, which is what the codex CSV records (the caveat below), or the body's
+        own host (2026-10-03): 3 of the 5 known Amphora bodies orbit an M, K or F companion in a system
+        whose main star is an A (Flyauduae TE-Q d5-4 B 1, Ooscs Free SZ-F d11-9 B 2 a, Prue Flyao ON-J
+        d9-1 C 1 a), and read on the host the gate demoted all three before a DSS.
+
+        Any star in the system since 2026-10-14, measured on the 719 bodies whose DSS names Amphora in
+        Spansh's dump (one species, so the genus is the species): main star A 696, B 12, F 6, neutron 1,
+        unknown 4; an A or B star somewhere in the system on 715 of 715 with a star on record. The main
+        star alone would have demoted the 7 under F and neutron primaries.
+      */
+      judgedOn: "main",
+      orHost: true,
+      anyStar: true,
       allowed: ["A", "B"],
-      evidence: "A-class hosts 97.4 % of 1,484 Amphora sightings (B a further 1.8 %); A is 6.2 % of all life",
+      evidence:
+        "An A or B star in the system on 715 of 715 DSS-confirmed Amphora bodies with a star on record (main star A 696, B 12; Spansh dump); A-class main stars on 97.4 % of 1,484 codex sightings, against 6.2 % of all life",
     },
   },
   /*
@@ -172,18 +205,22 @@ export const HOST_STAR_GATES: { idIncludes: string; gate: HostStarGate }[] = [
     idIncludes: "anemone_luteolum",
     gate: {
       judgedOn: "main",
+      anyStar: true,
       allowed: ["B"],
       luminosity: B_DWARF,
-      evidence: "main star B IV-V on 202 of 204 Luteolum bodies (Bioforge: B 99.2 % of 1,682)",
+      evidence:
+        "A B IV-V star in the system on 204 of 204 confirmed Luteolum bodies (100.0 %; the main star on 99.0 %; EDAstro codex)",
     },
   },
   {
     idIncludes: "anemone_blatteum_bioluminescent",
     gate: {
       judgedOn: "main",
+      anyStar: true,
       allowed: ["B"],
       luminosity: B_DWARF,
-      evidence: "main star B IV-V on 1,465 of 1,499 Blatteum bodies (Bioforge: B 97.7 % of 5,446)",
+      evidence:
+        "A B IV-V star in the system on 796 of 799 confirmed Blatteum bodies (99.6 %; the main star on 96.5 %; EDAstro codex)",
     },
   },
   {
@@ -191,48 +228,54 @@ export const HOST_STAR_GATES: { idIncludes: string; gate: HostStarGate }[] = [
     idIncludes: "anemone_roseum",
     gate: {
       judgedOn: "main",
+      anyStar: true,
       allowed: ["B"],
       luminosity: B_GIANT,
       evidence:
-        "main star a B giant or supergiant (I-III) on 35 of 35 Roseum and 821 of 838 Roseum Bioluminescent bodies (98 %)",
+        "A B giant or supergiant (I-III) in the system on 838 of 843 confirmed Roseum Bioluminescent bodies (99.4 %; the main star on 97.9 %; EDAstro codex); 35 of 36 Roseum (97.2 %)",
     },
   },
   {
     idIncludes: "anemone_croceum",
     gate: {
       judgedOn: "main",
+      anyStar: true,
       allowed: ["B", "A"],
       luminosity: B_SUBDWARF_A_GIANT,
       evidence:
-        "main star B VI or an A giant / supergiant on 51 of 52 Croceum bodies (Bioforge: B 66 %, A 34 %)",
+        "A B VI star or an A giant / supergiant in the system on 52 of 53 confirmed Croceum bodies (98.1 %; the main star on 98.1 %; EDAstro codex)",
     },
   },
   {
     idIncludes: "anemone_rubeum_bioluminescent",
     gate: {
       judgedOn: "main",
+      anyStar: true,
       allowed: ["B", "A"],
       luminosity: { ...B_SUBDWARF_A_GIANT, B: ["IV", "VI"] },
       evidence:
-        "main star B VI 523, A giant / supergiant 196, B IV 84 of 857 Rubeum bodies (Bioforge: B 70 %, A 27 %)",
+        "A B IV or VI star or an A giant / supergiant in the system on 851 of 855 confirmed Rubeum bodies (99.5 %; the main star on 94.0 %; EDAstro codex)",
     },
   },
   {
     idIncludes: "anemone_puniceum",
     gate: {
       judgedOn: "main",
+      anyStar: true,
       allowed: ["O", "W"],
-      evidence: "main star O on 30 of 34 Puniceum bodies (Bioforge: O 91 %, Wolf-Rayet 4 %)",
+      evidence:
+        "An O or Wolf-Rayet star in the system on 34 of 34 confirmed Puniceum bodies (100.0 %; the main star on 91.2 %; EDAstro codex)",
     },
   },
   {
     idIncludes: "anemone_prasinum_bioluminescent",
     gate: {
       judgedOn: "main",
+      anyStar: true,
       allowed: ["O", "W", "A"],
       luminosity: O_STAR,
       evidence:
-        "main star O 505, Herbig Ae/Be 29, Wolf-Rayet 8 of 552 Prasinum bodies (Bioforge: O 93.5 %, Herbig 5.3 %)",
+        "An O, Wolf-Rayet or A / Herbig Ae/Be star in the system on 550 of 552 confirmed Prasinum bodies (99.6 %; the main star on 99.3 %; EDAstro codex)",
     },
   },
   {
@@ -297,7 +340,8 @@ export const HOST_STAR_GATES: { idIncludes: string; gate: HostStarGate }[] = [
     idIncludes: "concha_labiata",
     gate: {
       allowed: ["O", "B", "A", "F", "G", "K", "L", "T", "Y", "TTS", "D", "W", "N", "H", "other"],
-      evidence: "main star of 86,565 labiata sightings is M on 1.2 %, against 22.7 % of all life; host M on 3 of 1,923 labiata bodies",
+      evidence:
+        "main star of 86,565 labiata sightings is M on 1.2 %, against 22.7 % of all life; host M on 3 of 1,923 labiata bodies",
     },
   },
   {
@@ -321,11 +365,16 @@ export const HOST_STAR_GATES: { idIncludes: string; gate: HostStarGate }[] = [
      * Judged on the host it demoted 12 of the 69 pluma bodies in the corpus, every one orbiting an
      * M, L, Y or T dwarf in a system whose main star is neutron or A. The owner's original report
      * (Swoilz KI-E b4-9 10 b, a single M3 star) still fails: its main star is that M3.
+     *
+     * Or the body's own host (2026-10-03): HIP 118062's main star is a G, and pluma was logged on
+     * B 6 g, a moon of a planet round the DBV white dwarf B, 81,587 ls out. Swoilz still fails: its
+     * one star is the M3.
      */
     idIncludes: "electricae_pluma",
     gate: {
       allowed: ["A", "N", "D", "H"],
       judgedOn: "main",
+      orHost: true,
       evidence:
         "10,139 pluma sightings: neutron 46.0 %, white dwarf 30.6 %, A 14.2 %, black hole 8.3 % — 99.1 %; B 0.2 %, O 0.0 %",
     },
@@ -365,6 +414,8 @@ export interface HostStarVerdictGate {
   judgedOn?: "main";
   /** Set when the star's luminosity class decided it, as the journal writes the star. */
   luminosity?: { star: string; allowed: string };
+  /** Set when any star in the system could have passed it (`anyStar`), so the line says "no star". */
+  anyStar?: true;
 }
 
 /** A star as the journal writes it, for the luminosity half of a gate: `StarType`, `Luminosity`. */
@@ -407,6 +458,7 @@ export function evaluateHostStarGate(
   starClasses: readonly string[] | null | undefined,
   mainStarClass?: string | null,
   mainStar?: StarReading | null,
+  systemStars?: readonly StarReading[] | null,
 ): HostStarVerdictGate | null {
   const gate = hostStarGateForSpeciesId(speciesId);
   if (!gate) return null;
@@ -415,12 +467,20 @@ export function evaluateHostStarGate(
     if (!mainStarClass) return null;
     const classPasses = gate.allowed.includes(mainStarClass);
     const lum = classPasses ? luminosityVerdict(gate, mainStar) : null;
+    const hostPasses = gate.orHost === true && (starClasses ?? []).some((c) => gate.allowed.includes(c));
+    const anyStarPasses =
+      gate.anyStar === true &&
+      (systemStars ?? []).some((s) => {
+        const cls = hostStarClassKey(s.type);
+        return cls != null && gate.allowed.includes(cls) && (luminosityVerdict(gate, s)?.passes ?? true);
+      });
     return {
-      passes: classPasses && (lum?.passes ?? true),
+      passes: (classPasses && (lum?.passes ?? true)) || hostPasses || anyStarPasses,
       classes: [mainStarClass],
       allowed: gate.allowed,
       evidence: gate.evidence,
       judgedOn: "main",
+      ...(gate.anyStar ? { anyStar: true as const } : {}),
       ...(lum && !lum.passes ? { luminosity: { star: lum.star, allowed: lum.allowed } } : {}),
     };
   }
@@ -451,6 +511,11 @@ export function hostStarClassLabel(key: string): string {
 export function describeHostStarVerdict(v: HostStarVerdictGate): string {
   const seen = v.classes.map(hostStarClassLabel).join(" / ");
   const want = v.allowed.map(hostStarClassLabel).join(", ");
+  if (v.anyStar) {
+    const main = v.luminosity?.star ?? seen;
+    const wanted = v.luminosity?.allowed ?? want;
+    return `Main star ${main} — and no star in the system is ${wanted}, which it has been recorded with.`;
+  }
   if (v.luminosity) return `Main star ${v.luminosity.star} — recorded only under ${v.luminosity.allowed}.`;
   return v.judgedOn === "main"
     ? `Main star ${seen} — recorded only in systems whose main star is ${want}.`

@@ -25,26 +25,53 @@
  *   facts on their own over-read a rare species that matches each fact separately but never together
  *   (Viride on rocky bodies, Viride with rocky volcanism, never both).
  *
+ * **Per region, backed off to the galaxy**, for a genus whose table says `regional` (Sinuous Tubers,
+ * 2026-10-04, owner: no misses). Each region has its own two or three Sinuous Tubers, and they follow
+ * the body differently there: Prasinum is a high-metal-content species in Empyrean Straits and
+ * mostly a rocky one with metallic magma in Inner Scutum-Centaurus, where the galaxy-wide facts gave
+ * it 0.0 % on every rocky body. So a fact's chance is the region's own count blended with the
+ * galaxy-wide chance as `regional.facts` pretend bodies, and the prior is the region's codex count
+ * blended with the galaxy-wide share as `regional.prior` systems: a thin region leans on the galaxy,
+ * a well-logged one speaks for itself, with no 100-system cliff (that cut left Viride in Inner
+ * Orion-Perseus Conflux, 46 systems and its commonest Sinuous Tuber, to its 2 % galaxy share). Held
+ * out one body at a time over all 2,709 confirmed Sinuous Tubers bodies: 20 → 8 not shown, 2.51 →
+ * 2.62 shown, the right one first 73 → 83 % (frequency-weighted). Brain Trees got worse that way
+ * (22 → 29 of 4,142 not shown) and keep the galaxy-wide model.
+ *
  * Held out and balanced by region, top-1 in genus went to 79 % for both Sinuous Tubers and Brain
- * Trees (`docs/perf/nb_genus.py`). The floor is per genus, in the table: 15 % for Sinuous Tubers (1.74
- * shown, the right one among them on 93 %, up from 75 %), 10 % for Brain Trees (1.52 shown, 96 %; at
- * 15 % it fell under the 94 % the app had before).
+ * Trees (`docs/perf/nb_genus.py`). The floor is per genus, in the table: 1 % for both since 2026-10-03
+ * (owner: "give 3 results if needed ... without any misses"), the right one among those shown on
+ * 97.4 % of held-out Sinuous Tubers bodies (2.99 shown) and 99.0 % of Brain Trees (2.29). It was 15 %
+ * and 10 %, at 92.6 % and 95.9 %, and that cost five known spawns their place after a DSS.
  *
  * Below the floor a row goes to "unlikely" — collapsed, never deleted — except the genus's best row,
  * a row with no score, and anything the commander has sampled here.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { volcanismFamily } from "../shared/volcanismText.js";
+import { planetClassId } from "../shared/normalise/planetClass.js";
+import { foldSpelling } from "../shared/spelling.js";
 import path from "node:path";
 import type { PlanetScan, SpeciesMatch } from "../shared/types.js";
 import { codexGalaxySystems, codexRegionSystems } from "./speciesRarityData.js";
+import { atmosphereTypeWords } from "../shared/atmosphereText.js";
+import { regionJoinKey } from "../shared/regionMap.js";
 
-interface SpeciesCounts {
+interface FactCounts {
   n: number;
   [feature: string]: number | Record<string, number>;
+}
+interface SpeciesCounts {
+  n: number;
+  /** The same counts per region (region name → counts), where the species has confirmed bodies. */
+  regions?: Record<string, FactCounts>;
+  [feature: string]: number | Record<string, number> | Record<string, FactCounts> | undefined;
 }
 interface GenusTable {
   features: string[];
   floor: number;
+  /** Per-region facts and prior, each blended with the galaxy's at this strength (see the header). */
+  regional?: { facts: number; prior: number };
   valueCounts: Record<string, number>;
   species: Record<string, SpeciesCounts>;
 }
@@ -96,12 +123,7 @@ const PLANET_TYPES: Record<string, string> = {
 
 /** The volcanism kind, as the table counts it (the first named material). */
 export function volcanismKind(v: string | null | undefined): string {
-  const s = (v ?? "").toLowerCase();
-  if (!s.trim() || s === "no volcanism") return "none";
-  for (const k of ["water", "nitrogen", "ammonia", "methane", "carbon dioxide", "silicate", "metallic", "rocky"]) {
-    if (s.includes(k)) return k;
-  }
-  return "other";
+  return volcanismFamily(v);
 }
 
 /**
@@ -109,19 +131,18 @@ export function volcanismKind(v: string | null | undefined): string {
  * Spansh's `Thin Sulphur dioxide` / `Thin Neon-rich` both come out as `sulphur dioxide` / `neon-rich`.
  */
 export function atmosphereKey(a: string | null | undefined): string {
-  const s = (a ?? "").trim();
+  const s = foldSpelling(a ?? "").trim();
   if (!s || /^(none|no atmosphere)$/i.test(s)) return "none";
   if (!/\s/.test(s)) {
-    const rich = /Rich$/.test(s) && s !== "Rich";
-    const base = rich ? s.slice(0, -4) : s;
-    const words = base.split(/(?<=[a-z])(?=[A-Z])/).map((w) => w.toLowerCase());
-    return (words.join(" ") + (rich ? "-rich" : "")).trim() || "none";
+    const { words, rich } = atmosphereTypeWords(s);
+    return (words.map((w) => w.toLowerCase()).join(" ") + (rich ? "-rich" : "")).trim() || "none";
   }
   const words = s
     .toLowerCase()
     .split(/\s+/)
     .filter((w) => w !== "thin" && w !== "thick" && w !== "hot");
-  return words.join(" ") || "none";
+  // "Neon Rich" is "Neon-rich" (plan 1.1 audit, 2026-10-11).
+  return words.join(" ").replace(/\s+rich$/, "-rich") || "none";
 }
 
 /** The body's facts in the table's terms; null where the scan does not say. */
@@ -129,7 +150,9 @@ export function bodyFacts(scan: PlanetScan): Record<string, string | null> {
   const cls = (scan.PlanetClass ?? "").trim().toLowerCase();
   const t = scan.SurfaceTemperature;
   return {
-    type: cls ? (PLANET_TYPES[cls] ?? cls) : null,
+    // Unlisted classes by their canonical id, so EDSM's and the journal's spellings of a giant or an
+    // Earth-like agree (plan 1.1 audit, 2026-10-11); the landable ones keep the table's own keys.
+    type: cls ? (PLANET_TYPES[cls] ?? planetClassId(cls) ?? cls) : null,
     volc: volcanismKind(scan.Volcanism),
     temp25: t != null && Number.isFinite(t) ? String(Math.floor(t / 25)) : null,
     atmo: scan.AtmosphereType != null ? atmosphereKey(scan.AtmosphereType) : null,
@@ -150,7 +173,16 @@ export function genusBodyShares(
   const table = load(root)?.genera[genusDataDir];
   if (!table || speciesIds.length === 0) return null;
   const facts = bodyFacts(scan);
+  // A thin atmosphere already says the temperature (thin carbon dioxide: 238-267 K for every Brain
+  // Tree on it), so the band would count one fact twice against a species rare on that air. Brain
+  // Tree Ostrinum on thin-CO2 worlds in Inner Orion Spur is 13 of 160 confirmed bodies (8 %) and read
+  // 0.9 %, under the floor, on 11 of them. Held out (2026-10-04): Brain Trees 22 → 10 not shown of
+  // 4,142, Sinuous Tubers 8 → 7 of 2,709.
+  const airTellsTemperature = facts.atmo != null && facts.atmo !== "none";
+  const blend = table.regional;
+  const regionKey = blend && regionName ? regionJoinKey(regionName) : null;
   const regional = speciesIds.map((id) => (regionName ? codexRegionSystems(root, regionName, id) : null));
+  const regionKnown = regional.some((n) => n != null);
   const regionTotal = regional.reduce<number>((a, n) => a + (n ?? 0), 0);
   const galaxy = speciesIds.map((id) => codexGalaxySystems(root, id));
   const galaxyTotal = galaxy.reduce<number>((a, n) => a + (n ?? 0), 0);
@@ -161,15 +193,32 @@ export function genusBodyShares(
     const row = table.species[id];
     let lp = 0;
     if (row) {
+      const here = regionKey
+        ? Object.entries(row.regions ?? {}).find(([name]) => regionJoinKey(name) === regionKey)?.[1]
+        : undefined;
       for (const f of table.features) {
         const v = facts[f];
         if (v == null) continue;
+        if (f === "temp25" && airTellsTemperature) continue;
         const counts = (row[f] as Record<string, number> | undefined) ?? {};
         const values = table.valueCounts[f] ?? 1;
-        lp += Math.log(((counts[v] ?? 0) + 0.5) / (row.n + 0.5 * (values + 1)));
+        const galaxyWide = ((counts[v] ?? 0) + 0.5) / (row.n + 0.5 * (values + 1));
+        if (!blend) {
+          lp += Math.log(galaxyWide);
+          continue;
+        }
+        const own = here ? ((here[f] as Record<string, number> | undefined)?.[v] ?? 0) : 0;
+        lp += Math.log((own + blend.facts * galaxyWide) / ((here?.n ?? 0) + blend.facts));
       }
     }
-    if (prior) lp += Math.log(((prior[i] ?? 0) + 0.5) / (priorTotal + 0.5 * speciesIds.length));
+    if (blend) {
+      if (galaxyTotal > 0) {
+        const galaxyShare = ((galaxy[i] ?? 0) + 0.5) / (galaxyTotal + 0.5 * speciesIds.length);
+        lp += Math.log(regionKnown ? ((regional[i] ?? 0) + blend.prior * galaxyShare) / (regionTotal + blend.prior) : galaxyShare);
+      }
+    } else if (prior) {
+      lp += Math.log(((prior[i] ?? 0) + 0.5) / (priorTotal + 0.5 * speciesIds.length));
+    }
     return lp;
   });
   const top = Math.max(...logs);

@@ -6,6 +6,44 @@ import { reuseUnchanged } from "./snapshotMerge";
 /** The window event a key-bind command arrives as (`detail`: a `UiCommand`). */
 export const UI_COMMAND_EVENT = "edexo-ui-command";
 
+/**
+ * The window event for "the commander is in another system now" (owner, 2026-10-07: the galaxy map
+ * should follow the jump the app already reads from the journal, not ask the server every 3 s).
+ */
+export const SYSTEM_CHANGED_EVENT = "edexo-system-changed";
+let lastSystem: string | null | undefined;
+
+/*
+  The desktop app's own window gets the key binds straight from Electron (owner, 2026-10-07: Shift+F1 /
+  F2 took 2-3 s): over the socket a command waited behind the game-state messages still being read.
+  Only the app window (not a detached tab window, not a browser tab) is sent them; it then ignores the
+  socket's copy.
+*/
+const IPC_UI_COMMANDS: boolean = (() => {
+  if (typeof window === "undefined") return false;
+  const e = (
+    window as unknown as {
+      edexoElectron?: {
+        tabs?: unknown;
+        onUiCommand?: (cb: (cmd: { cmd?: string; sentAt?: number }) => void) => unknown;
+        uiAck?: (r: { cmd: string; got: number; drawn: number }) => void;
+      };
+    }
+  ).edexoElectron;
+  if (!e?.tabs || typeof e.onUiCommand !== "function" || new URLSearchParams(location.search).has("tabwin")) return false;
+  e.onUiCommand((cmd) => {
+    const got = typeof cmd.sentAt === "number" ? Date.now() - cmd.sentAt : -1;
+    window.dispatchEvent(new CustomEvent(UI_COMMAND_EVENT, { detail: cmd }));
+    // After the next frame: how long until the change could be on screen (owner's slow-key report).
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        if (typeof cmd.sentAt === "number") e.uiAck?.({ cmd: String(cmd.cmd), got, drawn: Date.now() - cmd.sentAt });
+      }, 0),
+    );
+  });
+  return true;
+})();
+
 function websocketUrl(): string {
   const p = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${p}//${window.location.host}/ws`;
@@ -120,6 +158,10 @@ export function useLiveSnapshot(): {
       const next: AppSnapshot = held ? reuseUnchanged(held, payload) : payload;
       held = next;
       setSnapshot(next);
+      if (next.currentSystem !== lastSystem) {
+        if (lastSystem !== undefined) window.dispatchEvent(new Event(SYSTEM_CHANGED_EVENT));
+        lastSystem = next.currentSystem;
+      }
       setLastStateAtValue(Date.now());
     };
 
@@ -162,17 +204,18 @@ export function useLiveSnapshot(): {
       };
       ws.onmessage = (ev) => {
         try {
+          const arrivedAt = performance.now();
           const raw = String(ev.data);
           const msg = JSON.parse(raw);
           if (msg.type === "state") {
-            perfSnapshotReceived(raw.length);
+            perfSnapshotReceived(raw.length, arrivedAt);
             if (typeof msg.rev === "number") lastRev = shownRev = msg.rev;
             applyPayload(
               msg.payload as AppSnapshot,
               Array.isArray(msg.unchanged) ? (msg.unchanged as string[]) : undefined,
               msg.bodiesDelta && Array.isArray(msg.bodiesDelta.keys) ? msg.bodiesDelta : undefined,
             );
-          } else if (msg.type === "uiCommand" && msg.payload) {
+          } else if (msg.type === "uiCommand" && msg.payload && !IPC_UI_COMMANDS) {
             // A key bind pressed in the game (Electron's global keys, via the server): App.tsx acts on it.
             window.dispatchEvent(new CustomEvent(UI_COMMAND_EVENT, { detail: msg.payload }));
           }

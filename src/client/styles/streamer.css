@@ -1,0 +1,72 @@
+/*
+ * Streamer mode (`?view=stream`, streamerMode.ts): the main UI as a picture. Controls go, and the
+ * page takes no clicks, so nothing a viewer sees looks like something to press.
+ */
+html[data-streamer] .app-shell {
+  pointer-events: none;
+  user-select: none;
+}
+
+html[data-streamer] .appbar-actions,
+html[data-streamer] .appbar-search,
+html[data-streamer] .snapshot-btn,
+html[data-streamer] .bm-star-wrap,
+html[data-streamer] .sys-copy,
+html[data-streamer] .tabs-sort,
+html[data-streamer] .tabs-jump-btn,
+html[data-streamer] .toast-stack,
+html[data-streamer] .fold-help-btn,
+html[data-streamer] .info-affordance,
+html[data-streamer] .sys-card__btn,
+html[data-streamer] .tabs-chevron,
+html[data-streamer] .header-scan-data-plus,
+html[data-streamer] .planetary-info-copy-summary,
+html[data-streamer] .genus-notes-pill,
+html[data-streamer] .species-other-match-drawer-chevron,
+html[data-streamer] .candidate-species-compact-toggle,
+html[data-streamer] .candidate-species-bacterium-toggle,
+html[data-streamer] .candidate-species-evidence-toggle,
+html[data-streamer] .candidate-species-codex-toggle,
+html[data-streamer] .candidate-species-unlikely-toggle,
+html[data-streamer] .why-chance__toggle,
+html[data-streamer] .tabs-notable-toggle,
+html[data-streamer] .appbar-status,
+html[data-streamer] .app-legal-footer {
+  display: none !important;
+}
+
+/* `&cmdr=0`: the commander name stays off stream. */
+html[data-streamer-cmdr="0"] .appbar-cmdr {
+  display: none !important;
+}
+
+/* `&bg=transparent`: no backdrop or hex grid, so the app sits over the game in OBS. */
+html[data-streamer-bg="transparent"],
+html[data-streamer-bg="transparent"] body {
+  background: transparent !important;
+}
+
+html[data-streamer-bg="transparent"] body::before,
+html[data-streamer-bg="transparent"] .hex-signals {
+  display: none !important;
+}
+
+/* The tab rail is see-through over the app's own backdrop; over the game it needs a floor of its own. */
+html[data-streamer-bg="transparent"] .tabs-body-rail {
+  background: var(--bg) !important;
+}
+
+/* In a browser (not OBS), show the transparency instead of a white page. */
+html[data-streamer-bg-preview] body {
+  background:
+    repeating-conic-gradient(#15151b 0% 25%, #0b0b0f 0% 50%) 0 0 / 24px 24px !important;
+}
+
+html[data-streamer],
+html[data-streamer] * {
+  scrollbar-width: none;
+}
+
+html[data-streamer] ::-webkit-scrollbar {
+  display: none;
+}

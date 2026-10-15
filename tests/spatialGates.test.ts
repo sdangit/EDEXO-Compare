@@ -64,12 +64,19 @@ describe("which species carry a gate", () => {
 });
 
 describe("evaluating a gate", () => {
-  it("fails radialem at the reported system — 175 ly, rule is 150", () => {
+  it("fails radialem at the reported system — 175 ly, rule is 150, inside the 200 ly band", () => {
     const v = evaluateSpatialGate("electricae_electricae_radialem", HOME, cat)!;
     expect(v.passes).toBe(false);
     expect(Math.round(v.distanceLy)).toBe(175);
     expect(v.nearestName).toBe("R Cra");
-    expect(describeVerdict(v)).toContain("the rule is under 150 ly");
+    // No planetary nebula within 110 ly and the nearest radialem cluster 85 ly off, but inside the
+    // 150-200 ly band (owner, 2026-10-14): kept at a tenth of its chance.
+    expect(v.softBand).toEqual({ factor: 0.1, bandLy: 200 });
+    expect(v.planetary!.distanceLy).toBeGreaterThan(110);
+    expect(Math.round(v.record!.distanceLy)).toBe(85);
+    expect(describeVerdict(v)).toBe(
+      "nearest nebula R Cra is 175 ly away — past the 150 ly rule but inside 200 ly, so it stays listed at 10 % of its chance.",
+    );
   });
 
   it("passes radialem beside a nebula", () => {
@@ -85,6 +92,25 @@ describe("evaluating a gate", () => {
     const tubers = evaluateSpatialGate("sinuous_tuber_sinuous_tubers_prasinum", HOME, cat)!;
     expect(tubers.passes).toBe(false);
     expect(describeVerdict(tubers)).toContain("Sagittarius A*");
+  });
+
+  it("passes Brain Trees in Norma Expanse, just past 1,000 ly from the nearest Guardian site", () => {
+    // Graea Hypue MO-X b2-1: a confirmed Brain Tree Puniceum system. All 4,142 confirmed Brain Tree
+    // bodies lie within 1,223 ly; the 83 past 1,000 are all in Norma Expanse.
+    const graea = { x: -1247.8125, y: -1001.15625, z: 13086.5 };
+    const v = evaluateSpatialGate("brain_trees_brain_tree_puniceum", graea, cat)!;
+    expect(v.distanceLy).toBeGreaterThan(1000);
+    expect(v.passes).toBe(true);
+  });
+
+  it("Crystalline Shards: at least 19,500 ly from the core (2026-10-09)", () => {
+    // The bubble is ~25.9 kly out: far enough. Near the core: not.
+    const home = evaluateSpatialGate("crystalline_shards_crystalline_shards", HOME, cat)!;
+    expect(home.passes).toBe(true);
+    expect(describeVerdict(home)).toMatch(/past the 19.5 kly it needs/);
+    const near = evaluateSpatialGate("crystalline_shards_crystalline_shards", { x: 0, y: 0, z: 10000 }, cat)!;
+    expect(near.passes).toBe(false);
+    expect(describeVerdict(near)).toMatch(/it needs at least 19.5 kly/);
   });
 
   it("passes the Tubers near the core", () => {
@@ -148,10 +174,19 @@ describe("the Bark Mounds soft band", () => {
     expect(out.softBand).toBeUndefined();
   });
 
-  it("gives radialem no band: 82 % at 300 ly is not the same evidence", () => {
-    const v = evaluateSpatialGate("electricae_electricae_radialem", at(169), one)!;
-    expect(v.passes).toBe(false);
-    expect(v.softBand).toBeUndefined();
+  it("gives radialem a band to 200 ly at a tenth of its chance, then unlikely (owner, 2026-10-14)", () => {
+    const noRecords = { ...one, planetary: [], records: {} };
+    expect(evaluateSpatialGate("electricae_electricae_radialem", at(100), noRecords)).toMatchObject({ passes: true });
+    for (const d of [169, 199]) {
+      const v = evaluateSpatialGate("electricae_electricae_radialem", at(d), noRecords)!;
+      expect(v.passes).toBe(false);
+      expect(v.softBand).toEqual({ factor: 0.1, bandLy: 200 });
+    }
+    for (const d of [201, 350, 2000]) {
+      const v = evaluateSpatialGate("electricae_electricae_radialem", at(d), noRecords)!;
+      expect(v.passes).toBe(false);
+      expect(v.softBand).toBeUndefined();
+    }
   });
 
   it("keeps a band row in the main list with the factor on it", async () => {
@@ -165,5 +200,71 @@ describe("the Bark Mounds soft band", () => {
     demoteFailedSpatialGates(strict, unlikely, { systemCoords: at(350) } as never, one);
     expect(strict).toHaveLength(0);
     expect(unlikely).toHaveLength(1);
+  });
+});
+
+/*
+  Electricae radialem clusters mark nebulae the catalogue lacks (owner, 2026-10-08): within 50 ly of a
+  system with 2+ other radialem systems within 100 ly passes; lone finds are planetary nebulae and do
+  not count. Braisoo JD-H b43-6: 5.9 kly from the nearest catalogued nebula, 1,130 ly from a lone find.
+*/
+describe("radialem clusters", () => {
+  const RADIALEM = "electricae_electricae_radialem";
+  it("ships the clustered systems, not the lone ones", () => {
+    expect(cat.records?.radialem?.length).toBeGreaterThan(10000);
+    expect(cat.records!.radialem!.some((p) => p.n === "Lasu TG-M b21-8")).toBe(false);
+  });
+
+  it("fails far from any nebula and any radialem cluster", () => {
+    for (const at of [
+      { x: 14055.375, y: 212.21875, z: 34347.53125 }, // Aishaist SA-G b39-0
+      { x: 11684.71875, y: -223.75, z: 31860.84375 }, // Braisoo JD-H b43-6
+    ]) {
+      const v = evaluateSpatialGate(RADIALEM, at, cat)!;
+      expect(v.passes).toBe(false);
+      expect(v.softBand).toBeUndefined();
+      expect(v.record!.distanceLy).toBeGreaterThan(1000);
+    }
+  });
+
+  it("passes within 50 ly of a cluster the catalogue has no nebula for, not at 60", () => {
+    const rec = cat.records!.radialem!.find((p) => (nearestPoint(p, cat.nebulae)?.distanceLy ?? 0) > 3000)!;
+    const lone = { ...cat, planetary: [], records: { radialem: [rec] } };
+    const near = evaluateSpatialGate(RADIALEM, { x: rec.x + 40, y: rec.y, z: rec.z }, lone)!;
+    expect(near.passes).toBe(true);
+    expect(describeVerdict(near)).toMatch(/but a Electricae radialem cluster .* is 40 ly — inside its 50 ly rule/);
+    expect(evaluateSpatialGate(RADIALEM, { x: rec.x + 60, y: rec.y, z: rec.z }, lone)!.passes).toBe(false);
+  });
+});
+
+/*
+  Planetary nebulae (2026-10-14, docs/perf/radialem-pn.py): outside the old rule radialem grows on every body it can
+  up to 90 ly from one and on none past 110 ly. They stay out of `nebulae`, which Bark Mounds read.
+*/
+describe("radialem and planetary nebulae", () => {
+  const RADIALEM = "electricae_electricae_radialem";
+  // A planetary nebula far from every catalogued nebula; alone in the catalogue, so nothing else can pass.
+  const pn = cat.planetary!.find((p) => (nearestPoint(p, cat.nebulae)?.distanceLy ?? 0) > 1000)!;
+  const only = { ...cat, planetary: [pn], records: { radialem: [] } };
+
+  it("ships EDAstro's planetary nebulae apart from the nebulae", () => {
+    expect(cat.planetary!.length).toBeGreaterThan(5000);
+    expect(cat.nebulae.length).toBe(346);
+    expect(cat.sources.planetary).toMatch(/planetary/);
+  });
+
+  it("passes within 110 ly of one, not at 120, and says which", () => {
+    const near = evaluateSpatialGate(RADIALEM, { x: pn.x + 100, y: pn.y, z: pn.z }, only)!;
+    expect(near.passes).toBe(true);
+    expect(describeVerdict(near)).toMatch(/but planetary nebula .+ is 100 ly — inside its 110 ly rule/);
+    const far = evaluateSpatialGate(RADIALEM, { x: pn.x + 120, y: pn.y, z: pn.z }, only)!;
+    expect(far.passes).toBe(false);
+    expect(describeVerdict(far)).toMatch(/the nearest planetary nebula \(.+\) is 120 ly \(rule 110 ly\)/);
+  });
+
+  it("does not let Bark Mounds pass on one", () => {
+    const v = evaluateSpatialGate("bark_mounds_bark_mounds", { x: pn.x + 10, y: pn.y, z: pn.z }, only)!;
+    expect(v.passes).toBe(false);
+    expect(v.planetary).toBeUndefined();
   });
 });

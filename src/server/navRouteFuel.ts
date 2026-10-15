@@ -1,8 +1,12 @@
 /**
  * Elite Dangerous `NavRoute.json` (next to journal): plotted route waypoints with `StarPos` in ly.
- * Fuel along the route is estimated from the last `FSDJump` sample — game FSD use scales ~∝ jump distance².
+ * Fuel along the route is the drive's own law, fitted on the commander's jumps (shared/fsdFuel.ts:
+ * fuel = k · (distance · mass)^p, the ship lighter after every jump, a leg never more than the drive's most fuel
+ * per jump); the legs' range is the game's own plotter's business. Without the fit (no ship mass yet) the last `FSDJump` is scaled
+ * by distance², the old rule, which comes up short on a leg longer than the sample (2026-10-08).
  */
 
+import { fuelForJump, type FsdFuelModel } from "../shared/fsdFuel.js";
 import { roleForStarType, type StarRolesConfig } from "./systemMap.js";
 
 export interface NavRouteWaypointDTO {
@@ -98,10 +102,9 @@ export interface NavRouteFuelAnalysis {
   routeRefuelAlert: RouteRefuelAlertDTO;
   /**
    * Jumps until the furthest main-sequence scoopable you can **reach on the current tank** along
-   * NavRoute.json (per-leg ly from StarPos, fuel ∝ leg² from last FSDJump, each leg ≤ Loadout max
-   * jump when known). Same star-class rules as refuel alerts. When tank or FSD sample is missing,
-   * falls back to hop count to the **last** scoop on the remaining plot (still max-jump filtered
-   * when range is known). `null` when no scoop ahead or none reachable.
+   * NavRoute.json (per-leg ly from StarPos, fuel by the drive's law). Same star-class rules as refuel alerts. When
+   * tank or FSD sample is missing, falls back to hop count to the **last** scoop on the remaining plot. `null` when
+   * no scoop ahead or none reachable.
    */
   jumpsToLastScoopableOnRoute: number | null;
   /** See `LiveShipFuelNavRouteDTO.ahead`. */
@@ -113,12 +116,11 @@ export interface NavRouteFuelAnalysis {
 const FUEL_MARGIN_T = 0.06;
 /** Avoid blow-ups when the last jump was a trivial in-system hop. */
 const MIN_SAMPLE_DIST_LY = 0.08;
-const RANGE_EPS_LY = 1e-3;
 const FUEL_SUM_EPS = 1e-6;
 
 /**
- * Highest scoop index k in [idx, lastScoopIdx] reachable from idx without refuelling: each leg
- * must be within max jump range (when known) and cumulative fuel ≤ budget (when estimator given).
+ * Highest scoop index k in [idx, lastScoopIdx] reachable from idx without refuelling: cumulative fuel ≤ budget
+ * (when an estimator is given). Range is not checked: the game plotted these legs (see analyzeNavRouteFuel).
  */
 function furthestReachableScoopIndex(params: {
   idx: number;
@@ -126,12 +128,12 @@ function furthestReachableScoopIndex(params: {
   scoop: boolean[];
   legLy: number[];
   budget: number | null;
-  estFuelForLeg: ((dLy: number) => number) | null;
-  maxJumpLy: number | null;
+  /** Fuel for a leg, with the tank before it (the ship is lighter on later legs). */
+  estFuelForLeg: ((dLy: number, tankT: number) => number) | null;
+  tankT: number | null;
 }): number | null {
-  const { idx, lastScoopIdx, scoop, legLy, budget, estFuelForLeg, maxJumpLy } = params;
+  const { idx, lastScoopIdx, scoop, legLy, budget, estFuelForLeg, tankT } = params;
   let best: number | null = null;
-  const legOkRange = (d: number) => maxJumpLy == null || !(maxJumpLy > 0) || d <= maxJumpLy + RANGE_EPS_LY;
 
   for (let k = idx; k <= lastScoopIdx; k++) {
     if (!scoop[k]) continue;
@@ -139,12 +141,8 @@ function furthestReachableScoopIndex(params: {
     let ok = true;
     for (let i = idx; i < k; i++) {
       const d = legLy[i]!;
-      if (!legOkRange(d)) {
-        ok = false;
-        break;
-      }
       if (budget != null && estFuelForLeg != null) {
-        fuelSum += estFuelForLeg(d);
+        fuelSum += estFuelForLeg(d, (tankT ?? 0) - fuelSum);
         if (fuelSum > budget + FUEL_SUM_EPS) {
           ok = false;
           break;
@@ -158,7 +156,6 @@ function furthestReachableScoopIndex(params: {
 
 /** Next N systems on the route starting at `idx` (for scoopable corridor checks). */
 const SCOOP_LOOKAHEAD_SYSTEMS = 10;
-
 function scoopableAtWaypoint(wp: NavRouteWaypointDTO, cfg: StarRolesConfig): boolean {
   return roleForStarType(wp.starClass, cfg) === "fuel";
 }
@@ -227,6 +224,15 @@ export function analyzeNavRouteFuel(opts: {
   lastFsdFuelT: number | null;
   lastFsdDistLy: number | null;
   loadoutMaxJumpLy: number | null;
+  /** The drive's fitted fuel law (shared/fsdFuel.ts); the old distance² rule when absent. */
+  fuelModel?: FsdFuelModel | null;
+  /** Cargo aboard (t), part of the ship's mass. */
+  cargoT?: number | null;
+  /**
+   * The FSD is supercharged (`JetConeBoost` since the last jump: 4 at a neutron star, 1.5 at a white dwarf; 6 for
+   * the Caspian's Mk II SCO): the next jump reaches that many times as far on the fuel of an ordinary one.
+   */
+  firstLegBoost?: number | null;
   starRoles: StarRolesConfig;
   /**
    * Whether the commander would probably be first in a system, or null when unknown.
@@ -286,10 +292,24 @@ export function analyzeNavRouteFuel(opts: {
     };
   }
 
-  const remainingLegs = legLy.slice(idx);
-  const routeRemainingLy = remainingLegs.length === 0 ? 0 : remainingLegs.reduce((s, d) => s + d, 0);
+  const routeRemainingLy = legLy.slice(idx).reduce((s, d) => s + d, 0);
+  /*
+    For fuel and range, a supercharged next jump counts as the ordinary jump it costs (review 1.2.16: plotting on from
+    a neutron star with the FSD supercharged showed a red "!" — the first leg looked out of reach).
+  */
+  const boost = opts.firstLegBoost != null && opts.firstLegBoost > 1 ? opts.firstLegBoost : 1;
+  const fuelLegLy = boost > 1 && idx < legLy.length ? legLy.map((d, i) => (i === idx ? d / boost : d)) : legLy;
+  const remainingLegs = fuelLegLy.slice(idx);
   const routeJumpsRemaining = Math.max(0, route.length - 1 - idx);
   const maxRemainingLegLy = remainingLegs.length === 0 ? null : Math.max(...remainingLegs);
+  /*
+    No range rule on the plotted legs: the game's route plotter only plots jumps the ship can make, and the fuel law's
+    longest jump is the weaker of the two. On the owner's history (2026-10-15) 204 of 5,649 ordinary jumps went further
+    than the law's longest jump for that tank, 41 of 677 on a full tank (up to 17.5 % further): the walk stopped at a
+    leg the ship then flew, and the pump blinked red on the scoop before it with the tank full (owner: "sometimes it
+    shows that I need to refuel at the next jump even if fuel is full"). The fuel budget alone decides, with a leg
+    never costing more than the drive's most fuel per jump.
+  */
 
   let anyRemainingLegOverMaxRange = false;
   if (loadoutMaxJumpLy != null && loadoutMaxJumpLy > 0 && maxRemainingLegLy != null) {
@@ -298,43 +318,48 @@ export function analyzeNavRouteFuel(opts: {
 
   let fuelCanFinishPlottedRoute: boolean | null = null;
   let fuelJumpsReachableOnPlottedRoute: number | null = null;
-  let estFuelForLeg: ((dLy: number) => number) | null = null;
+  let estFuelForLeg: ((dLy: number, tankT: number) => number) | null = null;
   let fuelBudget: number | null = null;
+  const model = opts.fuelModel ?? null;
+  const cargo = Math.max(0, opts.cargoT ?? 0);
 
   if (remainingLegs.length === 0) {
     fuelCanFinishPlottedRoute = true;
     fuelJumpsReachableOnPlottedRoute = 0;
-  } else if (
-    fuelTotalT != null &&
-    Number.isFinite(fuelTotalT) &&
-    fuelTotalT >= 0 &&
-    lastFsdFuelT != null &&
-    lastFsdFuelT > 0 &&
-    lastFsdDistLy != null &&
-    lastFsdDistLy > 0
-  ) {
-    const d0 = Math.max(lastFsdDistLy, MIN_SAMPLE_DIST_LY);
-    estFuelForLeg = (dLy: number) => lastFsdFuelT * (dLy / d0) * (dLy / d0);
-
-    fuelBudget = Math.max(0, fuelTotalT - FUEL_MARGIN_T);
-    let totalNeed = 0;
-    for (const d of remainingLegs) {
-      totalNeed += estFuelForLeg(d);
+  } else if (fuelTotalT != null && Number.isFinite(fuelTotalT) && fuelTotalT >= 0) {
+    if (model) {
+      const most = model.maxFuelPerJumpT;
+      estFuelForLeg = (dLy, tankT) => {
+        const f = fuelForJump(model, dLy, Math.max(0, tankT), cargo);
+        return most != null ? Math.min(f, most) : f;
+      };
+    } else if (lastFsdFuelT != null && lastFsdFuelT > 0 && lastFsdDistLy != null && lastFsdDistLy > 0) {
+      const d0 = Math.max(lastFsdDistLy, MIN_SAMPLE_DIST_LY);
+      estFuelForLeg = (dLy) => lastFsdFuelT * (dLy / d0) * (dLy / d0);
     }
-    fuelCanFinishPlottedRoute = totalNeed <= fuelBudget + 1e-6;
-
-    let tank = fuelBudget;
+  }
+  if (estFuelForLeg && fuelTotalT != null && remainingLegs.length > 0) {
+    fuelBudget = Math.max(0, fuelTotalT - FUEL_MARGIN_T);
+    // Leg by leg: each one costs what this lighter ship spends on it, and must be within reach.
+    let tank = fuelTotalT;
+    let spent = 0;
     let done = 0;
+    let short = false;
     for (const d of remainingLegs) {
-      const need = estFuelForLeg(d);
-      if (tank + 1e-9 < need) break;
+      const need = estFuelForLeg(d, tank);
+      if (spent + need > fuelBudget + 1e-6) {
+        short = true;
+        break;
+      }
+      spent += need;
       tank -= need;
       done++;
     }
+    fuelCanFinishPlottedRoute = !short;
     fuelJumpsReachableOnPlottedRoute = done;
   }
 
-  const routeRefuelAlert = computeRouteRefuelAlert({
+  const routeAlert = computeRouteRefuelAlert({
     idx,
     scoop,
     canFinish: fuelCanFinishPlottedRoute,
@@ -352,10 +377,10 @@ export function analyzeNavRouteFuel(opts: {
       idx,
       lastScoopIdx,
       scoop,
-      legLy,
+      legLy: fuelLegLy,
       budget: fuelBudget,
       estFuelForLeg,
-      maxJumpLy: loadoutMaxJumpLy,
+      tankT: fuelTotalT,
     });
     if (furthest != null) {
       jumpsToLastScoopableOnRoute = furthest - idx;
@@ -363,25 +388,31 @@ export function analyzeNavRouteFuel(opts: {
   }
 
   /*
-    The route strip (owner, 2026-09-14: same logic as the web UI). The refuel mark sits on the
-    LAST scoopable star the tank can still reach — `jumpsToLastScoopableOnRoute` — and only when
-    the tank cannot finish the plot. Its colour is the web UI's alert: yellow = plan to scoop,
-    red = scoop now / critical. No reachable scoop at all: red, no hop to point at.
+    The route strip's pump (owner, 2026-10-13, after 1.2.15 showed two pumps and a red one on routes with no
+    trap): one mark, only when the tank cannot finish the plot.
+    - Walk the plot on the fuel aboard, no scooping: the last system the tank reaches (`lastReachIdx`).
+    - It is scoopable: yellow there, the furthest star to scoop at (as in 1.2.14).
+    - It is not: past the last scoopable star before it the tank runs dry with nowhere to scoop, a trap. Red,
+      blinking, on that last scoopable star ("here" when it is this one), and no yellow; even one scoopable
+      star and ten that are not is a trap when the tank cannot cross them.
+    - No scoopable star in reach at all, this one included: red, no star ("!").
+    Without a fuel estimate the last reachable system is not known: yellow on the furthest scoopable star.
   */
   let refuelIdx = -1;
-  if (
-    fuelCanFinishPlottedRoute === false &&
-    jumpsToLastScoopableOnRoute != null &&
-    jumpsToLastScoopableOnRoute > 0
-  ) {
+  if (fuelCanFinishPlottedRoute === false && jumpsToLastScoopableOnRoute != null) {
     refuelIdx = idx + jumpsToLastScoopableOnRoute;
   }
+  const lastReachIdx =
+    fuelCanFinishPlottedRoute === false && fuelJumpsReachableOnPlottedRoute != null
+      ? idx + fuelJumpsReachableOnPlottedRoute
+      : null;
   let refuelLevel: RouteRefuelAlertDTO = "none";
-  if (refuelIdx > idx) {
-    refuelLevel = routeRefuelAlert === "red" ? "red" : "yellow";
-  } else if (fuelCanFinishPlottedRoute === false && routeJumpsRemaining > 0) {
-    refuelLevel = "red"; // no scoop reachable on this tank
-  }
+  if (refuelIdx >= idx) refuelLevel = lastReachIdx != null && refuelIdx < lastReachIdx ? "red" : "yellow";
+  else if (fuelCanFinishPlottedRoute === false && routeJumpsRemaining > 0) refuelLevel = "red";
+  // The web UI's Route card: red only for a trap whose last chance is here (or no scoop in reach), never
+  // for the old heuristics alone.
+  const routeRefuelAlert: RouteRefuelAlertDTO =
+    refuelLevel === "red" && refuelIdx <= idx ? "red" : routeAlert === "red" ? "yellow" : routeAlert;
   const ahead: RouteAheadHop[] = [];
   for (let j = idx + 1; j < route.length && ahead.length < ROUTE_AHEAD_HOPS; j++) {
     const w = route[j]!;
@@ -407,7 +438,7 @@ export function analyzeNavRouteFuel(opts: {
     routeRefuelAlert,
     jumpsToLastScoopableOnRoute,
     ahead,
-    refuelInHops: refuelIdx > idx ? refuelIdx - idx : null,
+    refuelInHops: refuelIdx >= idx ? refuelIdx - idx : null,
     refuelLevel,
   };
 }

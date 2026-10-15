@@ -13,9 +13,12 @@ const pointCommon = /* glsl */ `
   uniform float uMode;       // 0 evidence, 1 species count, 2 value
   uniform float uMinValue;   // G5: systems worth less (100 k CR units) are not drawn
   uniform float uMinSize;    // G5: with a floor, the few left are drawn bigger (px)
+  uniform float uFilter;     // the Filter drawer (2026-10-04): 0 off, 1 dim the rest, 2 hide the rest
+  uniform float uMatchBoost; // light for the systems that match, which may be few
   in float aTiers;
   in float aSpecies;
   in float aValue;           // 100 k CR units
+  in float aMatch;           // 1 when the system passes the filter
   out vec3 vColor;
 
   vec3 colourFor(float t, float sp) {
@@ -36,7 +39,7 @@ const pointCommon = /* glsl */ `
   }
 
   void emit(vec3 g) {
-    if (aValue < uMinValue) {
+    if (aValue < uMinValue || (uFilter > 1.5 && aMatch < 0.5)) {
       gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
       gl_PointSize = 0.0;
       vColor = vec3(0.0);
@@ -46,6 +49,15 @@ const pointCommon = /* glsl */ `
     gl_Position = projectionMatrix * mv;
     gl_PointSize = clamp(uSize * uViewH * 2.0 / -mv.z, uMinSize, 9.0);
     vColor = colourFor(aTiers, aSpecies) * uIntensity;
+    if (uFilter > 0.5) {
+      // The ones that have it brighter and never smaller than 3.5 px; the rest a faint haze.
+      if (aMatch > 0.5) {
+        gl_PointSize = max(gl_PointSize, 3.5);
+        vColor *= uMatchBoost;
+      } else {
+        vColor *= 0.06;
+      }
+    }
   }
 `;
 
@@ -202,10 +214,12 @@ export const pickVertex = /* glsl */ `
   uniform float uViewH;
   uniform uint uSlot;
   uniform float uMinValue;
+  uniform float uFilter;
   in float aValue;
+  in float aMatch;
   flat out uint vId;
   void main() {
-    if (aValue < uMinValue) {
+    if (aValue < uMinValue || (uFilter > 1.5 && aMatch < 0.5)) {
       gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
       gl_PointSize = 0.0;
       vId = 0u;
@@ -232,5 +246,45 @@ export const pickFragment = /* glsl */ `
       float((vId >> 8u) & 255u),
       float(vId & 255u)
     ) / 255.0;
+  }
+`;
+
+/**
+ * The Milky Way's clouds (galaxyCloudSprites): soft round sprites sized in light years.
+ * Close in, a sprite would fill the screen; it fades out before it gets that big, so the clouds thin
+ * away around the camera instead of turning into a fog of squares.
+ */
+export const cloudVertex = /* glsl */ `
+  in vec4 tint;
+  in vec2 sizeSeed;
+  uniform float uScale;
+  uniform float uMaxPx;
+  uniform float uOpacity;
+  uniform float uDust;
+  uniform float uFull;
+  out vec4 vTint;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    float px = sizeSeed.x * uScale / max(1.0, -mv.z);
+    // Past a few dozen pixels a sprite stops reading as cloud and starts reading as a blob: let it go.
+    float fade = 1.0 - smoothstep(min(36.0, uMaxPx * 0.3), min(110.0, uMaxPx), px);
+    gl_PointSize = clamp(px, 1.0, uMaxPx);
+    // A sprite smaller than a pixel still lights a whole one: keep its light, not its brightness.
+    float sub = px < 1.0 ? px * px : 1.0;
+    // The light is shared with the systems' (uOpacity); dust dims whatever is there, at full strength.
+    vTint = vec4(tint.rgb, tint.a * fade * sub * (uDust > 0.5 ? min(1.0, uOpacity / uFull) : uOpacity));
+  }
+`;
+
+export const cloudFragment = /* glsl */ `
+  in vec4 vTint;
+  out vec4 outColor;
+  void main() {
+    vec2 p = gl_PointCoord - 0.5;
+    float d2 = dot(p, p) * 4.0;
+    if (d2 >= 1.0 || vTint.a <= 0.0) discard;
+    float a = exp(-2.4 * d2) * (1.0 - d2);
+    outColor = vec4(vTint.rgb, vTint.a * a);
   }
 `;

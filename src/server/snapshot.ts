@@ -1,4 +1,7 @@
 import { codexFirstCheck, codexFirstDataDate } from "./codexFirst.js";
+import { geologyForBody } from "./geology.js";
+import { eddnLedgerStatus } from "./eddnLedger.js";
+import { unknownPlantSlots } from "../shared/unknownPlants.js";
 import { edastroBioRegionIds } from "./edastroNsp.js";
 import { speciesProvenance } from "./speciesProvenance.js";
 import {
@@ -36,8 +39,10 @@ import { perfTime } from "./perf.js";
 import { buildShipProximity } from "./shipProximity.js";
 import { regionForSystem, regionIndexForSystem } from "./regionMapData.js";
 import type { GameStateStore } from "./gameState.js";
-import { matchDatabaseToScan, shownSpeciesMatches, speciesMatchesCriteria } from "./matchSpecies.js";
+import { shownSpeciesMatches, speciesMatchesCriteria } from "./matchSpecies.js";
 import { buildSpeciesMatchContext } from "./speciesMatchContext.js";
+import { candidateInputs, matchCandidates, rankCandidates, splitInputsFor } from "./candidatePipeline.js";
+import { explainChances } from "./chanceWhy.js";
 import { bumpMatchCacheEpoch } from "./matchCacheEpoch.js";
 import { achievementAdvanceFor, trackedAchievementSummary, trackedSet } from "./achievements.js";
 import { clearStarlightRangesCache, starlightRangeFor } from "./starlightRanges.js";
@@ -46,9 +51,7 @@ import { resolveSpeciesPhoto } from "./speciesPhotos.js";
 import { loadSpeciesDatabaseFromTree } from "./speciesTreeLoader.js";
 import { loadPriceList, lookupPrice, type PriceIndex } from "./priceList.js";
 import { speciesEntryMatchesOrganicLabel } from "./organicTracking.js";
-import {
-  explorationDataValueBreakdown,
-} from "./explorationDataEstimate.js";
+import { explorationDataValueBreakdown } from "./explorationDataEstimate.js";
 import {
   buildPrimaryStarsHeader,
   buildSystemMapSnapshot,
@@ -56,6 +59,7 @@ import {
   bodyHasExoMarkers,
   exoMarkerBasis,
   loadStarRolesConfig,
+  type ExoMatchRun,
 } from "./systemMap.js";
 import { computeExoPayoutRangeFromMatches, resolveOrganicSlotCount } from "./exoPayoutRange.js";
 import { countEdsmPlanetRows } from "./exomasteryEdsmEncyclopedia.js";
@@ -72,11 +76,15 @@ import {
   applyExomasteryGenusCompetitivePercent,
   markExomasteryZeroHabitatMatches,
 } from "./exomasteryGenusFinalize.js";
+import { buildOtherMatchDetailDecks, otherMatchHasSimilarity } from "./exomasteryOtherMatch.js";
+import { attachLazyDetail } from "./lazyMatchDetail.js";
 import {
   buildBodyScanExomasteryDetail,
   buildExomasteryDetail,
   buildExomasteryVarietyHints,
   buildOtherMatchDetailCards,
+  exomasteryDetailAlwaysHasStats,
+  type ExomasteryProfileV1,
   exomasteryHabitatQualityPercent,
   exomasteryOtherMatchCardDeckScore,
   feederProfileBodyCount,
@@ -87,11 +95,12 @@ import {
 } from "./exomasteryProfile.js";
 import {
   clearExoOrganicGenusMinDistCache,
+  setExoOrganicSpeciesDb,
   buildExoMinimapDto,
   buildExoOrganicOverlayDto,
 } from "./exoOrganicTracker.js";
 import { shortBodyLabel } from "../shared/systemMapLabels.js";
-import { collectResolvedOrganicLockSpeciesIds } from "./organicLocks.js";
+import { collectOwnOrganicLockSpeciesIds, collectResolvedOrganicLockSpeciesIds } from "./organicLocks.js";
 import { loadGenusCooccurrenceTable } from "./genusCooccurrenceTable.js";
 import { timingFromSamples } from "../shared/systemTriage.js";
 import {
@@ -114,26 +123,30 @@ import {
   speciesRarity,
   syncRaritySightings,
 } from "./speciesRarityData.js";
-import {
-  attachPresenceProbability,
-  demoteBelowPresenceFloor,
-  markSampledDespiteUnlikely,
-  PRESENCE_FLOOR_PCT,
-} from "./presenceFloors.js";
-import { applyGenusBodySplit } from "./genusBodySplit.js";
-import { applyGenusPrior, vetoUnseenGenera } from "./genusPrior.js";
+import { floorKeptReason } from "./presenceFloors.js";
 import { autoScanOnlyBodies } from "./autoScanOnly.js";
 import {
   firstFootfallLookupFor,
   buildJournalSystems,
   resolveViewingSystemName,
   buildRemoteView,
-  scanBodyKey,
   buildDScanBodiesSnapshot,
   buildLiveShipFuelRangeDTO,
   buildNotableBodiesForFocusedSystem,
 } from "./snapshotSystemInfo.js";
+import { bodyIdOfBodyKey, bodyKey } from "../shared/bodyKey.js";
 export { PRESENCE_FLOOR_PCT, demoteBelowPresenceFloor, GENUS_SHARE_FLOOR_PCT } from "./presenceFloors.js";
+
+/**
+ * Options → Notify me, "[CODEX FIRST] at 1 % or less" (owner, 2026-10-09): on, such a row stays in the
+ * list with a red tint and a [?]; off, it goes to the unlikely list. The bootstrap hands in the notices
+ * setting; on until it does.
+ */
+let codexFirstLowChanceKept: () => boolean = () => true;
+export function setCodexFirstLowChanceKept(read: () => boolean): void {
+  codexFirstLowChanceKept = read;
+  computeBodyCache.clear();
+}
 
 /**
  * Attach the first-footfall verdict to the next-jump card.
@@ -143,12 +156,20 @@ export { PRESENCE_FLOOR_PCT, demoteBelowPresenceFloor, GENUS_SHARE_FLOOR_PCT } f
  */
 function withFirstFootfall(
   jt: NonNullable<AppSnapshot["jumpTarget"]> | null,
-  store: { hasVisitedSystemNamed: (name: string) => boolean },
+  store: {
+    hasVisitedSystemNamed: (name: string) => boolean;
+    commanderDiscoveredSystem: (systemAddress: number) => boolean | null;
+  },
 ): NonNullable<AppSnapshot["jumpTarget"]> | null {
   if (!jt || jt.arrived || !jt.starSystem) return jt;
   const lookup = firstFootfallLookupFor(store);
   lookup.request([jt.starSystem]);
-  return { ...jt, likelyFirstFootfall: lookup.verdict(jt.starSystem) };
+  return {
+    ...jt,
+    likelyFirstFootfall: lookup.verdict(jt.starSystem),
+    // The Next jump card's "Discovered by you" (owner, 2026-10-06): your journals say you were first.
+    discoveredByYou: jt.systemAddress ? store.commanderDiscoveredSystem(jt.systemAddress) === true : false,
+  };
 }
 
 let cachedStarRoles: ReturnType<typeof loadStarRolesConfig> | null = null;
@@ -168,6 +189,7 @@ function attachOtherMatchCardScores(
   explorationRec: ExplorationScanRecord | null | undefined,
   root: string,
   journalHost: ReturnType<typeof journalHostObservationFromSpeciesContext>,
+  decks: CandidateDecks,
 ): void {
   if (!scanForExo) {
     for (const m of matches) {
@@ -185,16 +207,14 @@ function attachOtherMatchCardScores(
       m.exomasteryOtherMatchCardScore = null;
       continue;
     }
-    const previewCards = buildOtherMatchDetailCards(
-      prof,
-      scanForExo,
-      explorationRec ?? undefined,
-      null,
-      journalHost,
-    );
-    m.exomasteryOtherMatchCardScore = exomasteryOtherMatchCardDeckScore(previewCards);
+    const both = buildOtherMatchDetailDecks(prof, scanForExo, explorationRec ?? undefined, journalHost);
+    decks.set(m.entry.id, both);
+    m.exomasteryOtherMatchCardScore = exomasteryOtherMatchCardDeckScore(both.withoutSimilarity);
   }
 }
+
+/** The decks {@link attachOtherMatchCardScores} built, for the cards attached after the similarity is known. */
+type CandidateDecks = Map<string, ReturnType<typeof buildOtherMatchDetailDecks>>;
 
 function attachOtherMatchDetailCardsToMatches(
   matches: SpeciesMatch[],
@@ -202,12 +222,19 @@ function attachOtherMatchDetailCardsToMatches(
   explorationRec: ExplorationScanRecord | null | undefined,
   root: string,
   journalHost: ReturnType<typeof journalHostObservationFromSpeciesContext>,
+  decks: CandidateDecks,
 ): SpeciesMatch[] {
   if (!scanForExo) {
     return matches.map((m) => ({ ...m, otherMatchDetailCards: null }));
   }
   return matches.map((m) => {
     if (!m.exomasteryProfilePresent) return { ...m, otherMatchDetailCards: null };
+    const both = decks.get(m.entry.id);
+    if (both) {
+      const sim = otherMatchHasSimilarity(m.exomasterySimilarityPercent ?? null);
+      return { ...m, otherMatchDetailCards: sim ? both.withSimilarity : both.withoutSimilarity };
+    }
+    // A row added after the scores were taken (none today): built as it always was.
     const prof = loadExomasteryProfile(root, m.entry);
     if (!prof) return { ...m, otherMatchDetailCards: null };
     return {
@@ -262,6 +289,7 @@ export function loadSpeciesDatabase(): SpeciesDatabase {
   const root = getProjectRoot();
   clearExoOrganicGenusMinDistCache();
   cachedDb = withRarity(loadSpeciesDatabaseFromTree(root), root);
+  setExoOrganicSpeciesDb(cachedDb);
   // The foot catalog keeps its own copy of the tree; a reload has to reach it too.
   clearFootCatalogSpeciesDb();
   speciesDataGeneration += 1;
@@ -302,6 +330,7 @@ export function buildEncyclopediaPayload(): EncyclopediaSpeciesRowDTO[] {
   const root = getProjectRoot();
   if (!cachedDb.species.length) {
     cachedDb = withRarity(loadSpeciesDatabaseFromTree(root), root);
+    setExoOrganicSpeciesDb(cachedDb);
   }
   if (encyclopediaCache?.db === cachedDb) return encyclopediaCache.rows;
   const rows = buildEncyclopediaRows(root);
@@ -354,6 +383,7 @@ export function findSpeciesEntryForEncyclopedia(
   if (!speciesEntryId) return null;
   if (!cachedDb.species.length) {
     cachedDb = loadSpeciesDatabaseFromTree(getProjectRoot());
+    setExoOrganicSpeciesDb(cachedDb);
   }
   return cachedDb.species.find((e) => e.genusDataDir === genusDataDir && e.id === speciesEntryId) ?? null;
 }
@@ -367,7 +397,7 @@ function resolveStarForBodyTab(b: BodyExoState, store: GameStateStore): string {
 }
 
 function bodyTabLabel(b: BodyExoState, store: GameStateStore): string {
-  const sk = scanBodyKey(b.systemAddress, b.bodyId);
+  const sk = bodyKey(b.systemAddress, b.bodyId);
   const rec = store.explorationScans.get(sk);
   const star = resolveStarForBodyTab(b, store);
   const fromRec = rec?.bodyName?.trim();
@@ -480,7 +510,7 @@ function genusLikelihoodsForBody(
   ].filter(Boolean);
   if (candidates.length === 0) return null;
 
-  const confirmedIds = new Set(collectResolvedOrganicLockSpeciesIds(b.organicGenusLocks, db));
+  const confirmedIds = new Set(collectOwnOrganicLockSpeciesIds(b.organicGenusLocks, db));
   const known = [
     ...new Set(db.species.filter((e) => confirmedIds.has(e.id)).map((e) => e.genusDataDir)),
   ].filter((g) => candidates.includes(g));
@@ -578,7 +608,7 @@ export function sweepColourOutliers(store: GameStateStore, db: SpeciesDatabase):
     colourSweepSeen.set(b.key, b.confirmedVariants!.length);
     const scan = mergeScanForExomastery(
       b.scan,
-      store.physicsExplorationScan(scanBodyKey(b.systemAddress, b.bodyId)),
+      store.physicsExplorationScan(bodyKey(b.systemAddress, b.bodyId)),
     );
     if (!scan) continue;
     const ctx = buildSpeciesMatchContext(b, store);
@@ -630,9 +660,7 @@ function attachCodexRegionNovelty(
   const region = ctx?.regionName?.trim();
   if (!region) return;
   for (const m of matches) {
-    const label =
-      m.confirmedColour ??
-      m.predictedColour ?? predictedColourFor(m.entry, ctx, scan);
+    const label = m.confirmedColour ?? m.predictedColour ?? predictedColourFor(m.entry, ctx, scan);
     const fresh = codexNewColoursInRegion(logged, region, m.entry.displayName, label);
     if (fresh) {
       m.codexNew = true;
@@ -652,9 +680,62 @@ function attachCodexRegionNovelty(
           m.codexFirstEdastroAsOf = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
           if (first.edastroSpeciesOnly) m.codexFirstEdastroSpeciesOnly = true;
         }
+        const ledger = eddnLedgerStatus();
+        if (ledger.found && ledger.checkedAt) m.codexFirstEddnAsOf = ledger.checkedAt.slice(0, 10);
       }
     }
   }
+}
+
+/**
+ * A [CODEX FIRST] row in the list at 1 % or less (owner, 2026-10-09: "has a slightly red background
+ * and a [?] explaining why they are seeing this, even with a very low chance"). Nothing keeps a row
+ * for being a first: it stands on the same rules as every row, and the [?] says which one. With the
+ * Options switch off it goes to the unlikely list instead, unless it was sampled here.
+ */
+export function explainLowChanceCodexFirst(matches: SpeciesMatch[]): void {
+  const keep = codexFirstLowChanceKept();
+  for (const m of matches) {
+    if (m.unlikely || !m.codexNew || !m.codexFirst) continue;
+    const pct = m.presenceProbabilityPercent;
+    if (pct == null || !Number.isFinite(pct) || Math.round(pct) > 1) continue;
+    const k = floorKeptReason(m);
+    if (!keep && k?.why !== "sampled" && m.organicAnalysisComplete !== true) {
+      m.unlikely = true;
+      m.unlikelyReasons = [
+        ...(m.unlikelyReasons ?? []),
+        {
+          field: "Chance here",
+          detail: `${pct.toFixed(1)} % — a first codex entry, but Options → Notify me keeps those at 1 % or less out of the list.`,
+        },
+      ];
+      continue;
+    }
+    m.lowChanceWhy = lowChanceWhy(m, k, pct);
+  }
+}
+
+function lowChanceWhy(m: SpeciesMatch, k: { why: string; pct: number } | null, pct: number): string {
+  const genus = m.entry.genus || m.entry.genusDataDir;
+  const why =
+    k?.why === "sampled"
+      ? "You have sampled it on this body."
+      : k?.why === "approximate"
+        ? "Some of the body's values are missing, so its match is approximate and the 1 % floor does not judge it."
+        : k?.why === "best"
+          ? "Every candidate on this body is under 1 %; the list keeps the best of them rather than none."
+          : k?.why === "passed"
+            ? `It cleared the 1 % floor at ${k.pct.toFixed(1)} %; how often its genus grows on bodies like this one then brought it down.`
+            : k?.why === "genusShare"
+              ? `The DSS found ${genus} here, and this is ${k.pct.toFixed(1)} % of it — over the 1 % the list needs once the genus is known. The chance beside it is for the body as a whole.`
+              : k?.why === "genusBest"
+                ? `The DSS found ${genus} here, and this is the likeliest ${genus} the list has.`
+                : "It can grow on this body; the model has little to go on.";
+  return (
+    `Shown at ${pct < 0.05 ? "under 0.1" : pct.toFixed(1)} %: ${why} ` +
+    `It is a [CODEX FIRST]: nobody has logged it in this region yet, so it is worth a look. ` +
+    `Options → Notify me can keep these out of the list.`
+  );
 }
 
 /**
@@ -662,8 +743,14 @@ function attachCodexRegionNovelty(
  * their light on the body, brightest first — a star whose class has no colour row hands over to the
  * next, and with none left it is "(unknown)", never a guessed class (owner, 2026-09-28).
  */
-function predictedColourFor(entry: SpeciesEntry, ctx: SpeciesMatchContext | null, scan: PlanetScan | null): string {
-  const stars = ctx?.colourStarTypes?.length ? ctx.colourStarTypes : [ctx?.colourStarType ?? ctx?.parentStarType];
+function predictedColourFor(
+  entry: SpeciesEntry,
+  ctx: SpeciesMatchContext | null,
+  scan: PlanetScan | null,
+): string {
+  const stars = ctx?.colourStarTypes?.length
+    ? ctx.colourStarTypes
+    : [ctx?.colourStarType ?? ctx?.parentStarType];
   return candidateMorphColorLabelByLight(entry, stars, scan?.materials);
 }
 
@@ -683,10 +770,16 @@ function attachAchievementAdvance(
   if (!tracked) return;
   for (const m of matches) {
     if (m.unlikely) continue;
-    const label =
-      m.confirmedColour ??
-      m.predictedColour ?? predictedColourFor(m.entry, ctx, scan);
-    const adv = achievementAdvanceFor(root, store, cachedDb.species, tracked, m.entry.id, ctx?.regionName, label);
+    const label = m.confirmedColour ?? m.predictedColour ?? predictedColourFor(m.entry, ctx, scan);
+    const adv = achievementAdvanceFor(
+      root,
+      store,
+      cachedDb.species,
+      tracked,
+      m.entry.id,
+      ctx?.regionName,
+      label,
+    );
     if (adv) m.achievementAdvance = adv;
   }
 }
@@ -811,8 +904,14 @@ function computeBodyCacheSignature(
     footCatalog: footScannedCatalogSignature(root),
     // A new CodexEntry changes the "new to you" and [CODEX] marks without touching the body.
     codex: `${store.codexLoggedSpecies.size}/${store.codexRegionLogged.size}`,
+    codexFirstLow: codexFirstLowChanceKept(),
     // [CODEX FIRST] also reads EDAstro's plants: a download mid-session re-marks the bodies.
     edastroBio: edastroBioRegionIds()?.fetchedAtMs ?? 0,
+    // …and the EDDN collector's ledger, when one answers (eddnLedger.ts).
+    eddnLedger: (() => {
+      const l = eddnLedgerStatus();
+      return l.found ? `${l.plantRows}/${l.checkedAt?.slice(0, 10) ?? ""}` : 0;
+    })(),
     // The tracked achievement's marks move with what is tracked and with every completion.
     achievement: `${store.trackedAchievementId ?? ""}/${store.achievementDone.size}`,
     shared: sharedSignature(),
@@ -827,7 +926,7 @@ function computeBody(
 ): BodyComputed {
   const root = getProjectRoot();
   // Physics, not value: a sold system keeps its gravity, materials, composition and host star.
-  const explorationRec = store.physicsExplorationScan(scanBodyKey(b.systemAddress, b.bodyId));
+  const explorationRec = store.physicsExplorationScan(bodyKey(b.systemAddress, b.bodyId));
   const signature = computeBodyCacheSignature(b, store, explorationRec, root);
   const cached = computeBodyCache.get(b.key);
   if (cached && cached.signature === signature) return cached.value;
@@ -839,12 +938,11 @@ function computeBody(
 }
 
 /**
- * A body the ship only AutoScanned (autoScanOnly.ts), computed as if the FSS had found one biological
- * signal — the least a body with life can have — so the chances, the genus prior and the floors work
- * as they do for any body (owner, 2026-10-02: "fake assign the bio signal = 1 to autoscanned bodies
- * and drop them if nothing would spawn there"). Null when nothing would be shown there: no tab. The
- * assumed signal is never shown — the state keeps its unknown count and the tab says "AutoScanned only
- * - FSS required".
+ * A body the ship only AutoScanned (autoScanOnly.ts): its stats and nothing else (owner, 2026-10-05,
+ * replacing the 2026-10-02 "fake one bio signal" rule — it listed Sinuous Tubers on a body nobody knew
+ * had life, and hid A 1 and A 2 of Weqaei PS-T b3-3 beside the A 3 it kept). Every landable one gets
+ * its tab; no candidates, no price, no unknown-plant slots until the FSS says how many signals there
+ * are. The candidate panel says so instead.
  */
 export function computeAutoScanOnlyBody(
   b: BodyExoState,
@@ -852,20 +950,19 @@ export function computeAutoScanOnlyBody(
   db: SpeciesDatabase = cachedDb,
   prices: PriceIndex = cachedPrices,
 ): BodyComputed | null {
-  const computed = computeBody({ ...b, key: `${b.key}#autoscan`, biologicalSignals: 1 }, db, prices, store);
-  /*
-    "Would anything spawn here" counts a candidate only on its own merits: not one pulled back to fill
-    the signal count (that rule trusts the game's count, and this count is assumed), and not one kept
-    only because a list may not be empty while it sits under the presence floor.
-  */
-  const stands = computed.matches.some(
-    (m) =>
-      !m.unlikely &&
-      m.restoredForSignalCount !== true &&
-      (m.presenceProbabilityPercent == null || m.presenceProbabilityPercent >= PRESENCE_FLOOR_PCT),
-  );
-  if (!stands) return null;
-  return { ...computed, state: b };
+  const computed = computeBody({ ...b, key: `${b.key}#autoscan` }, db, prices, store);
+  return {
+    ...computed,
+    state: b,
+    matches: [],
+    genusCertainty: null,
+    genusLikelihoods: null,
+    ambiguityNote: null,
+    exoPayoutRange: null,
+    exoDataAlerts: [],
+    dssGenusOrphanHints: [],
+    unknownPlants: [],
+  };
 }
 
 function computeBodyUncached(
@@ -876,12 +973,11 @@ function computeBodyUncached(
 ): BodyComputed {
   const genusFilterActive = !!(b.genusHints && b.genusHints.length > 0);
   const root = getProjectRoot();
-  // Physics, not value: a sold system keeps its gravity, materials, composition and host star.
-  const explorationRec = store.physicsExplorationScan(scanBodyKey(b.systemAddress, b.bodyId));
-  const mergedScan = mergeScanForExomastery(b.scan, explorationRec);
+  // The same context, scan and passes as the backlog and the system map (candidatePipeline.ts).
+  const inputs = candidateInputs(b, store);
+  const { rec: explorationRec, scan: mergedScan, ctx: speciesMatchCtx, journalHost } = inputs;
 
   if (!mergedScan?.PlanetClass?.trim()) {
-    const speciesMatchCtx = buildSpeciesMatchContext(b, store);
     const { alerts: exoDataAlerts, dssGenusOrphanHints } = computeExoDataAlertsForBody({
       body: b,
       mergedScan,
@@ -906,26 +1002,25 @@ function computeBodyUncached(
       estimatedSurfaceTempK: null,
       speciesMatchContext: speciesMatchCtx,
       approximateMatchingUsed: false,
+      geology: geologyForBody({
+        body: b,
+        scan: mergedScan,
+        region: speciesMatchCtx?.regionName,
+        codexLogged: store.codexMapLogged,
+      }),
       exoPayoutRange: null,
       exoDataAlerts,
       dssGenusOrphanHints,
     };
   }
 
-  const speciesMatchCtx = buildSpeciesMatchContext(b, store);
-  const journalHost = journalHostObservationFromSpeciesContext(speciesMatchCtx);
-
   const {
     matches: raw,
     genusFilterActive: gfa,
     estimatedSurfaceTempK,
     approximateMatchingUsed,
-  } = matchDatabaseToScan(db, mergedScan, b.genusHints, b.organicGenusLocks, {
+  } = matchCandidates(b, { ...inputs, scan: mergedScan }, db, root, {
     includeBacterium: store.includeBacteriumInSearch,
-    matchContext: speciesMatchCtx,
-    spatialCatalogue: loadSpatialCatalogue(root),
-    biologicalSignals: b.biologicalSignals,
-    signalCountAssumed: b.autoScanOnly === true,
   });
   const scanForExo = mergedScan;
   const bodyScanDetail = buildBodyScanExomasteryDetail(mergedScan, explorationRec);
@@ -937,12 +1032,14 @@ function computeBodyUncached(
   */
   const compScanOnly = new Set(
     collectResolvedOrganicLockSpeciesIds(
-      (b.organicGenusLocks ?? []).filter((l) => l.source === "codex"),
+      (b.organicGenusLocks ?? []).filter((l) => !l.fromSibling && l.source === "codex"),
       db,
     ),
   );
   for (const id of collectResolvedOrganicLockSpeciesIds(
-    (b.organicGenusLocks ?? []).filter((l) => l.source !== "codex" && l.source !== "spansh"),
+    (b.organicGenusLocks ?? []).filter(
+      (l) => !l.fromSibling && l.source !== "codex" && l.source !== "spansh",
+    ),
     db,
   )) {
     compScanOnly.delete(id);
@@ -953,16 +1050,18 @@ function computeBodyUncached(
   */
   const loggedByYou = new Set(
     collectResolvedOrganicLockSpeciesIds(
-      (b.organicGenusLocks ?? []).filter((l) => l.source !== "spansh"),
+      (b.organicGenusLocks ?? []).filter((l) => !l.fromSibling && l.source !== "spansh"),
       db,
     ),
   );
   const loggedByOthers = new Set(
     collectResolvedOrganicLockSpeciesIds(
-      (b.organicGenusLocks ?? []).filter((l) => l.source === "spansh"),
+      (b.organicGenusLocks ?? []).filter((l) => !l.fromSibling && l.source === "spansh"),
       db,
     ),
   );
+  /** Candidates whose habitat detail is attached last, built when read: species id → its profile. */
+  const lazyDetails = new Map<string, ExomasteryProfileV1>();
   let matches: SpeciesMatch[] = raw.map((m) => {
     const { photoUrl, photoNote, photoUrls, photoVariants, photoCreditByUrl } = resolveSpeciesPhoto(
       m.entry,
@@ -998,10 +1097,15 @@ function computeBodyUncached(
             exomasterySimilarityPercent: null,
             exomasteryVarietyHints: profile ? buildExomasteryVarietyHints(profile) : null,
             exomasteryExportBasename: resolveExomasteryExportBasename(root, m.entry),
-            exomasteryDetail:
-              profile && scanForExo
-                ? buildExomasteryDetail(profile, scanForExo, explorationRec, journalHost)
-                : null,
+            // The habitat detail is attached at the end of this function, built when read (lazyMatchDetail.ts).
+            ...(profile && scanForExo && exomasteryDetailAlwaysHasStats(profile)
+              ? (lazyDetails.set(m.entry.id, profile), {})
+              : {
+                  exomasteryDetail:
+                    profile && scanForExo
+                      ? buildExomasteryDetail(profile, scanForExo, explorationRec, journalHost)
+                      : null,
+                }),
           }
         : {}),
     };
@@ -1022,24 +1126,13 @@ function computeBodyUncached(
     );
     matches = markExomasteryZeroHabitatMatches(matches);
   }
-  attachPresenceProbability(matches, b, scanForExo, explorationRec, journalHost, root, store);
-  // Which species of a genus, where the ranking model cannot tell them apart (Phase A.6).
-  applyGenusBodySplit(
-    matches,
-    scanForExo,
-    speciesMatchCtx?.regionName ?? null,
-    root,
-    new Set(collectResolvedOrganicLockSpeciesIds(b.organicGenusLocks, db)),
-  );
-  // After the ranking, because the floor is a rule about the ranking's own output.
-  demoteBelowPresenceFloor(matches, b, db);
-  /*
-    Before a DSS (Phase A.8, owner 2026-10-02): the dump's genus frequencies on bodies like this one
-    re-weight the chances of what the floor left, and hide only a genus such bodies almost never carry.
-  */
-  applyGenusPrior(matches, b, scanForExo, speciesMatchCtx, root);
-  vetoUnseenGenera(matches, b, scanForExo, speciesMatchCtx, root, new Set(collectResolvedOrganicLockSpeciesIds(b.organicGenusLocks, db)));
-  markSampledDespiteUnlikely(matches, b, db);
+  // Ranking, genus split, floors, genus prior, veto, measured odds, Concha order (candidatePipeline.ts).
+  const splitGenera = rankCandidates(matches, b, inputs, store, db, root);
+  // The facts behind each shown row's number, for its [?] (plan 1.7): read only, body tab only.
+  explainChances(matches, b, inputs, root, {
+    splitGenera,
+    splitInputs: splitGenera.size ? splitInputsFor(b, { ...inputs, scan: mergedScan }, store, root) : null,
+  });
   /*
     The collection marker: species where both the corpus and this commander are short of bodies.
 
@@ -1089,6 +1182,7 @@ function computeBodyUncached(
   for (const m of matches) m.predictedColour = predictedColourFor(m.entry, speciesMatchCtx, scanForExo);
   attachCodexNovelty(matches, store);
   attachCodexRegionNovelty(matches, store, speciesMatchCtx, scanForExo);
+  explainLowChanceCodexFirst(matches);
   attachAchievementAdvance(matches, store, speciesMatchCtx, scanForExo);
   // Rarity where the body is (owner, 2026-09-27): a species can be common here and rare elsewhere.
   if (speciesMatchCtx?.regionName) {
@@ -1097,10 +1191,18 @@ function computeBodyUncached(
       if (r) m.regionRarity = r;
     }
   }
-  attachOtherMatchCardScores(matches, scanForExo, explorationRec, root, journalHost);
+  const decks: CandidateDecks = new Map();
+  attachOtherMatchCardScores(matches, scanForExo, explorationRec, root, journalHost, decks);
   applyExomasteryGenusCompetitivePercent(matches);
   if (matches.length > 0 && scanForExo) {
-    matches = attachOtherMatchDetailCardsToMatches(matches, scanForExo, explorationRec, root, journalHost);
+    matches = attachOtherMatchDetailCardsToMatches(
+      matches,
+      scanForExo,
+      explorationRec,
+      root,
+      journalHost,
+      decks,
+    );
   }
   // `approximateMatchingUsed` (an on-foot scan named a species the gates rejected) is no longer
   // appended here: the owner moved that sentence behind the candidate list's [?] (2026-09-25).
@@ -1147,6 +1249,19 @@ function computeBodyUncached(
     includeBacterium: store.includeBacteriumInSearch,
   });
 
+  // Last, so no later copy of a row builds it (lazyMatchDetail.ts).
+  if (scanForExo) {
+    for (const m of matches) {
+      const profile = lazyDetails.get(m.entry.id);
+      if (!profile || Object.prototype.hasOwnProperty.call(m, "exomasteryDetail")) continue;
+      attachLazyDetail(
+        m,
+        () => buildExomasteryDetail(profile, scanForExo, explorationRec, journalHost),
+        true,
+      );
+    }
+  }
+
   return {
     state: b,
     mergedScan,
@@ -1161,13 +1276,36 @@ function computeBodyUncached(
     speciesMatchContext: speciesMatchCtx,
     approximateMatchingUsed,
     exoMarkerBasis: exoMarkerBasis(b),
+    geology: geologyForBody({
+      body: b,
+      scan: mergedScan,
+      region: speciesMatchCtx?.regionName,
+      codexLogged: store.codexMapLogged,
+    }),
     exoPayoutRange,
     exoDataAlerts,
     dssGenusOrphanHints,
+    unknownPlants: unknownPlantSlots({
+      signals: b.biologicalSignals,
+      matches,
+      genusHints: b.genusHints,
+      orphanHints: dssGenusOrphanHints,
+      includeBacterium: store.includeBacteriumInSearch,
+    }),
   };
 }
 
 /** Unsold exobiology (3× Analyse in journal): list ×5 on first-footfall bodies (else ×1) — same multiplier as map tier/heuristic when footfall applies. */
+/** Pranav Antal's +30 % on exobiology sales (Powerplay 2.0), as the Data value toggle applies it. */
+export const PRANAV_ANTAL_BONUS = 1.3;
+/**
+ * A fleet carrier's Universal Cartographics pays 75 % (the owner's carrier sales, 2026-10-03). Only
+ * Cartographics and codex data; Vista Genomics pays in full (owner, 2026-10-04).
+ */
+export const FLEET_CARRIER_SALE_FACTOR = 0.75;
+/** At his own carrier 10 of those 25 % land in its bank, his to take back: 85 % (owner, 2026-10-04). */
+export const OWN_FLEET_CARRIER_SALE_FACTOR = 0.85;
+
 function organicDataValuation(
   store: GameStateStore,
   prices: PriceIndex,
@@ -1182,6 +1320,8 @@ function organicDataValuation(
     const mult = store.firstFootfallBodies.has(p.bodyKey) ? 5 : 1;
     credits += base * mult;
   }
+  // The Pranav Antal sale bonus on the whole exobiology sale, when the commander says he sells there.
+  if (store.pranavAntalBonus) credits = Math.round(credits * PRANAV_ANTAL_BONUS);
   return { credits, pendingSamples: store.pendingOrganicSales.length };
 }
 
@@ -1211,9 +1351,8 @@ function buildOrganicPendingLines(
   const out: OrganicPendingLineItem[] = [];
   for (const p of store.pendingOrganicSales) {
     const body = store.bodies.get(p.bodyKey);
-    const parts = p.bodyKey.split(":");
-    const bodyIdPart = parts.length >= 2 ? parts[1]! : "";
-    const bodyName = body?.bodyName ?? (bodyIdPart ? `Body ${bodyIdPart}` : p.bodyKey);
+    const bid = bodyIdOfBodyKey(p.bodyKey);
+    const bodyName = body?.bodyName ?? (Number.isFinite(bid) ? `Body ${bid}` : p.bodyKey);
     const starSystem = body?.starSystem ?? store.currentSystem ?? "—";
     const base = lookupPrice(prices, p.label, p.label);
     const firstFootfall = store.firstFootfallBodies.has(p.bodyKey);
@@ -1305,9 +1444,22 @@ export function buildSnapshot(
     ? { credits: 0, pendingSamples: 0 }
     : organicDataValuation(store, cachedPrices);
   // One walk of every scan, not two: the total is the breakdown's own total (code review §E).
-  const exploreBreakdown = bootLoading
+  const exploreRaw = bootLoading
     ? { totalCredits: 0, fssScanCount: 0, fssValueCredits: 0, dssScanCount: 0, dssValueCredits: 0 }
     : explorationDataValueBreakdown(store);
+  // Sold at a fleet carrier, the carrier keeps 25 % (the Data value toggle; owner, 2026-10-03).
+  const carrier = !store.sellAtFleetCarrier
+    ? 1
+    : store.fleetCarrierIsOwn
+      ? OWN_FLEET_CARRIER_SALE_FACTOR
+      : FLEET_CARRIER_SALE_FACTOR;
+  const exploreBreakdown = {
+    ...exploreRaw,
+    fssValueCredits: Math.round(exploreRaw.fssValueCredits * carrier),
+    dssValueCredits: Math.round(exploreRaw.dssValueCredits * carrier),
+    totalCredits:
+      Math.round(exploreRaw.fssValueCredits * carrier) + Math.round(exploreRaw.dssValueCredits * carrier),
+  };
   const explorationScanDataValueCredits = exploreBreakdown.totalCredits;
   const organicPendingLines = bootLoading ? [] : buildOrganicPendingLines(store, db, cachedPrices);
   // Logged colours anywhere in the journals, not only in the system in view (see the function).
@@ -1320,6 +1472,24 @@ export function buildSnapshot(
           .sort((a, b) => a.bodyId - b.bodyId)
           .map((b) => computeBody(b, db, cachedPrices, store)),
       );
+
+  /*
+    The map's species for a body are the tab's (buildSystemMapSnapshot `tabRuns`): only where the map would have run
+    the chain itself — a body with exo markers whose scan names a planet class — and before the AutoScan-only rows
+    below, which the map does not list.
+  */
+  const tabRuns = new Map<string, ExoMatchRun>();
+  for (const c of bodies) {
+    const scan = c.mergedScan;
+    if (!scan?.PlanetClass?.trim() || !bodyHasExoMarkers(c.state)) continue;
+    tabRuns.set(bodyKey(c.state.systemAddress, c.state.bodyId), {
+      exo: c.state,
+      scan,
+      matches: c.matches,
+      shown: shownSpeciesMatches(c.matches),
+      approximateMatchingUsed: c.approximateMatchingUsed,
+    });
+  }
 
   const focusAddr = store.viewingSystemAddress ?? store.currentSystemAddress;
   const fssAllBodiesFoundNoBio = bootLoading
@@ -1363,6 +1533,7 @@ export function buildSnapshot(
             cachedStarRoles!,
             cachedPrices,
             loadSpatialCatalogue(projectRoot),
+            tabRuns,
           ),
         );
   const dScanBodies = bootLoading
@@ -1431,6 +1602,10 @@ export function buildSnapshot(
     currentSystem: store.currentSystem,
     currentSystemAddress: store.currentSystemAddress,
     currentRegion: regionForFocusedSystem(store, focusAddr, projectRoot),
+    shipRegion:
+      store.currentSystemAddress === focusAddr
+        ? regionForFocusedSystem(store, focusAddr, projectRoot)
+        : regionForFocusedSystem(store, store.currentSystemAddress, projectRoot),
     currentSystemKind: focusAddr != null ? store.systemKind(focusAddr) : null,
     viewingSystemAddress: store.viewingSystemAddress,
     viewingSystemName,
@@ -1472,11 +1647,17 @@ export function buildSnapshot(
       ledger: edsmUploadLedgerSummary(),
     },
     includeExplorationScanDataInDataValue: store.includeExplorationScanDataInDataValue,
+    pranavAntalBonus: store.pranavAntalBonus,
+    sellAtFleetCarrier: store.sellAtFleetCarrier,
+    fleetCarrierIsOwn: store.fleetCarrierIsOwn,
     explorationScanDataValueCredits,
     explorationFssScanCount: exploreBreakdown.fssScanCount,
     onSiteTiming: timingFromSamples(store.landingMinutesSamples, store.samplingMinutesSamples),
     exoOutliers: exoOutlierTally(),
     explorationFssValueCredits: exploreBreakdown.fssValueCredits,
+    explorationHonkValueCredits: Math.round(
+      ("honkValueCredits" in exploreRaw ? exploreRaw.honkValueCredits : 0) * carrier,
+    ),
     explorationDssScanCount: exploreBreakdown.dssScanCount,
     explorationDssValueCredits: exploreBreakdown.dssValueCredits,
     dssMappedPlanetaryBodyCount: exploreBreakdown.dssScanCount,
@@ -1493,6 +1674,8 @@ export function buildSnapshot(
     exoOverlayFocusBody,
     statusDestination: bootLoading ? null : store.statusDestination,
     jumpTarget: bootLoading ? null : withFirstFootfall(store.nextJumpTarget(), store),
+    boxelCopied: store.boxelCopied,
+    boxelsRevision: store.boxelsRevision,
     focusedSystemUndiscovered:
       !bootLoading && focusAddr != null && store.commanderDiscoveredSystem(focusAddr) === true,
     remainingJumpsInRoute: bootLoading ? null : store.remainingJumpsInRoute,

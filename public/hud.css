@@ -32,6 +32,8 @@ body {
   overflow: hidden;
   font-family: var(--hud-font);
   color: var(--hud-text);
+  /* Every line of text shadowed (owner, 2026-10-06: easy to read on any background); inherited. */
+  text-shadow: var(--hud-outline);
 }
 
 /* ---- shell: fills the window; the host decides the width so every HUD in the stack lines up --- */
@@ -91,7 +93,8 @@ body {
   glow kept vivid (owner, 2026-10-02: in front, the outline dulled the colours).
 */
 :root {
-  --hud-outline: 1px 1px 0 rgba(0, 0, 0, 0.65), 0 0 2px rgba(0, 0, 0, 0.35);
+  /* Stronger since 2026-10-06 (owner: "all text in the HUD has shadows, so it's easy to read"). */
+  --hud-outline: 0 0 2px rgba(0, 0, 0, 0.9), 1px 1px 1px rgba(0, 0, 0, 0.85), 0 1px 4px rgba(0, 0, 0, 0.55);
 }
 .panel__body {
   text-shadow: var(--hud-outline);
@@ -308,6 +311,21 @@ body {
   background: #07060a;
   border-color: #f5c96a;
   text-shadow: 0 0 4px rgba(245, 184, 61, 0.5), var(--hud-outline);
+}
+/*
+  The credit line (theme.js placeCredit; owner, 2026-10-10: "like the other titles"): a section with a title
+  and nothing under it, so each HUD type styles it with its own titles. Only its spacing is its own.
+*/
+.hud-section--credit .hud-head {
+  margin-bottom: 0;
+}
+.hud-section--credit {
+  pointer-events: none;
+  user-select: none;
+}
+/* Title Background, at the bottom: the bar runs to the panel's lower edge, as the top one runs to its top. */
+html.hud-type--title .hud-section--credit-bottom .hud-head {
+  margin-bottom: -0.62rem;
 }
 /* Compact overlays: explanations go, readings and warnings stay (theme.js `hud-compact`). */
 .hud-compact .hud-explain {
@@ -729,6 +747,18 @@ body {
   stroke-width: 1;
   stroke-dasharray: 5 3;
 }
+/* A sample's own ring (owner, 2026-10-04): the next sample of its species goes outside it. */
+.minimap-sample-ring {
+  fill: rgba(80, 220, 140, 0.07);
+  stroke: var(--bio);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+/* A species left part-sampled: its colour, fainter. */
+.minimap-sample-ring--left {
+  fill: none;
+  opacity: 0.55;
+}
 /* The sweep lives in the static layer and is never rebuilt, so its rotation stays continuous. */
 .minimap-sweep {
   fill: url(#hudSweepGrad);
@@ -758,6 +788,14 @@ body {
 }
 .minimap-arrow--ship {
   fill: var(--hud-text);
+}
+/* SVG text takes no text-shadow: a dark stroke behind the fill does the same. */
+.minimap-far-label,
+.minimap-north {
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.85);
+  stroke-width: 1.6px;
+  stroke-linejoin: round;
 }
 .minimap-far-label {
   fill: var(--hud-hi);
@@ -822,6 +860,104 @@ body {
   letter-spacing: 0.04em;
   color: var(--hud-hi);
   opacity: 0.75;
+}
+/* who has been to the system ahead (hud/sections/jump.js renderDiscovered); shadowed for tinted HUDs */
+.jump__disc {
+  margin-top: 0.25rem;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-shadow:
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 1px 3px rgba(0, 0, 0, 0.9);
+}
+.jump__disc--new {
+  color: #a8ff9a;
+}
+.jump__disc--known {
+  color: #e2552c;
+}
+.jump__disc--you {
+  color: #5cb8ff;
+}
+/* what a boxel run / key put on the clipboard (hud/sections/jump.js) */
+.jump__copied {
+  margin-top: 0.4rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: var(--hud-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jump__copied-k {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud);
+}
+.jump__copied-run {
+  color: var(--bio);
+}
+/* The neutron route being flown (plan 8.5) and the FSD's health (8.4). */
+.jump__neutron,
+.jump__fsd {
+  margin-top: 0.4rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: var(--hud-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jump__neutron-k {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud);
+}
+.jump__neutron-do {
+  font-weight: 700;
+}
+.jump__neutron-do--boost {
+  color: #8fd8ff;
+  text-shadow: 0 0 6px rgba(120, 200, 255, 0.6);
+}
+.jump__neutron-do--fuel {
+  color: #ffd23f;
+}
+.jump__neutron-do--fuel .hop__fuel {
+  width: 0.8rem;
+  height: 0.8rem;
+  vertical-align: -0.15rem;
+  margin-right: 0.15rem;
+}
+.jump__neutron-next {
+  color: var(--bio);
+}
+.jump__fsd--warn {
+  color: var(--bad);
+  font-weight: 700;
+}
+/* "Next boxel" (plan 2.7): the expedition planner's pick, off unless chosen in the launcher. */
+.jump__boxel {
+  margin-top: 0.3rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: var(--hud-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jump__boxel-k {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud);
+}
+.jump__boxel-v {
+  color: var(--bio);
 }
 .jump--none .jump__tri {
   opacity: 0.35;
@@ -1032,12 +1168,22 @@ body {
 }
 
 /* ---- phone mode (task 13): the same HUD, laid out for a hand-held screen ------------------------ */
+/* The page itself black as well (owner, 2026-10-15): the overlays' transparent page must never show
+   a browser's own (white) canvas past the body, nor a light form control. */
+html.phone {
+  background: #050406 !important;
+  color-scheme: dark;
+  /* The page scrolls, as any page (owner, 2026-10-15: the Elite Style did not; the overlays' hidden overflow
+     on the root stopped every touch scroll, a short HUD just never needed one). */
+  overflow-x: hidden;
+  overflow-y: auto;
+}
 body.phone {
   min-height: 100vh;
   padding: 0.4rem 0.4rem 1.2rem;
   background: #050406 !important;
   font-size: 18px;
-  overflow: auto;
+  overflow: visible;
 }
 body.phone .shell {
   max-width: none;
@@ -1053,9 +1199,6 @@ body.phone .panel__body {
 body.phone .hud-section + .hud-section {
   margin-top: 0;
   padding-top: 0.6rem;
-}
-body.phone .hud-section--distance {
-  order: -1;
 }
 @media (orientation: landscape) and (min-width: 640px) {
   body.phone .panel__body {
@@ -1106,10 +1249,60 @@ body.phone .phone-chip--dim {
 body.phone.phone--fullscreen {
   padding-top: 0.2rem;
 }
+/*
+  Full screen (owner, 2026-10-15): the chip row folds into a gear in the corner, and the gear fades away after
+  3 s without a touch; any touch brings it back. The gear opens the row over the top of the HUD.
+*/
+.phone-gear {
+  display: none;
+}
+body.phone.phone--fullscreen .phone-gear {
+  position: fixed;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  padding: 0;
+  color: var(--hud-hi);
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--hud-dim);
+  clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
+  cursor: pointer;
+  transition: opacity 0.4s ease;
+}
+body.phone.phone--fullscreen.phone--menu .phone-gear {
+  color: #07060a;
+  background: linear-gradient(180deg, var(--hud-hi), var(--hud) 60%, var(--hud));
+  border-color: var(--hud-hi);
+}
+body.phone.phone--fullscreen.phone--idle:not(.phone--menu) .phone-gear {
+  opacity: 0;
+  pointer-events: none;
+}
+body.phone.phone--fullscreen .phone-bar {
+  display: none;
+}
+body.phone.phone--fullscreen.phone--menu .phone-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 19;
+  display: flex;
+  margin: 0;
+  padding: 0.5rem 3.6rem 0.6rem 0.5rem;
+  background: rgba(5, 4, 6, 0.94);
+  border-bottom: 1px solid var(--hud-dim);
+}
 
-/* phone: nothing may size itself to its content — the strip must overflow its box, not the screen */
+/* phone: nothing may size itself to its content — the strip must overflow its box, not the screen
+   (clipped, not hidden: a hidden overflow would make the body a scroller of its own and take the scroll) */
 body.phone {
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 body.phone .shell,
 body.phone .panel,
@@ -1207,4 +1400,214 @@ body.phone .jump__body {
 .hud-mail {
   margin-left: 0.5em;
   color: #f5b83d;
+}
+
+/* "Unknown plant" rows in the candidate list (shared/unknownPlants.ts). */
+li.unknown-plant .name {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+/* =============================================================================================
+   HUD type (owner, 2026-10-04): Original (the above, default), Title Background, Elite Style.
+   A class on <html> from the launcher's setting (hud/theme.js applyTheme).
+   ============================================================================================= */
+
+/* ---- Title Background: flat, a solid title bar in the accent, dark text on it ----------------- */
+html.hud-type--title .panel {
+  filter: none;
+}
+html.hud-type--title .panel > .panel__frame {
+  background: var(--hud-dim);
+}
+html.hud-type--title .panel__body::before,
+html.hud-type--title .panel__body::after {
+  display: none;
+  animation: none;
+}
+html.hud-type--title .panel__body > .panel__fill {
+  background: var(--hud-bg);
+}
+html.hud-type--title .shell::before,
+html.hud-type--title .shell::after {
+  border-width: 1px;
+  width: 0.6rem;
+  height: 0.6rem;
+}
+html.hud-type--title .hud-head {
+  margin: -0.5rem -0.8rem 0.45rem;
+  padding: 0.16rem 0.8rem 0.14rem;
+  background: var(--hud);
+  align-items: center;
+}
+html.hud-type--title .hud-section + .hud-section .hud-head {
+  margin-top: 0;
+}
+html.hud-type--title .hud-title,
+html.hud-type--title .hud-status {
+  color: #140900;
+  text-shadow: none;
+  opacity: 1;
+}
+html.hud-type--title .hud-title::before {
+  background: #140900;
+  box-shadow: none;
+}
+html.hud-type--title .row--rule,
+html.hud-type--title .hud-section + .hud-section {
+  background: linear-gradient(var(--hud-faint), var(--hud-faint)) top left / 100% 1px no-repeat;
+}
+
+/* ---- Elite Style: the game's own panels — no plate, two neon lines round the title, a dark
+   shadow behind every line and letter, tilted like the cockpit's side panels, and the status
+   squares of the Mass Locked / Landing Gear list for the sampling. ------------------------------ */
+html.hud-type--elite {
+  --hud-elite-shadow: 0 0 3px #000, 0 0 7px rgba(0, 0, 0, 0.85), 1px 1px 1px #000;
+}
+html.hud-type--elite .shell {
+  /* The far edge goes into the screen, so nothing grows past the window (origin from theme.js). */
+  transform: perspective(60rem) rotateY(var(--hud-tilt, 0deg));
+  transform-origin: var(--hud-tilt-origin, left) center;
+  padding: 0.2rem 0.5rem 0.4rem;
+}
+html.hud-type--elite .shell.shell--off {
+  transform: perspective(60rem) rotateY(var(--hud-tilt, 0deg)) scale(0.97);
+}
+/* Slant: skewed, not turned — the same width border to border; room above and below for the lift. */
+html.hud-type--elite.hud-tilt--slant .shell {
+  transform: skewY(var(--hud-slant, 0deg));
+  transform-origin: center center;
+  padding-top: var(--hud-slant-pad, 0.2rem);
+  padding-bottom: var(--hud-slant-pad, 0.4rem);
+}
+html.hud-type--elite.hud-tilt--slant .shell.shell--off {
+  transform: skewY(var(--hud-slant, 0deg)) scale(0.97);
+}
+html.hud-type--elite .shell::before,
+html.hud-type--elite .shell::after,
+html.hud-type--elite .panel > .panel__frame,
+html.hud-type--elite .panel__body > .panel__fill,
+html.hud-type--elite .panel__body::before,
+html.hud-type--elite .panel__body::after {
+  display: none;
+  animation: none;
+}
+html.hud-type--elite .panel {
+  filter: none;
+  clip-path: none;
+  padding: 0;
+}
+html.hud-type--elite .panel__body {
+  clip-path: none;
+  padding: 0.1rem 0.1rem 0.3rem;
+  text-shadow: var(--hud-elite-shadow);
+}
+html.hud-type--elite .panel__body * {
+  text-shadow: var(--hud-elite-shadow);
+}
+/* The title between two neon lines, each with its glow and a dark shadow behind it. */
+html.hud-type--elite .hud-head {
+  position: relative;
+  margin: 0.25rem 0 0.4rem;
+  padding: 0.32rem 0.1rem 0.28rem;
+  background: none;
+  align-items: center;
+}
+html.hud-type--elite .hud-head::before,
+html.hud-type--elite .hud-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--hud);
+  box-shadow:
+    0 0 5px var(--hud),
+    0 0 10px var(--hud-dim),
+    0 1px 6px rgba(0, 0, 0, 0.9);
+}
+html.hud-type--elite .hud-head::before {
+  top: 0;
+}
+html.hud-type--elite .hud-head::after {
+  bottom: 0;
+  height: 1.5px;
+}
+html.hud-type--elite .hud-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  color: var(--hud-hi);
+  text-shadow:
+    0 0 6px var(--hud),
+    0 0 2px var(--hud),
+    var(--hud-elite-shadow);
+}
+html.hud-type--elite .hud-title::before {
+  display: none;
+}
+html.hud-type--elite .hud-status {
+  color: var(--hud);
+  opacity: 1;
+}
+html.hud-type--elite .hud-section + .hud-section {
+  margin-top: 0.7rem;
+  padding-top: 0;
+  background: none;
+}
+html.hud-type--elite .row .lbl,
+html.hud-type--elite .row .k,
+html.hud-type--elite .hud-list .name,
+html.hud-type--elite .hud-list .cr {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+html.hud-type--elite .row .lbl,
+html.hud-type--elite .row .k {
+  color: var(--hud-hi);
+  opacity: 1;
+}
+html.hud-type--elite .row--rule {
+  background: linear-gradient(var(--hud-dim), var(--hud-dim)) top left / 100% 1px no-repeat;
+}
+/* List rows: no separators; the bullet is the game's status square — lit when sampled or found. */
+html.hud-type--elite .hud-list li {
+  background: none;
+  padding-left: 1.05rem;
+}
+html.hud-type--elite .hud-list li::before {
+  top: 0.4rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  transform: none;
+  background: transparent;
+  border: 1px solid var(--hud);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+  opacity: 0.9;
+}
+html.hud-type--elite .hud-list li.has-live::before,
+html.hud-type--elite .hud-list li.has-done::before,
+html.hud-type--elite .hud-list li.has-seen::before,
+html.hud-type--elite .notable-list li.notable-row--dss::before {
+  background: var(--hud-hi);
+  border-color: var(--hud-hi);
+  box-shadow:
+    0 0 5px var(--hud),
+    0 0 3px rgba(0, 0, 0, 0.9);
+}
+/* The sampling tracker's three scans: a square each, lit once that scan is taken (.row--taken). */
+html.hud-type--elite .row--scan .lbl::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.4rem;
+  vertical-align: -0.02rem;
+  border: 1px solid var(--hud-hi);
+  background: var(--hud-hi);
+  box-shadow: 0 0 5px var(--hud), 0 0 3px rgba(0, 0, 0, 0.9);
+}
+html.hud-type--elite .row--scan:not(.row--taken) .lbl::before {
+  background: transparent;
+  border-color: var(--hud);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
 }

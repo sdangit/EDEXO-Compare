@@ -1,5 +1,5 @@
-// Flat config (ESLint 10). Deliberately warn-heavy rather than error-heavy for v0.2.0:
-// the point of this stage is signal, not a clean board. Later stages tighten it.
+// Flat config (ESLint 10). Many rules are warnings, and `npm run lint` passes --max-warnings 0
+// (review F-F10, 2026-10-02, at zero warnings): a new warning fails the lint like an error.
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -18,11 +18,14 @@ export default tseslint.config(
       "public/launcher.html",
       // Local screenshots, backups and one-off probes; never shipped, never imported.
       "build-artifacts/**",
+      // The local scratch folder (excluded from git in .git/info/exclude): it failed `npm run lint` on this
+      // machine with 23 errors that are nobody's code (code review A19).
+      "tmp-t/**",
     ],
   },
   js.configs.recommended,
-  // ESLint 10 adds this to recommended. Keep the existing codebase's warning policy.
-  { rules: { "no-useless-assignment": "warn" } },
+  // ESLint 10 adds this to recommended. Preserve upstream's ESLint 9 rule set.
+  { rules: { "no-useless-assignment": "off" } },
   ...tseslint.configs.recommended,
   {
     files: ["src/**/*.{ts,tsx}"],
@@ -83,6 +86,16 @@ export default tseslint.config(
   {
     files: ["scripts/**/*.ts"],
     rules: { "no-undef": "off" },
+  },
+  {
+    // The tests throw values away the way src does (`const { computedAt: _x, ...rest } = …`).
+    files: ["tests/**/*.{ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "none" },
+      ],
+    },
   },
   {
     // The HUD overlays' plain browser script (no bundler): browser globals, plus the `module` check

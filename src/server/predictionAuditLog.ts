@@ -27,12 +27,14 @@
  *
  * Private, like every other observation file: it lives beside the user settings and never ships.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import { resolvePredictionAuditPath } from "./paths.js";
-import { collectResolvedOrganicLockSpeciesIds } from "./organicLocks.js";
+import { collectOwnOrganicLockSpeciesIds } from "./organicLocks.js";
 import type { BodyExoState, SpeciesDatabase, SpeciesMatch } from "../shared/types.js";
 import type { SurfaceMark } from "./surfaceMarksFile.js";
+import { writeFileAtomic } from "./atomicWrite.js";
+import { APP_VERSION } from "./appVersion.js";
 
 /** Which of the game's three narrowings produced this list. */
 export type PredictionStageName = "fss" | "dss" | "organic";
@@ -88,6 +90,8 @@ export interface PredictionStage {
    * it costs nothing to notice, because the game volunteers it before the commander lands.
    */
   unofferedGenera: string[];
+  /** The app version that made this list (since 1.2.15, plan 1.9), so a refit shows in Statistics. */
+  appVersion?: string;
 }
 
 /** Where a confirmed species sat in the last list offered before it was confirmed. */
@@ -186,6 +190,23 @@ const SAVE_DEBOUNCE_MS = 1500;
 let store: Map<string, PredictionRecord> | null = null;
 let pending: ReturnType<typeof setTimeout> | null = null;
 
+/*
+  Off until the app turns it on (owner, 2026-10-09). Probe scripts run the same snapshot code, and with
+  the log on by default every one of them wrote its sample bodies into his live
+  edexo-predictions.json: 528 MB and 8,600 records by 2026-10-06, his own 600-odd buried and the
+  finished ones evicted to make room. Only startEdexo switches it on; a script or test that wants
+  the log says so.
+*/
+let enabled = false;
+
+/** The app's switch for the log; scripts and tests leave it off unless they mean to write one. */
+export function enablePredictionAudit(on = true): void {
+  enabled = on;
+}
+
+/** An open record untouched this long counts toward the cap like a finished one. */
+const STALE_OPEN_MS = 7 * 24 * 3600 * 1000;
+
 function load(): Map<string, PredictionRecord> {
   if (store) return store;
   const m = new Map<string, PredictionRecord>();
@@ -197,7 +218,15 @@ function load(): Map<string, PredictionRecord> {
         if (r?.bodyKey) m.set(r.bodyKey, r);
       }
     } catch {
-      /* unreadable file: start fresh rather than lose the session over an audit log */
+      /*
+        Unreadable: set it aside and start fresh, rather than lose the session over an audit log —
+        but never overwrite it, which is how a 345 MB file of probe records took his history with it.
+      */
+      try {
+        renameSync(p, `${p}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+      } catch {
+        /* leave it where it is; the save below will then fail too, and the app carries on */
+      }
     }
   }
   store = m;
@@ -210,7 +239,7 @@ function saveNow(): void {
   const file = resolvePredictionAuditPath();
   try {
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(
+    writeFileAtomic(
       file,
       `${JSON.stringify({ formatVersion: 1, records: [...m.values()] } satisfies PredictionAuditFile, null, 2)}\n`,
       "utf8",
@@ -229,6 +258,14 @@ function saveSoon(): void {
   pending.unref?.();
 }
 
+/** Write what is waiting now, at shutdown (code review 2026-10-10, A4): the debounce would drop it. */
+export function flushPredictionAudit(): void {
+  if (!pending) return;
+  clearTimeout(pending);
+  pending = null;
+  saveNow();
+}
+
 /** Test seam — the module holds the file in memory for the life of the process. */
 export function resetPredictionAuditForTests(): void {
   if (pending) clearTimeout(pending);
@@ -243,7 +280,7 @@ export function resetPredictionAuditForTests(): void {
  * cannot disagree with what the panel is showing: the panel reads the same fields.
  */
 function stageOf(body: BodyExoState): PredictionStageName {
-  if (body.organicGenusLocks.length > 0) return "organic";
+  if (body.organicGenusLocks.some((l) => !l.fromSibling)) return "organic";
   if (body.dssComplete || (body.genusHints?.length ?? 0) > 0) return "dss";
   return "fss";
 }
@@ -334,6 +371,7 @@ export function recordPredictionForBody(input: {
   now?: string;
 }): void {
   try {
+    if (!enabled) return;
     const { body, matches, db } = input;
     // Nothing to explain about a body with no biology and no scan to judge it by.
     if (!body.scan?.PlanetClass?.trim()) return;
@@ -362,6 +400,8 @@ export function recordPredictionForBody(input: {
         unscored: null,
       };
       m.set(body.key, rec);
+      // A new record can take the file over the cap as well as a closing one (open ones used to grow it without bound).
+      evict(m);
     }
 
     const last = rec.stages[rec.stages.length - 1] ?? null;
@@ -384,7 +424,7 @@ export function recordPredictionForBody(input: {
       right — scoring it then would say the app is always correct. The stage that matters is the last
       one the commander had to choose from.
     */
-    const truth = collectResolvedOrganicLockSpeciesIds(body.organicGenusLocks, db);
+    const truth = collectOwnOrganicLockSpeciesIds(body.organicGenusLocks, db);
     if (stage === "organic" && truth.length && rec.outcomes.length === 0 && last) {
       rec.outcomes = truth.map((id) => {
         const o = last.offered.find((x) => x.speciesId === id) ?? null;
@@ -439,6 +479,7 @@ export function recordPredictionForBody(input: {
       offered,
       dropped,
       unofferedGenera,
+      appVersion: APP_VERSION,
     });
     rec.scan = scanOf(body);
     rec.bodyName = body.bodyName;
@@ -457,6 +498,7 @@ export function recordPredictionForBody(input: {
  * chance to attach them. Matched by body key, which both files carry.
  */
 export function finalisePredictionsForSystem(systemAddress: number, marks: SurfaceMark[]): number {
+  if (!enabled) return 0;
   try {
     const m = load();
     const prefix = `${systemAddress}:`;
@@ -483,13 +525,16 @@ export function finalisePredictionsForSystem(systemAddress: number, marks: Surfa
   }
 }
 
-/** Oldest finished record first; an open one is the body the commander may still be working on. */
-function evict(m: Map<string, PredictionRecord>): void {
+/**
+ * Oldest finished record first; an open one is the body the commander may still be working on —
+ * unless it has not been touched for a week, when it is as stale as a finished one (open records used
+ * to be immune, so a flood of them grew the file without bound and evicted every finished record).
+ */
+function evict(m: Map<string, PredictionRecord>, now = Date.now()): void {
   if (m.size <= MAX_RECORDS) return;
-  const finished = [...m.values()]
-    .filter((r) => r.final)
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-  for (const r of finished) {
+  const stale = (r: PredictionRecord) => r.final || now - Date.parse(r.updatedAt) > STALE_OPEN_MS;
+  const evictable = [...m.values()].filter(stale).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  for (const r of evictable) {
     if (m.size <= MAX_RECORDS) break;
     m.delete(r.bodyKey);
   }

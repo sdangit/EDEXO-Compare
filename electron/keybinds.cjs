@@ -6,18 +6,41 @@
   "Idea behind it, the user won't have to alt tab to the browser window in order to switch bodies, or
   if they have a single key stroke they want to bind the HUD to, they can."
 
-  Three actions: show / hide the HUDs (it was Ctrl+Alt+H, fixed), previous and next body tab (F1 and F2
-  by default). A bind is an Electron accelerator of up to three keys — modifiers and one key, or one key
+  Ten actions: show / hide the HUDs (it was Ctrl+Alt+H, fixed), previous and next body tab (F1 and F2
+  by default), clear the notices on the bell (F5; owner, 2026-10-05), and boxel scanning (owner,
+  2026-10-06; server/boxelRun.ts): copy the next system to fly (F6), start / finish a boxel run (F7),
+  and step to the previous / next system still to fly (F8 / F9); previous / next screen tab (Shift+F1 /
+  Shift+F2; owner, 2026-10-06). A bind is an Electron accelerator of up to three keys — modifiers and one key, or one key
   on its own — or "" for none. They are global: Windows hands the key to us and not to the game, so a
   key the commander uses in Elite should not be bound here; the launcher says so beside the field.
 
   Saved as edexo-keybinds.json beside the HUD layout (the user data folder).
+
+  The body tabs and Clear the notices hold their keys only while Elite is in front (owner, 2026-10-05:
+  F5 "blocks my keystrokes in my browser, it should only work while the game is in focus"): a global
+  key is taken from every program, so these are registered when the game comes to the front and let
+  go when anything else does. The HUD toggle stays global (Ctrl+Alt+H by default) — it is what shows
+  the HUDs from outside the game.
 */
 
+/*
+  `group` is the launcher's folding section (owner, 2026-10-06: "key-binds in launcher under collapsible
+  categories"), in the order of GROUPS.
+*/
+const GROUPS = ["HUD", "Body tabs", "Screen tabs", "Notices", "Boxels"];
 const ACTIONS = {
-  hudToggle: { default: "Control+Alt+H", label: "Show / hide the HUDs" },
-  bodyPrev: { default: "F1", label: "Previous body tab" },
-  bodyNext: { default: "F2", label: "Next body tab" },
+  hudToggle: { default: "Control+Alt+H", label: "Show / hide the HUDs", group: "HUD" },
+  bodyPrev: { default: "F1", label: "Previous body tab", gameOnly: true, group: "Body tabs" },
+  bodyNext: { default: "F2", label: "Next body tab", gameOnly: true, group: "Body tabs" },
+  // Tab view (owner, 2026-10-06): the main window's screen tabs from inside the game.
+  tabPrev: { default: "Shift+F1", label: "Previous screen tab", gameOnly: true, group: "Screen tabs" },
+  tabNext: { default: "Shift+F2", label: "Next screen tab", gameOnly: true, group: "Screen tabs" },
+  noticesClear: { default: "F5", label: "Clear the notices (the bell)", gameOnly: true, group: "Notices" },
+  // Boxel scanning (owner, 2026-10-06): the next system of the saved boxel he is in, to paste in the galaxy map.
+  boxelCopyNext: { default: "F6", label: "Copy the next system to fly (boxel, neutron route)", gameOnly: true, group: "Boxels" },
+  boxelRun: { default: "F7", label: "Start / finish a boxel run", gameOnly: true, group: "Boxels" },
+  boxelPrev: { default: "F8", label: "Copy the previous boxel system", gameOnly: true, group: "Boxels" },
+  boxelNext: { default: "F9", label: "Copy the next boxel system after that", gameOnly: true, group: "Boxels" },
 };
 
 const MODIFIERS = new Set(["Control", "Ctrl", "CommandOrControl", "CmdOrCtrl", "Alt", "Shift", "Super", "Meta"]);
@@ -49,6 +72,9 @@ function createKeybinds(deps) {
   /** What each action's bind did when applied: ok, taken (another program has it), duplicate, invalid, off. */
   let status = {};
   let registered = [];
+  /** Elite is the window in front: the game-only binds are registered (see the note at the top). */
+  let gameFocused = false;
+  let paused = false;
 
   function load() {
     try {
@@ -101,6 +127,10 @@ function createKeybinds(deps) {
         continue;
       }
       seen.add(acc.toLowerCase());
+      if (ACTIONS[k].gameOnly && !gameFocused) {
+        status[k] = "standby";
+        continue;
+      }
       let ok = false;
       try {
         ok = deps.globalShortcut.register(acc, () => {
@@ -138,7 +168,13 @@ function createKeybinds(deps) {
     return {
       binds: { ...binds },
       status: { ...status },
-      actions: Object.fromEntries(Object.entries(ACTIONS).map(([k, v]) => [k, { label: v.label, default: v.default }])),
+      actions: Object.fromEntries(
+        Object.entries(ACTIONS).map(([k, v]) => [
+          k,
+          { label: v.label, default: v.default, gameOnly: v.gameOnly === true, group: v.group },
+        ]),
+      ),
+      groups: [...GROUPS],
     };
   }
 
@@ -146,7 +182,16 @@ function createKeybinds(deps) {
     While the launcher records a new bind, the current ones step aside: a registered global key never
     reaches any window, so pressing F1 to keep F1 would otherwise record nothing.
   */
+  /** The game came to the front (true) or something else did: game-only binds follow it. */
+  function setGameFocused(on) {
+    const next = on === true;
+    if (next === gameFocused) return;
+    gameFocused = next;
+    if (!paused) apply();
+  }
+
   function pause(on) {
+    paused = !!on;
     if (on) {
       for (const acc of registered) {
         try {
@@ -162,7 +207,16 @@ function createKeybinds(deps) {
     return get();
   }
 
-  return { load, apply, set, get, pause, bindFor: (k) => binds[k] ?? "", statusFor: (k) => status[k] ?? "off" };
+  return {
+    load,
+    apply,
+    set,
+    get,
+    pause,
+    setGameFocused,
+    bindFor: (k) => binds[k] ?? "",
+    statusFor: (k) => status[k] ?? "off",
+  };
 }
 
-module.exports = { createKeybinds, validAccelerator, KEYBIND_ACTIONS: ACTIONS };
+module.exports = { createKeybinds, validAccelerator, KEYBIND_ACTIONS: ACTIONS, KEYBIND_GROUPS: GROUPS };

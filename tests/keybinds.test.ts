@@ -16,8 +16,14 @@ const kb = require("../electron/keybinds.cjs") as {
     load: () => void;
     apply: () => Record<string, string>;
     set: (n: Record<string, string | null>) => { binds: Record<string, string>; status: Record<string, string> };
-    get: () => { binds: Record<string, string>; status: Record<string, string> };
+    get: () => {
+      binds: Record<string, string>;
+      status: Record<string, string>;
+      actions: Record<string, { label: string; default: string; gameOnly: boolean; group: string }>;
+      groups: string[];
+    };
     pause: (on: boolean) => unknown;
+    setGameFocused: (on: boolean) => void;
     bindFor: (k: string) => string;
   };
   validAccelerator: (a: unknown) => boolean;
@@ -42,7 +48,7 @@ function make() {
     globalShortcut: gs,
     fs,
     filePath: () => file,
-    handlers: { hudToggle: () => fired.push("hud"), bodyPrev: () => fired.push("prev"), bodyNext: () => fired.push("next") },
+    handlers: { hudToggle: () => fired.push("hud"), bodyPrev: () => fired.push("prev"), bodyNext: () => fired.push("next"), tabPrev: () => fired.push("tprev"), tabNext: () => fired.push("tnext"), noticesClear: () => fired.push("clear"), boxelCopyNext: () => fired.push("boxel"), boxelRun: () => fired.push("run"), boxelPrev: () => fired.push("bprev"), boxelNext: () => fired.push("bnext") },
   });
 }
 
@@ -65,20 +71,40 @@ describe("what counts as a bind", () => {
 });
 
 describe("registering them", () => {
-  it("starts with Ctrl+Alt+H for the HUDs and F1 / F2 for the body tabs, and they fire", () => {
+  it("starts with Ctrl+Alt+H for the HUDs, F1 / F2 for the body tabs and F5 to clear the notices, and they fire", () => {
     const k = make();
     k.load();
-    expect(k.apply()).toEqual({ hudToggle: "ok", bodyPrev: "ok", bodyNext: "ok" });
+    k.setGameFocused(true);
+    expect(k.apply()).toEqual({
+      hudToggle: "ok",
+      bodyPrev: "ok",
+      bodyNext: "ok",
+      tabPrev: "ok",
+      tabNext: "ok",
+      noticesClear: "ok",
+      boxelCopyNext: "ok",
+      boxelRun: "ok",
+      boxelPrev: "ok",
+      boxelNext: "ok",
+    });
     held.get("F1")!();
     held.get("F2")!();
     held.get("Control+Alt+H")!();
-    expect(fired).toEqual(["prev", "next", "hud"]);
+    held.get("F5")!();
+    held.get("F6")!();
+    held.get("F7")!();
+    held.get("F8")!();
+    held.get("F9")!();
+    held.get("Shift+F1")!();
+    held.get("Shift+F2")!();
+    expect(fired).toEqual(["prev", "next", "hud", "clear", "boxel", "run", "bprev", "bnext", "tprev", "tnext"]);
   });
 
   it("says when another program has the key, or two actions share one", () => {
     takenElsewhere.add("F1");
     const k = make();
     k.load();
+    k.setGameFocused(true);
     expect(k.apply().bodyPrev).toBe("taken");
     const r = k.set({ bodyNext: "F3", bodyPrev: "F3" });
     expect(r.status.bodyPrev).toBe("ok");
@@ -110,10 +136,45 @@ describe("registering them", () => {
   it("lets go of every key while a new one is recorded, and takes them back after", () => {
     const k = make();
     k.load();
-    k.apply();
+    k.setGameFocused(true);
     k.pause(true);
     expect(held.size).toBe(0);
+    // The game coming forward while a key is recorded does not take the keys back early.
+    k.setGameFocused(false);
+    k.setGameFocused(true);
+    expect(held.size).toBe(0);
     k.pause(false);
-    expect([...held.keys()].sort()).toEqual(["Control+Alt+H", "F1", "F2"]);
+    expect([...held.keys()].sort()).toEqual(["Control+Alt+H", "F1", "F2", "F5", "F6", "F7", "F8", "F9", "Shift+F1", "Shift+F2"]);
+  });
+
+  it("holds the body keys and F5 only while Elite is in front; the HUD key always (owner, 2026-10-05)", () => {
+    const k = make();
+    k.load();
+    expect(k.apply()).toEqual({
+      hudToggle: "ok",
+      bodyPrev: "standby",
+      bodyNext: "standby",
+      tabPrev: "standby",
+      tabNext: "standby",
+      noticesClear: "standby",
+      boxelCopyNext: "standby",
+      boxelRun: "standby",
+      boxelPrev: "standby",
+      boxelNext: "standby",
+    });
+    expect([...held.keys()]).toEqual(["Control+Alt+H"]);
+    k.setGameFocused(true);
+    expect([...held.keys()].sort()).toEqual(["Control+Alt+H", "F1", "F2", "F5", "F6", "F7", "F8", "F9", "Shift+F1", "Shift+F2"]);
+    k.setGameFocused(false);
+    expect([...held.keys()]).toEqual(["Control+Alt+H"]);
+    expect(k.get().actions.noticesClear!.gameOnly).toBe(true);
+  });
+});
+
+describe("the launcher's sections", () => {
+  it("puts every action in a listed group (owner, 2026-10-06)", () => {
+    const g = make().get();
+    for (const a of Object.values(g.actions)) expect(g.groups).toContain(a.group);
+    expect(g.actions.tabNext!.group).toBe("Screen tabs");
   });
 });

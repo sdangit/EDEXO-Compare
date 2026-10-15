@@ -14,7 +14,7 @@ await esbuild.build({
   entryPoints: ["src/server/devEntry.ts"],
   bundle: true,
   platform: "node",
-  target: "node18",
+  target: "node22",
   format: "cjs",
   outfile: "build/app.cjs",
   logLevel: "info",
@@ -34,6 +34,22 @@ await esbuild.build({
 });
 
 console.info("Wrote build/app.cjs");
+
+/*
+  The EDEXO browser's blocking engine (plan 9.1, electron/browserAdblockEntry.cjs): Ghostery's adblocker in one
+  file, shipped outside the asar (electron-builder.cjs extraResources) so the main process can parse the filter
+  lists in a worker thread from it.
+*/
+await esbuild.build({
+  entryPoints: ["electron/browserAdblockEntry.cjs"],
+  bundle: true,
+  platform: "node",
+  target: "node22",
+  format: "cjs",
+  outfile: "build/browser-adblock.cjs",
+  logLevel: "info",
+});
+console.info("Wrote build/browser-adblock.cjs");
 
 /**
  * Start the thing we just built and wait for it to say it is listening.
@@ -66,7 +82,7 @@ async function smokeBoot() {
   });
 
   let output = "";
-  let timeout;
+  let timer;
   const done = new Promise((resolve) => {
     const onChunk = (buf) => {
       output += String(buf);
@@ -75,17 +91,17 @@ async function smokeBoot() {
     child.stdout.on("data", onChunk);
     child.stderr.on("data", onChunk);
     child.on("exit", (code) => resolve(`exited with code ${code}`));
-    timeout = setTimeout(() => resolve("timed out after 90s"), 90_000);
+    // Cleared below, so a good boot does not hold the build open for the rest of the 90 s (F-F4).
+    timer = setTimeout(() => resolve("timed out after 90s"), 90_000);
   });
 
   const outcome = await done;
-  clearTimeout(timeout);
-  const exited = new Promise((resolve) => child.once("exit", resolve));
-  if (child.exitCode === null) {
-    child.kill();
-    await exited;
-  }
-  rmSync(smokeHome, { recursive: true, force: true });
+  clearTimeout(timer);
+  // Wait for the child to be gone before removing its folder: on Windows the rm raced the exit.
+  const exited = child.exitCode !== null ? Promise.resolve() : new Promise((r) => child.once("exit", r));
+  child.kill();
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000).unref())]);
+  rmSync(smokeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   if (outcome !== "listening") {
     console.error(`\n[bundle] build/app.cjs did not start — ${outcome}\n`);
     console.error(output.trim().split("\n").slice(-12).join("\n"));

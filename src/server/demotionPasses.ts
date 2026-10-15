@@ -8,6 +8,7 @@ import {
 } from "../shared/hostStarGates.js";
 import {
   REGION_SIBLING_DEPLETION,
+  REGION_SIBLING_DEPLETION_MAX_SHARE,
   regionGenusShareDetail,
   regionSiblingDepletionDetail,
 } from "../shared/regionAbsence.js";
@@ -18,14 +19,18 @@ import {
   gateForSpeciesId,
 } from "../shared/spatialGates.js";
 import { describeSystemBodyVerdict, evaluateSystemBodyGate } from "../shared/systemBodyGates.js";
+import { atmosphereAllowlistMeansAnyThinCompositionOnly } from "../shared/scanAtmosphereMatch.js";
 import type { MatchReason, SpeciesEntry, SpeciesMatch, SpeciesMatchContext } from "../shared/types.js";
 import { getProjectRoot } from "./paths.js";
 import { regionalGenusEnrichment, regionalGenusShare } from "./regionSpeciesData.js";
 import { speciesHostStarObservations } from "./speciesHostStarObservations.js";
-import { evaluateStarlightGate, formatStarlight } from "./starlightRanges.js";
+import { evaluateStarlightGate, formatStarlight, starlightOutsideFactor } from "./starlightRanges.js";
 
 /** Suffix appended to every demoted failure, so the card says what the tier means. */
 export const DEMOTED_NOTE = "Listed as a low-probability find rather than excluded.";
+
+/** Ends a gas-share band failure: the air is the species' own, only the share is outside its band. */
+export const GAS_BAND_NOTE = "every observed body for it sits inside that band.";
 
 type PendingMatch = Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">;
 
@@ -63,6 +68,10 @@ type PendingMatch = Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits"
  * One row per named genus, the least-objected-to first. Everything else stays demoted: this is a
  * floor under the shown list, not a reprieve for the whole genus.
  */
+/** A row's soft-band factor, to carry over when it is restored. */
+const factorOf = (m: PendingMatch): { presenceFactor?: number } =>
+  m.presenceFactor !== undefined ? { presenceFactor: m.presenceFactor } : {};
+
 function restoreNamedGenera(
   strict: PendingMatch[],
   unlikely: PendingMatch[],
@@ -78,8 +87,16 @@ function restoreNamedGenera(
   // gates, so it carries fewer objections than it deserves. HIP 34326 D 2 (2026-09-28, the Anemone
   // split): rocky-only Luteolum, one class objection, tied with Blatteum's one star objection on a
   // high metal content body and won on list order.
+  // A gas-share band counts half: the air is on the species' own list and only its share is outside
+  // the band. Fonticulua segmentatus on pure thin Neon (9 of 968 confirmed bodies, the only Fonticulua
+  // ever confirmed there; its band is 0.1-50 %) lost to methane-only digitos on list order
+  // (2026-10-05).
   const atmObjections = (m: PendingMatch) =>
-    (m.unlikelyReasons ?? []).filter((r) => r.field === "AtmosphereType" || r.field === "PlanetClass").length;
+    (m.unlikelyReasons ?? []).reduce(
+      (n, r) =>
+        r.field === "PlanetClass" ? n + 1 : r.field === "AtmosphereType" ? n + (r.detail.includes(GAS_BAND_NOTE) ? 0.5 : 1) : n,
+      0,
+    );
   const objections = (m: PendingMatch) =>
     (m.unlikelyReasons ?? []).filter((r) => r.field !== "ObservedTemperature").length;
   const restored = new Set<number>();
@@ -105,7 +122,9 @@ function restoreNamedGenera(
       );
     const best = candidates[0];
     if (!best) continue;
-    strict.push({ entry: best.m.entry, reasons: best.m.reasons });
+    // The row's soft factor comes back with it (code review B11, 2026-10-11): a row kept at ×0.07 by a
+    // band before a later gate demoted it was restored at full weight.
+    strict.push({ entry: best.m.entry, reasons: best.m.reasons, ...factorOf(best.m) });
     restored.add(best.i);
   }
   if (!restored.size) return;
@@ -157,7 +176,7 @@ export function restoreDemotionsBelowSignalCount(
   const restored = new Set<number>();
   for (const { m, i } of eligible) {
     if (generaOf(strict).size >= signalCount) break;
-    strict.push({ entry: m.entry, reasons: m.reasons, restoredForSignalCount: true });
+    strict.push({ entry: m.entry, reasons: m.reasons, restoredForSignalCount: true, ...factorOf(m) });
     restored.add(i);
   }
   if (restored.size === 0) return;
@@ -220,7 +239,7 @@ export function demoteFailedSpatialGates(
     };
     // Inside the gate's soft band (Bark Mounds 150–300 ly): stays shown, at a lower chance.
     if (verdict.softBand) {
-      strict[i] = { ...m, reasons: [...m.reasons, reason], presenceFactor: verdict.softBand.factor };
+      strict[i] = { ...m, reasons: [...m.reasons, reason], presenceFactor: (m.presenceFactor ?? 1) * verdict.softBand.factor };
       continue;
     }
     strict.splice(i, 1);
@@ -272,7 +291,7 @@ export function demoteFailedHostStarGates(
     const verdict = evaluateHostStarGate(m.entry.id, classes, mainStar, {
       type: matchContext?.systemMainStarType,
       luminosity: matchContext?.systemMainStarLuminosity,
-    });
+    }, matchContext?.systemStars);
     if (!verdict || verdict.passes) continue;
     const reason: MatchReason = {
       field: "StarType",
@@ -286,6 +305,29 @@ export function demoteFailedHostStarGates(
       unlikely: true,
       unlikelyReasons: [...(m.unlikelyReasons ?? []), reason],
     });
+  }
+
+  /*
+    Rows already demoted carry the star's objection too, or a DSS-named genus restores the wrong one.
+    BD-12 1172 11 a (EDDN ScanOrganic set, 2026-10-03): thin sulphur dioxide, so every Anemone was
+    demoted on its atmosphere alike; the DSS named Anemone, and the restore took Luteolum (main star
+    B only) on list order over Prasinum Bioluminescent, whose O main star this is and which players
+    logged there.
+  */
+  for (let i = 0; i < unlikely.length; i++) {
+    const m = unlikely[i]!;
+    if ((m.unlikelyReasons ?? []).some((r) => r.field === "StarType")) continue;
+    const verdict = evaluateHostStarGate(m.entry.id, classes, mainStar, {
+      type: matchContext?.systemMainStarType,
+      luminosity: matchContext?.systemMainStarLuminosity,
+    }, matchContext?.systemStars);
+    if (!verdict || verdict.passes) continue;
+    const reason: MatchReason = {
+      field: "StarType",
+      detail: `${describeHostStarVerdict(verdict)} ${verdict.evidence}. ${DEMOTED_NOTE}`,
+      soft: true,
+    };
+    unlikely[i] = { ...m, reasons: [...m.reasons, reason], unlikelyReasons: [...(m.unlikelyReasons ?? []), reason] };
   }
 }
 
@@ -340,17 +382,64 @@ export function demoteFailedSystemBodyGates(
 }
 
 /**
- * Demote a species when the body gets less or more starlight than it is ever seen under.
+ * Drop a species that must meet every condition (`allConditionsRequired`) unless it has.
+ *
+ * The owner on Crystalline Shards (2026-10-04): "show crystalline only if they meet all conditions,
+ * no guess work". They were listed on cold rocks before the system's other bodies were known, since
+ * an unfinished honk leaves the companion-body gate unresolved and unresolved is not a failure. For
+ * these species it is: the row goes — strict or demoted — unless the gates that need the system all
+ * answered yes (a listed companion body scanned, the body's host star known and allowed) and nothing
+ * demoted it. A DSS naming the genus is the game saying it is there, and keeps the row.
+ *
+ * Runs after the other demotions and before the signal-count restore, so the restore cannot bring
+ * back what this removed.
+ */
+export function dropUnprovenStrictSpecies(
+  strict: PendingMatch[],
+  unlikely: PendingMatch[],
+  matchContext: SpeciesMatchContext | null | undefined,
+  dssNamed: (entry: SpeciesEntry) => boolean,
+): void {
+  const proven = (m: PendingMatch): boolean => {
+    const wanted = m.entry.criteria?.systemBodyClassesAnyOf;
+    if (wanted?.length) {
+      const v = evaluateSystemBodyGate(wanted, matchContext?.systemBodyClasses, matchContext?.systemBodyListComplete === true);
+      if (v?.kind !== "pass") return false;
+    }
+    if (hostStarGateForSpeciesId(m.entry.id)) {
+      const v = evaluateHostStarGate(m.entry.id, matchContext?.hostStarClasses, matchContext?.systemMainStarClass ?? null, {
+        type: matchContext?.systemMainStarType,
+        luminosity: matchContext?.systemMainStarLuminosity,
+      }, matchContext?.systemStars);
+      if (!v?.passes) return false;
+    }
+    return true;
+  };
+  for (let i = strict.length - 1; i >= 0; i--) {
+    const m = strict[i]!;
+    if (m.entry.criteria?.allConditionsRequired && !dssNamed(m.entry) && !proven(m)) strict.splice(i, 1);
+  }
+  for (let i = unlikely.length - 1; i >= 0; i--) {
+    const m = unlikely[i]!;
+    if (m.entry.criteria?.allConditionsRequired && !dssNamed(m.entry)) unlikely.splice(i, 1);
+  }
+}
+
+/**
+ * Weigh a species down when the body gets less or more starlight than it is usually seen under.
  *
  * The owner's idea (2026-09-27), measured before it was built: a range for every species, gated only
- * where it adds to temperature and planet type — see `starlightRanges.ts` for the six species and
- * why the rest are not. A demotion rather than an exclusion: the ranges hold 99 % of the clean
- * sightings, not all of them, and a star the FSS has not resolved yet leaves the light short.
+ * where it adds to temperature and planet type — see `starlightRanges.ts` for the seven species and
+ * why the rest are not. The ranges hold 99 % of the clean sightings, not all of them, and the gate
+ * used to demote the other 1 %: Stratum araneamus under 0.025× Earth's light at Eol Prou QX-S
+ * d4-3465 6 (EDDN ScanOrganic set, 2026-10-03), 1.3 % of its bodies in all and 4.6 % of Bacterium
+ * volu's. Outside the range the row now stays, its chance and genus share multiplied by how much
+ * less likely it is there than its siblings (`starlightOutsideFactor`), and the 1 % floors decide.
  * Unknown light (a star the body orbits never scanned) says nothing.
  */
-export function demoteOutsideStarlight(
+export function weighOutsideStarlight(
   strict: Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">[],
-  unlikely: Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">[],
+  _unlikely: Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">[],
   matchContext: SpeciesMatchContext | null | undefined,
 ): void {
   const light = matchContext?.stellarIrradiance;
@@ -360,20 +449,15 @@ export function demoteOutsideStarlight(
     const verdict = evaluateStarlightGate(m.entry.id, light);
     if (!verdict || verdict.passes) continue;
     const { lo, hi } = verdict.range;
+    const factor = starlightOutsideFactor(verdict.range);
     const reason: MatchReason = {
       field: "Starlight",
       detail:
         `${formatStarlight(light)}× Earth's starlight here; ${m.entry.displayName} grows under ` +
-        `${formatStarlight(lo)}–${formatStarlight(hi)}× (99 % of its sightings). ${DEMOTED_NOTE}`,
+        `${formatStarlight(lo)}–${formatStarlight(hi)}× on 99 % of its sightings. Kept at ×${factor.toFixed(2)} chance.`,
       soft: true,
     };
-    strict.splice(i, 1);
-    unlikely.push({
-      ...m,
-      reasons: [...m.reasons, reason],
-      unlikely: true,
-      unlikelyReasons: [...(m.unlikelyReasons ?? []), reason],
-    });
+    strict[i] = { ...m, reasons: [...m.reasons, reason], presenceFactor: (m.presenceFactor ?? 1) * factor };
   }
 }
 
@@ -389,7 +473,9 @@ export function demoteOutsideStarlight(
  * everywhere, so a second test compares siblings directly: each one's regional share over its
  * galaxy-wide share, against the favourite's. Under `REGION_SIBLING_DEPLETION` of the favourite, it
  * is out of place — Tubus compagibus beside cavas in the Trojan Belt — while Bacterium scopulum,
- * rare everywhere, stays beside verrata.
+ * rare everywhere, stays beside verrata. A species holding `REGION_SIBLING_DEPLETION_MAX_SHARE` of
+ * its genus there is not out of place, whatever the ratio (Sinuous Tubers Prasinum, 18 % of them in
+ * Inner Scutum-Centaurus, dominant in Empyrean Straits).
  *
  * **A tie-breaker, never an eviction.** It only acts between siblings that are shown together, and
  * never demotes the last one standing. Run as a per-species gate it demoted Fonticulua fluctus in
@@ -435,10 +521,29 @@ export function demoteRegionallyRareSiblings(
     }));
     // The sibling the region favours most, as the yardstick for the others.
     const top = judged.reduce<(typeof judged)[number] | null>((b, x) => (x.e != null && (b?.e == null || x.e > b.e) ? x : b), null);
+    // A species the body meets on its own key — the volcanism it needs, or an atmosphere only it of the
+    // shown siblings asks for — is rare in a region because such bodies are, not because it is out of
+    // place there; on this body it is the likely answer (owner, 2026-10-04: no misses).
+    const specificAtm = (m: PendingMatch) => {
+      const list = m.entry.criteria?.atmosphereTypeAnyOf;
+      const all = list?.some((v) => (v ?? "").trim().toUpperCase() === "ALL");
+      if (!list?.length || all || atmosphereAllowlistMeansAnyThinCompositionOnly(list)) return false;
+      return m.reasons.some((r) => r.field === "AtmosphereType");
+    };
+    const keyed = (i: number) => {
+      const m = strict[i]!;
+      if (m.entry.criteria?.volcanismIncludes?.length && m.reasons.some((r) => r.field === "Volcanism" && !r.detail.includes("outside the codex list"))) return true;
+      return specificAtm(m) && idxs.filter((j) => specificAtm(strict[j]!)).length === 1;
+    };
     const rare = judged.filter(
       (x) =>
-        x.v?.rare ||
-        (x !== top && x.e != null && top?.e != null && top.e > 0 && x.e / top.e < REGION_SIBLING_DEPLETION),
+        (x.v?.rare && !keyed(x.i)) ||
+        (x !== top &&
+          x.e != null &&
+          top?.e != null &&
+          top.e > 0 &&
+          x.e / top.e < REGION_SIBLING_DEPLETION &&
+          (x.v?.share ?? 0) < REGION_SIBLING_DEPLETION_MAX_SHARE),
     );
     if (rare.length === 0 || rare.length === idxs.length) continue;
     for (const { i, v, e } of rare) {
@@ -499,4 +604,38 @@ export function demoteDeltahedronixOnOneSignalIcy(
       unlikelyReasons: [...(m.unlikelyReasons ?? []), reason],
     });
   }
+}
+
+/**
+ * Every demotion pass, in the matcher's order (code review 2026-10-10, B3): `matchDatabaseToScan` and
+ * the galaxy body scan run the same list. The galaxy scan ran two of them, so the companion-body,
+ * starlight, regional-rarity and all-conditions passes never reached it.
+ *
+ * `restore` is the signal-count restore, which reasons about the whole candidate list; a caller that
+ * matched only some species (the galaxy scan) has no whole list and turns it off.
+ */
+export function runDemotionPasses(
+  strict: PendingMatch[],
+  unlikely: PendingMatch[],
+  o: {
+    planetClass: string | null | undefined;
+    matchContext: SpeciesMatchContext | null | undefined;
+    spatialCatalogue: SpatialCatalogue | null;
+    biologicalSignals: number | null;
+    signalCountAssumed: boolean;
+    /** A DSS named this species' genus here, which keeps an all-conditions species. */
+    dssNamed: (entry: SpeciesEntry) => boolean;
+    /** The genera the DSS left in play, for the restore; null before a DSS. */
+    restoreGenera: Set<string> | null;
+    restore: boolean;
+  },
+): void {
+  demoteFailedSpatialGates(strict, unlikely, o.matchContext, o.spatialCatalogue);
+  demoteFailedHostStarGates(strict, unlikely, o.matchContext);
+  demoteFailedSystemBodyGates(strict, unlikely, o.matchContext);
+  weighOutsideStarlight(strict, unlikely, o.matchContext);
+  demoteRegionallyRareSiblings(strict, unlikely, o.matchContext);
+  demoteDeltahedronixOnOneSignalIcy(strict, unlikely, o.planetClass, o.biologicalSignals, o.signalCountAssumed);
+  dropUnprovenStrictSpecies(strict, unlikely, o.matchContext, o.dssNamed);
+  if (o.restore) restoreDemotionsBelowSignalCount(strict, unlikely, o.biologicalSignals, o.restoreGenera);
 }

@@ -21,7 +21,7 @@
 
       <main class="site-main">
         <h1 class="legal-hed">Privacy Policy</h1>
-        <p class="legal-updated">Last updated: 2 October 2026 · applies to version 1.2.7 and later</p>
+        <p class="legal-updated">Last updated: 13 October 2026 · applies to version 1.2.16 and later</p>
 
         <div class="legal-box">
           <p>
@@ -102,6 +102,16 @@
             beside <em>Public internet</em> in the launcher's network settings, to show the address a device
             outside your home network would use. The address is kept on your computer; <em>Forget</em> deletes it.
           </li>
+          <li>
+            <strong>NavRoute check &mdash; EDSM</strong> (www.edsm.net). When you press <em>Check EDSM</em> in the
+            galaxy map's NavRoute drawer, the names of the systems listed (up to 40 per request, at least 5 seconds
+            apart) are sent to EDSM to see which it knows. Only the system names are sent.
+          </li>
+          <li>
+            <strong>Galaxy index &mdash; GitHub</strong> (github.com). When you press <em>Download</em> in the
+            galaxy map, its index (about 255 MB) is downloaded from this project's GitHub releases. Nothing about you
+            is sent.
+          </li>
         </ul>
 
         <h3>Only if you switch it on (all off by default)</h3>
@@ -138,6 +148,48 @@
           <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement" target="_blank" rel="noopener noreferrer">GitHub&rsquo;s privacy statement</a>.
         </p>
 
+        <h2 id="browser">The EDEXO browser</h2>
+        <p>
+          The desktop app's <strong>Browser</strong> tab is a small private browser. What it does with your data:
+        </p>
+        <ul>
+          <li>
+            <strong>Nothing is collected.</strong> No history is kept, nothing about the pages you open is sent to
+            us or anyone else, and there is no telemetry. Pages are fetched from the sites you visit, as in any
+            browser; every request carries <em>Do Not Track</em> and <em>Global Privacy Control</em>, and the
+            browser names itself as plain Chrome (no app name).
+          </li>
+          <li>
+            <strong>Private by default.</strong> What a site stores (cookies, local storage, cache) is cleared
+            when the app closes and again when the browser first opens, unless you press
+            <em>Remember this site</em> for it: then its cookies and logins are kept between starts, and nothing
+            else is. <em>Forget this site</em> and <em>Clear everything now</em> remove them at once. Which sites
+            you remember, where blocking is off, your start-page links and your search engine are kept in
+            <code>edexo-browser.json</code> in the app's data folder; the browser's own data is in its own session
+            there, apart from the app's.
+          </li>
+          <li>
+            <strong>Ads and trackers are blocked</strong> on every site unless you switch blocking off for one.
+            The blocklists are downloaded only when you press <em>Download the blocklists</em> the first time,
+            then again in the background, from their publishers: EasyList and EasyPrivacy (easylist.to) and
+            uBlock Origin's lists (ublockorigin.github.io) once a week; uBlock's quick fixes daily, with uBlock's
+            scriptlet library as Ghostery packages it (raw.githubusercontent.com, Ghostery's adblocker
+            repository). The scriptlets are small scripts the lists run on some sites (YouTube among them) before
+            the site's own code, to take the ads out of what the site is sent; they run only on the site they
+            are for, and send nothing anywhere. Those downloads show those servers your IP address and send
+            nothing else.
+          </li>
+          <li>
+            <strong>Searches</strong> typed in the address bar go to the search engine you chose (DuckDuckGo
+            unless you change it) and are subject to its privacy policy.
+          </li>
+          <li>
+            <strong>Downloads</strong> ask where to save every time and are never opened by the app. No password
+            saving, no autofill, no extensions. Sites get no camera, microphone, location, notifications or any
+            other permission.
+          </li>
+        </ul>
+
         <h2>Your keys</h2>
         <p>
           Your <strong>EDSM API key</strong> is kept in its own file in the app's data folder, never in the
@@ -150,7 +202,7 @@
         <h2>Links</h2>
         <p>
           Links in the app (to EDSM, EDAstro, Canonn, GitHub, photo credits and others) open in your web browser
-          and are subject to those sites&rsquo; own policies.
+          and are subject to those sites&rsquo; own policies; so are the sites you open in the EDEXO browser.
         </p>
 
         <h2>Children</h2>

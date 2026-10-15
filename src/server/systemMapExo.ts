@@ -13,10 +13,11 @@ import type {
 import { computeExoPayoutRangeFromMatches, resolveOrganicSlotCount } from "./exoPayoutRange.js";
 import type { GameStateStore } from "./gameState.js";
 import { matchCacheEpoch } from "./matchCacheEpoch.js";
-import { matchDatabaseToScan, shownSpeciesMatches } from "./matchSpecies.js";
+import { shownSpeciesMatches } from "./matchSpecies.js";
+import { runCandidatePipeline } from "./candidatePipeline.js";
+import { getProjectRoot } from "./paths.js";
 import { PriceIndex, lookupPriceStrict } from "./priceList.js";
-import { buildSpeciesMatchContext } from "./speciesMatchContext.js";
-import { bodyKey } from "./systemMapOrbitGraph.js";
+import { bodyKey } from "../shared/bodyKey.js";
 
 /**
  * Is there anything to say about biology on this body?
@@ -90,7 +91,7 @@ export function bodyHasExoMarkers(b: BodyExoState): boolean {
  * markers, or no scan that names a planet class — which all three consumers used to decide for
  * themselves, in the same words.
  */
-interface ExoMatchRun {
+export interface ExoMatchRun {
   exo: BodyExoState;
   scan: PlanetScan;
   /**
@@ -173,19 +174,22 @@ function exoMatchRunUncached(
   spatialCatalogue: SpatialCatalogue | null,
 ): ExoMatchRun | null {
   if (!exo || !bodyHasExoMarkers(exo)) return null;
-  const scan = scanForMatch(store, r, exo);
-  if (!scan?.PlanetClass) return null;
-  const run = matchDatabaseToScan(db, scan, exo.genusHints, exo.organicGenusLocks, {
+  /*
+    The body tab's chain (code review 2026-10-10, B18; owner, 2026-10-07: "same step everywhere"): the
+    map ran the matcher and the genus veto only, with no ranking and no 1 % floors, so it listed rows
+    the tab hid and coloured bodies by candidates the tab did not offer.
+  */
+  const pipe = runCandidatePipeline(exo, store, db, getProjectRoot(), {
     includeBacterium: store.includeBacteriumInSearch,
-    matchContext: buildSpeciesMatchContext(exo, store),
     spatialCatalogue,
   });
+  if (!pipe) return null;
   return {
     exo,
-    scan,
-    matches: run.matches,
-    shown: shownSpeciesMatches(run.matches),
-    approximateMatchingUsed: run.approximateMatchingUsed,
+    scan: pipe.inputs.scan,
+    matches: pipe.matches,
+    shown: shownSpeciesMatches(pipe.matches),
+    approximateMatchingUsed: pipe.run.approximateMatchingUsed,
   };
 }
 

@@ -90,6 +90,12 @@ export interface ExoMinimapMarkDTO {
   /** Straight-line surface distance, metres — what the label shows for an off-map arrow. */
   distanceM: number;
   label: string;
+  /**
+   * A sample's genus sample distance, metres: the radar rings the mark with it (owner, 2026-10-04:
+   * "a circle around each of the dots … so the user will not enter that circle"). Absent for the ship
+   * and for a species whose distance is not known.
+   */
+  ringM?: number;
 }
 
 /** One system seen in merged journals (for browse / search). */
@@ -160,9 +166,15 @@ export interface LiveShipFuelNavRouteDTO {
    * cannot finish the plot, the refuel mark. Empty when off plot or at the destination.
    */
   ahead: RouteAheadHopDTO[];
-  /** Hops to that nearest scoopable star (may exceed `ahead.length`); null when none is needed. */
+  /**
+   * Hops to the last scoopable star the tank reaches (may exceed `ahead.length`); 0 = the star the
+   * ship is at; null when no mark is needed, or when no scoopable star is in reach (then `red`).
+   */
   refuelInHops: number | null;
-  /** `yellow` = plan to scoop there; `red` = you must (last reachable scoop, or none reachable). */
+  /**
+   * `yellow` = scoop there; `red` (blinking) = the last chance: a fuel desert follows it, or it is
+   * the star the ship is at, or none is in reach.
+   */
   refuelLevel: "none" | "yellow" | "red";
 }
 
@@ -193,12 +205,16 @@ export interface LiveShipFuelRangeDTO {
   fuelMainT: number;
   fuelReserveT: number;
   fuelTotalT: number;
+  /** `Loadout.MaxJumpRange`: the range with an empty tank. */
   maxJumpRangeLy: number | null;
-  /** Estimated tonnes for a max-range jump (from last `FSDJump` fuel scaled by `MaxJumpRange` / `JumpDist`). */
+  /** The longest jump with the fuel and cargo aboard now (shared/fsdFuel.ts), when known. */
+  ladenMaxJumpLy?: number | null;
+  /** Tonnes a max-range jump spends: the drive's most fuel per jump (fitted model), else the old scaling. */
   estFuelPerMaxJumpT: number | null;
   /** Max-range jump count heuristic when **not** on a parsed NavRoute; omitted on-plot (see `navRoute`). */
   estJumpsRemaining: number | null;
-  calibration: "none" | "fsd_sample";
+  /** `fsd_model`: the drive's law fitted on the commander's jumps; `fsd_sample`: the last jump scaled. */
+  calibration: "none" | "fsd_sample" | "fsd_model";
   /** From live `NavRoute.json` when present (two+ waypoints). */
   navRoute: LiveShipFuelNavRouteDTO | null;
 }
@@ -258,10 +274,11 @@ export interface NotableBodyInfo {
  * come straight off the store, and they cost nothing to build — so they go out on every poll.
  */
 /**
- * A command for the app pages from a key bind (owner, 2026-10-02): step the body tabs back or on.
- * Sent over the socket as `{ type: "uiCommand", payload }` to the app channel only.
+ * A command for the app pages from a key bind (owner, 2026-10-02): step the body tabs back or on, or
+ * (2026-10-06) the main window's screen tabs. Sent over the socket as `{ type: "uiCommand", payload }`
+ * to the app channel only.
  */
-export type UiCommand = { cmd: "bodyTab"; dir: -1 | 1 };
+export type UiCommand = { cmd: "bodyTab"; dir: -1 | 1 } | { cmd: "screenTab"; dir: -1 | 1 };
 
 export interface ExoLiveDTO {
   exoOrganicOverlay: ExoOrganicOverlayDTO | null;

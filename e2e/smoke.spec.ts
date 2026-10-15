@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
@@ -17,12 +17,30 @@ function watchErrors(page: import("@playwright/test").Page): string[] {
   return errors;
 }
 
+/*
+  The galaxy map needs data/galaxy/bio-index.bin (245 MB, built from EDAstro's export and not in the
+  repository), so a fresh clone skips its tests instead of failing them (review F-F12).
+*/
+const HAS_GALAXY_INDEX = existsSync(path.join("data", "galaxy", "bio-index.bin"));
+// Playwright requires the fixtures argument to be destructured, even when none is used.
+// eslint-disable-next-line no-empty-pattern
+test.beforeEach(({}, info) => {
+  test.skip(info.title.startsWith("galaxy 3D") && !HAS_GALAXY_INDEX, "no data/galaxy/bio-index.bin on this clone");
+});
+
 test.beforeAll(async ({ request }) => {
   // Vite is up when the web server check passes; the API behind the proxy takes a moment longer.
   await expect
     .poll(async () => (await request.get("/api/state?channel=launcher")).status(), { timeout: 90_000 })
     .toBe(200);
 });
+
+/** Closes a screen: its tab's × with Tab view on (the default), Escape on a pop-up otherwise. */
+async function closeScreen(page: import("@playwright/test").Page, label: string) {
+  const tab = page.locator(".tab-strip__tab", { hasText: label });
+  if (await tab.count()) await tab.locator(".tab-strip__close").click();
+  else await page.keyboard.press("Escape");
+}
 
 test("app: the fixture body appears with its candidate species", async ({ page }) => {
   const errors = watchErrors(page);
@@ -31,8 +49,42 @@ test("app: the fixture body appears with its candidate species", async ({ page }
   // The fixture, not a live game: its system name is on screen and its one bio body is the only tab.
   await expect(page.getByText("Smoke Test", { exact: true }).first()).toBeVisible();
   await expect(page.locator(".tab")).toHaveCount(1);
+  // Five candidates: rows by default from three up (owner, 2026-10-04); a row unfolds its card.
+  await expect(page.locator(".srow").first()).toBeVisible();
+  await page.locator(".srow-main").first().click();
   await expect(page.locator(".species-card").first()).toBeVisible();
   await page.screenshot({ path: `${OUT}/app-body.png`, fullPage: true });
+  // Compact is the commander's own choice, and switches to cards.
+  const compact = page.getByRole("button", { name: "Compact" });
+  await expect(compact).toHaveAttribute("aria-pressed", "true");
+  await compact.click();
+  await expect(compact).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".srow")).toHaveCount(0);
+  await compact.click();
+  await expect(page.locator(".srow").first()).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+/*
+  "Why this chance" (owner, 2026-10-04, plan 3.3): under a card's chance, mini charts of where the
+  species has been found, this body marked; fetched when opened.
+*/
+test("app: a candidate card opens its 'Why this chance' strip", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".srow").first()).toBeVisible({ timeout: 60_000 });
+  // Rows by default on the fixture's five candidates: unfold the first card.
+  await page.locator(".srow-main").first().click();
+  await expect(page.locator(".species-card").first()).toBeVisible();
+  const toggle = page.getByRole("button", { name: /Why this chance/ }).first();
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const card = page.locator(".species-card", { has: page.locator(".why-chance__toggle[aria-expanded='true']") });
+  await expect(card.locator(".why-chance__stat").first()).toBeVisible({ timeout: 15_000 });
+  await card.screenshot({ path: `${OUT}/why-chance.png` });
+  await toggle.click();
+  await expect(page.locator(".why-chance")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -306,6 +358,349 @@ test("galaxy 3D: loads every system, names the regions, fetches close-up tiles n
 });
 
 /*
+  The Filter drawer (owner, 2026-10-04): tick a genus and the systems that have it light up; the Stars
+  & bodies tab narrows further, any tick inside a group, every group that has one.
+*/
+test("galaxy 3D: the game-style menus open and close, each with its help, and the EDAstro egg hides except from Sol", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.setViewportSize({ width: 1400, height: 820 });
+  await page.goto("/?screen=galaxy");
+  type G = {
+    stats: () => { phase: string };
+    pose: (c: number[], t: number[]) => void;
+    egg: () => { visible: boolean };
+  };
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+    .toBe("ready");
+  for (const [tab, id] of [
+    ["View", "g3d-view"],
+    ["Layers", "g3d-layers"],
+    ["Targets", "g3d-targets"],
+  ] as const) {
+    const btn = page.getByRole("button", { name: tab, exact: true });
+    await btn.click();
+    await expect(btn).toHaveAttribute("aria-pressed", "true");
+    const menu = page.getByTestId(id);
+    await expect(menu.getByRole("button", { name: /^About / })).toBeVisible();
+    await btn.click();
+    await expect(menu).toHaveCount(0);
+  }
+  // Follow my ship is on by default and remembered.
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  await expect(page.getByTestId("g3d-view").getByLabel(/Follow my ship/)).toBeChecked();
+  const egg = (c: number[], t: number[]) =>
+    page.evaluate(
+      ([cam, tgt]) => {
+        const g = (window as unknown as { __galaxy: G }).__galaxy;
+        g.pose(cam!, tgt!);
+        return new Promise<boolean>((r) => setTimeout(() => r(g.egg().visible), 400));
+      },
+      [c, t],
+    );
+  expect(await egg([0, 2500, 0], [0, 0, 1000])).toBe(false); // from above
+  expect(await egg([0, 250, 0], [0, 0, 3000])).toBe(true); // from Sol, across the disc, at the core
+  expect(await egg([0, 250, 0], [0, 0, -3000])).toBe(false); // looking away from the core
+  expect(errors).toEqual([]);
+});
+
+/*
+  Code review, 2026-10-14: a tab stays mounted behind the others with document.hidden false, and the map's
+  route and own-assets polls went on there, keeping the server's map memory from ever being let go.
+*/
+test("galaxy 3D: behind another tab the map stops asking; back in front it reads at once", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.addInitScript(() => localStorage.setItem("edexo.tabs", JSON.stringify({ tabs: ["galaxy"], active: "galaxy" })));
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    const u = new URL(r.url());
+    if (u.pathname === "/api/galaxy/route" || u.pathname === "/api/galaxy/own") asked.push(u.pathname);
+  });
+  await page.goto("/");
+  type G = { stats: () => { phase: string } };
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+    .toBe("ready");
+  await expect.poll(() => asked.includes("/api/galaxy/own")).toBe(true);
+
+  await page.getByRole("tab", { name: "Main" }).click();
+  asked.length = 0;
+  // A jump read from the journal asks the map for the route at once, when it is in front.
+  await page.evaluate(() => window.dispatchEvent(new Event("edexo-system-changed")));
+  await page.waitForTimeout(1500);
+  expect(asked).toEqual([]);
+
+  await page.getByRole("tab", { name: "Galaxy map" }).click();
+  await expect.poll(() => asked.includes("/api/galaxy/route") && asked.includes("/api/galaxy/own")).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+/* Code review, 2026-10-14: a tile that arrived after the map closed was added to the cleared engine. */
+test("galaxy 3D: closing the map cancels the tiles still coming", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.addInitScript(() => localStorage.setItem("edexo.tabs", JSON.stringify({ tabs: ["galaxy"], active: "galaxy" })));
+  // Tiles are held until the map has closed.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let asked = 0;
+  await page.route("**/api/galaxy/tile*", async (route) => {
+    asked++;
+    await held;
+    await route.continue().catch(() => undefined); // cancelled meanwhile
+  });
+  const cancelled: string[] = [];
+  page.on("requestfailed", (r) => {
+    if (r.url().includes("/api/galaxy/tile")) cancelled.push(r.failure()?.errorText ?? "");
+  });
+  await page.goto("/");
+  type G = { stats: () => { phase: string }; lookAt: (x: number, y: number, z: number, d: number) => void };
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+    .toBe("ready");
+  await page.evaluate(() => (window as unknown as { __galaxy: G }).__galaxy.lookAt(0, 0, 0, 2500));
+  await expect.poll(() => asked).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Close Galaxy map" }).click();
+  await expect.poll(() => cancelled.length).toBeGreaterThan(0);
+  release();
+  await page.waitForTimeout(500);
+  expect(errors).toEqual([]);
+});
+
+test("galaxy 3D: the Filter drawer lights the systems that have what was ticked", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.setViewportSize({ width: 1400, height: 820 });
+  await page.goto("/?screen=galaxy");
+  type G = { stats: () => { phase: string } };
+  await expect
+    .poll(async () => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), {
+      timeout: 60_000,
+    })
+    .toBe("ready");
+  await page.getByRole("button", { name: /^Filter/ }).click();
+  const drawer = page.getByTestId("g3d-filter");
+  await drawer.getByLabel("Search the filters").fill("stratum");
+  await drawer.getByLabel("Stratum, every species").check();
+  const summary = drawer.locator(".g3d-filter__summary");
+  await expect(summary).toContainText(/\d systems match/, { timeout: 30_000 });
+  // Any thousands separator the locale uses (\s takes the no-break spaces too).
+  const count = async () =>
+    Number(((await summary.textContent()) ?? "").match(/([\d\s,.]+) systems match/)?.[1]?.replace(/\D/g, ""));
+  const stratum = await count();
+  expect(stratum).toBeGreaterThan(1000);
+  await expect(page.getByRole("button", { name: "Filter (1)" })).toBeVisible();
+  if (existsSync(path.join("data", "galaxy", "system-traits.bin.gz"))) {
+    await drawer.getByRole("tab", { name: "Stars & bodies" }).click();
+    await drawer.getByLabel("Search the filters").fill("neutron");
+    await drawer.locator("fieldset", { hasText: "Any star in the system" }).getByLabel("Neutron star").check();
+    await expect.poll(count, { timeout: 30_000 }).toBeLessThan(stratum);
+    await page.screenshot({ path: `${OUT}/galaxy-3d-filter.png` });
+    /*
+      Owner, 2026-10-04: removed the plant from its chip, ticked main star O, and the map still lit the
+      plant's systems. The points the engine marks must follow the ticks, not the last answer.
+    */
+    /*
+      Owner, 2026-10-04: the map kept lighting whatever was ticked first. The engine's match arrays
+      were copied into the GPU buffers, so later filters never reached the screen. These read the
+      geometry's own attributes: overview and close-up tiles.
+    */
+    type F = {
+      filter: () => { mode: number; overviewMatched: number; tilesMatched: number };
+      stats: () => { stride: number; tilesLoaded: number };
+      lookAt: (x: number, y: number, z: number, d: number) => void;
+    };
+    const marks = () =>
+      page.evaluate(() => {
+        const g = (window as unknown as { __galaxy: F }).__galaxy;
+        return { overview: g.filter().overviewMatched * g.stats().stride, tiles: g.filter().tilesMatched };
+      });
+    // Close-up tiles near Sol, loaded while the first filter is on.
+    await page.evaluate(() => (window as unknown as { __galaxy: F }).__galaxy.lookAt(0, 0, 0, 2500));
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __galaxy: F }).__galaxy.stats().tilesLoaded), { timeout: 30_000 })
+      .toBeGreaterThan(0);
+    await drawer.getByRole("button", { name: /^Stratum \(all\)/ }).click();
+    await drawer.getByRole("button", { name: /^Neutron star/ }).click();
+    await expect(page.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
+    await expect.poll(async () => (await marks()).overview + (await marks()).tiles, { timeout: 10_000 }).toBe(0);
+    // His steps: O first, then a plant, both removed, then another genus.
+    await drawer.getByLabel("Search the filters").fill("blue-white");
+    await drawer.locator("fieldset", { hasText: "Main star" }).getByLabel("O (Blue-White)").check();
+    await expect(summary).toContainText(/\d systems match/, { timeout: 30_000 });
+    const oStars = await count();
+    await expect.poll(async () => (await marks()).overview, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect((await marks()).overview).toBeLessThanOrEqual(oStars + 16 * 16);
+    const oTiles = (await marks()).tiles;
+    await drawer.getByRole("button", { name: /^O \(Blue-White\)/ }).click();
+    await drawer.getByRole("tab", { name: "Exobio" }).click();
+    await drawer.getByLabel("Search the filters").fill("tussock");
+    await drawer.getByLabel("Tussock, every species").check();
+    await expect.poll(count, { timeout: 30_000 }).toBeGreaterThan(oStars);
+    const tussock = await count();
+    // The overview marks are the new answer's, not the first one's; the tiles changed with it.
+    await expect.poll(async () => (await marks()).overview, { timeout: 10_000 }).toBeGreaterThan(oStars + 16 * 16);
+    expect((await marks()).overview).toBeLessThanOrEqual(tussock + 16 * 16);
+    expect((await marks()).tiles).not.toBe(oTiles);
+  }
+  await drawer.getByRole("button", { name: /^Clear/ }).click();
+  await expect(page.getByRole("button", { name: "Filter", exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+/*
+  The NavRoute star finder (owner, 2026-10-04): the systems of the routes he plotted, by star type,
+  with EDSM's answer, marked on the map. The log is written into the test's own profile first.
+*/
+test("galaxy 3D: NavRoute — Next is the plotted route with EDSM checks, Previous the systems you have been to", async ({ page }) => {
+  const errors = watchErrors(page);
+  const at = "2026-10-04T10:00:00Z";
+  const sys = (address: number, name: string, starClass: string, edsm?: boolean) => ({
+    address,
+    name,
+    starClass,
+    pos: [address * 10, 0, address * 10],
+    firstSeen: at,
+    lastSeen: at,
+    routes: 1,
+    ...(edsm === undefined ? {} : { edsm, edsmAt: at }),
+  });
+  const plotted = [sys(1, "Sol", "G", true), sys(2, "Neut A", "N", false), sys(3, "Neut B", "N"), sys(4, "Hole C", "H", true)];
+  writeFileSync(
+    path.join(tmpdir(), "edexo-e2e-profile", "edexo-navroutes.json"),
+    JSON.stringify({ formatVersion: 1, routes: [{ at, from: "Sol", to: "Hole C", systems: [1, 2, 3, 4] }], systems: plotted }),
+  );
+  // The fixture journal has no NavRoute.json: the route poll is given one.
+  await page.route("**/api/galaxy/route", async (route) => {
+    const res = await route.fetch();
+    const body = (await res.json()) as Record<string, unknown>;
+    body.navRoute = plotted.map((s) => ({
+      address: s.address,
+      name: s.name,
+      starClass: s.starClass,
+      x: s.pos[0],
+      y: s.pos[1],
+      z: s.pos[2],
+      visited: s.address === 1,
+    }));
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.setViewportSize({ width: 1400, height: 820 });
+  await page.goto("/?screen=galaxy");
+  type G = { stats: () => { phase: string } };
+  await expect
+    .poll(async () => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+    .toBe("ready");
+  await page.getByRole("button", { name: "NavRoute", exact: true }).click();
+  const drawer = page.getByTestId("g3d-navroute");
+  await drawer.getByRole("button", { name: "Next", exact: true }).click();
+  // Previous shrank into a "‹" that brings both back.
+  await expect(drawer.getByRole("button", { name: "Back to Previous and Next" })).toBeVisible();
+  await expect(drawer).toContainText("4 systems on the route plotted now", { timeout: 15_000 });
+  await drawer.getByRole("button", { name: /^N 2/ }).click();
+  await expect(drawer.locator(".g3d-navroute__item")).toHaveCount(2);
+  await drawer.getByLabel("EDSM").selectOption("missing");
+  await expect(drawer.locator(".g3d-navroute__item")).toHaveCount(1);
+  await expect(drawer.locator(".g3d-navroute__item")).toContainText("Neut A");
+  await expect(drawer.locator(".g3d-navroute__item")).toContainText("not in EDSM");
+  await drawer.getByLabel("EDSM").selectOption("unchecked");
+  await expect(drawer.getByRole("button", { name: "Check EDSM (1)" })).toBeEnabled();
+  await page.screenshot({ path: `${OUT}/galaxy-3d-navroute.png` });
+
+  // Back, then Previous: your own systems by date range, no EDSM.
+  await drawer.getByRole("button", { name: "Back to Previous and Next" }).click();
+  await drawer.getByRole("button", { name: "Previous", exact: true }).click();
+  await drawer.getByRole("button", { name: "All", exact: true }).click();
+  await expect(drawer.locator(".g3d-navroute__item").first()).toContainText("Smoke Test", { timeout: 15_000 });
+  await expect(drawer.getByLabel("EDSM")).toHaveCount(0);
+  await expect(drawer.getByRole("button", { name: /^Check EDSM/ })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+/*
+  Owner, 2026-10-15: "NavRoute > Next ... does not find a system even if I copy the name from a galmap location". The map
+  read the plotted route on a jump and every 30 s, so a route plotted a moment ago was not there yet. Next reads it on
+  opening and every 3 s while open.
+*/
+test("galaxy 3D: NavRoute — a route plotted while Next is open shows within seconds", async ({ page }) => {
+  const errors = watchErrors(page);
+  let plotted: { address: number; name: string; starClass: string; x: number; y: number; z: number; visited: boolean }[] = [];
+  await page.route("**/api/galaxy/route", async (route) => {
+    const res = await route.fetch();
+    const body = (await res.json()) as Record<string, unknown>;
+    body.navRoute = plotted;
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.setViewportSize({ width: 1400, height: 820 });
+  await page.goto("/?screen=galaxy");
+  type G = { stats: () => { phase: string } };
+  await expect
+    .poll(async () => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+    .toBe("ready");
+  await page.getByRole("button", { name: "NavRoute", exact: true }).click();
+  const drawer = page.getByTestId("g3d-navroute");
+  await drawer.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(drawer).toContainText("No route plotted");
+  // Plotted in the game now: well inside the map's 30 s poll.
+  plotted = [
+    { address: 11, name: "Smoke Start", starClass: "K", x: 0, y: 0, z: 0, visited: true },
+    { address: 12, name: "Copied From Galmap", starClass: "N", x: 40, y: 0, z: 0, visited: false },
+  ];
+  await drawer.getByLabel("Filter by system name").fill("Copied From Galmap");
+  await expect(drawer.locator(".g3d-navroute__item")).toContainText("Copied From Galmap", { timeout: 6_000 });
+  expect(errors).toEqual([]);
+});
+
+/*
+  The Laboratory's crafting view (owner, 2026-10-15: "dedicated cards for basic/standard/premium, connected to materials
+  with lines, a 'backpack' icon with how many the user has and a gear icon showing how much he can craft"). The drawer is
+  fed a stock built by the app's own view from a login's material list.
+*/
+test("galaxy 3D: Laboratory crafting view joins materials to recipe cards", async ({ page }) => {
+  const errors = watchErrors(page);
+  const { jumponiumLine, jumponiumView, newJumponium } = await import("../src/shared/jumponium");
+  const st = newJumponium();
+  const raw: Record<string, number> = { carbon: 40, vanadium: 12, germanium: 9, cadmium: 3, niobium: 0, arsenic: 5, yttrium: 2, polonium: 1 };
+  jumponiumLine(st, {
+    timestamp: "2026-10-15T10:00:00Z",
+    event: "Materials",
+    Raw: Object.entries(raw).map(([Name, Count]) => ({ Name, Count })),
+    Manufactured: [],
+    Encoded: [],
+  });
+  const stock = jumponiumView(st);
+  await page.route("**/api/jumponium/near?*", (route) =>
+    route.fulfill({ json: { bodies: [], galaxyFile: true, ownScanned: 0, stock } }),
+  );
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto("/?screen=galaxy");
+  type G = { stats: () => { phase: string } };
+  await expect
+    .poll(async () => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+    .toBe("ready");
+  await page.getByRole("button", { name: "Laboratory", exact: true }).click();
+  const drawer = page.getByTestId("g3d-jumponium");
+  await drawer.getByRole("button", { name: "Crafting", exact: true }).click();
+  const cards = drawer.locator(".lab-craft__card");
+  await expect(cards).toHaveCount(3);
+  // Basic: C 40, V 12, Ge 9 -> 9; Standard needs Nb, held 0 -> 0; Premium needs Nb too -> 0.
+  await expect(cards.nth(0)).toContainText("9");
+  await expect(cards.nth(1)).toHaveClass(/is-none/);
+  // A line per ingredient: 3 + 5 + 6.
+  await expect(drawer.locator(".lab-craft__line")).toHaveCount(14);
+  await expect(drawer.locator(".lab-craft__line.is-short")).toHaveCount(2); // niobium into Standard and Premium
+  await expect(drawer.locator(".lab-craft__mat[title^=\"Niobium\"]")).toHaveClass(/is-short/);
+  await expect(drawer.locator(".lab-craft__mat[title^=\"Vanadium\"]")).toContainText("12/250");
+  // Hover a card: the other cards' lines dim.
+  await cards.nth(0).hover();
+  await expect(drawer.locator(".lab-craft__line.is-dim")).toHaveCount(11);
+  await page.screenshot({ path: `${OUT}/galaxy-3d-lab-craft.png` });
+  // Collection is the list as before.
+  await drawer.getByRole("button", { name: "Collection", exact: true }).click();
+  await expect(drawer.locator(".lab-craft")).toHaveCount(0);
+  await expect(drawer.getByText("Elements")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+/*
   G2: the groups and the systems answer the mouse. A ring names its group and flies into it; a system
   under the cursor gets a card, and a click opens its panel with the name from the index.
 */
@@ -381,7 +776,7 @@ test("galaxy 3D: your system opens your panel; the Codex mode opens a region and
 
   await page.getByRole("button", { name: "Codex" }).click();
   const codex = page.getByTestId("g3d-codex");
-  await expect(codex.locator(".g3d-codex__region").first()).toBeVisible({ timeout: 15_000 });
+  await expect(codex.locator(".g3d-row--pick").first()).toBeVisible({ timeout: 15_000 });
   await codex.getByRole("button", { name: /Inner Orion Spur/ }).click();
   // Picking a region glides the camera over it (0.7 s); a dot's screen position is only final after.
   await page.waitForTimeout(1500);
@@ -439,10 +834,12 @@ test("galaxy 3D: Find, a sector's best systems, and the search on the map", asyn
   // The galaxy search in its drawer: Stratum, one mark per sector on the map.
   await page.getByRole("button", { name: "Search", exact: true }).click();
   const drawer = page.getByTestId("g3d-search");
-  await expect(drawer.locator(".gsx-go")).toBeVisible({ timeout: 60_000 });
-  await drawer.locator(".gsx-field").first().locator("button").first().click();
+  // The drawer's rows (owner, 2026-10-04): Genus, Species… and the Search button.
+  const go = drawer.getByRole("button", { name: "Search", exact: true });
+  await expect(go).toBeVisible({ timeout: 60_000 });
+  await drawer.getByRole("button", { name: "Genus" }).click();
   await page.getByRole("option", { name: /Stratum/ }).first().click();
-  await drawer.locator(".gsx-go").click();
+  await go.click();
   await expect(drawer).toContainText("the map shows one per sector", { timeout: 60_000 });
   await G((g) => g.lookAt(0, 0, 20000, 90000));
   await page.waitForTimeout(1500);
@@ -466,10 +863,12 @@ test("galaxy 3D: worth at least X, Next target and Skip", async ({ page }) => {
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __galaxy?: { stats: () => { phase: string } } }).__galaxy?.stats().phase), { timeout: 60_000 })
     .toBe("ready");
+  // Biology targets live in their own menu since the redesign (owner, 2026-10-04).
+  await page.getByRole("button", { name: "Targets", exact: true }).click();
   const worth = page.getByRole("slider", { name: "Worth at least (million CR)", exact: true });
   await worth.fill("8"); // 50 M
   // The value sits after the track in a fixed-width span (it used to shift the slider as it changed).
-  await expect(page.locator(".g3d-slider", { has: worth }).locator(".g3d-slider-val")).toContainText(/^50M \(\d/);
+  await expect(page.locator(".g3d-row", { has: worth }).locator(".g3d-slider-val")).toContainText(/^50M \(\d/);
 
   await page.getByRole("button", { name: "Next target" }).click();
   const banner = page.getByTestId("g3d-target");
@@ -489,6 +888,7 @@ test("galaxy 3D: the plan chains the next targets, and a skipped stop leaves it"
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __galaxy?: { stats: () => { phase: string } } }).__galaxy?.stats().phase), { timeout: 60_000 })
     .toBe("ready");
+  await page.getByRole("button", { name: "Targets", exact: true }).click();
   await page.getByRole("slider", { name: "Worth at least (million CR)", exact: true }).fill("8"); // 50 M
   await page.getByRole("button", { name: "Next target" }).click();
   const banner = page.getByTestId("g3d-target");
@@ -497,18 +897,26 @@ test("galaxy 3D: the plan chains the next targets, and a skipped stop leaves it"
 
   await banner.getByRole("button", { name: /^Plan/ }).click();
   const plan = page.getByTestId("g3d-plan");
-  await expect(page.getByTestId("g3d-plan-total")).toContainText(/^5 stops · [\d,]+ ly · /, { timeout: 30_000 });
+  await expect(page.getByTestId("g3d-plan-total")).toContainText(/^5 stops · [\d,.]+ k?ly · /, { timeout: 30_000 });
   const names = plan.locator(".g3d-plan__name");
-  await expect(names.first()).toHaveText(first);
+  // The target is one of the stops; the order is the shortest found (plan 5.8), not the target first.
   const before = await names.allInnerTexts();
+  expect(before).toContain(first);
   expect(new Set(before).size).toBe(5);
   // Numbered on the map, and hover/click on a stop answer as a plan stop.
   await expect(page.locator(".g3d-label--plan").first()).toBeAttached();
 
-  await plan.getByRole("button", { name: `Skip ${before[2]}` }).click();
-  await expect(names.nth(2)).not.toHaveText(before[2]!, { timeout: 30_000 });
-  expect(await names.allInnerTexts()).not.toContain(before[2]);
-  await expect(names.first()).toHaveText(first); // the stops before it stay
+  const skip = before.find((n) => n !== first)!;
+  await plan.getByRole("button", { name: `Skip ${skip}` }).click();
+  await expect.poll(() => names.allInnerTexts(), { timeout: 30_000 }).not.toContain(skip);
+  await expect(names).toHaveCount(5);
+  expect(await names.allInnerTexts()).toContain(first);
+
+  // Back to start: the return leg is counted (plan 5.8).
+  await plan.getByLabel("Back to start").check();
+  await expect(plan.getByText(/^Back to the start: \+/)).toBeVisible({ timeout: 30_000 });
+  await plan.getByLabel("Back to start").uncheck();
+  await expect(plan.getByText(/^Back to the start: \+/)).toHaveCount(0, { timeout: 30_000 });
 
   await page.getByLabel("Stops in the plan").selectOption("8");
   await expect(names).toHaveCount(8, { timeout: 30_000 });
@@ -604,6 +1012,47 @@ test("launcher: Backups backs up into the chosen folder and lists it for restore
   }
 });
 
+test("launcher: a save's late answer does not put the suggested folder back over a typed one", async ({ page, request }) => {
+  // 2026-10-12: the Backups test above failed now and then. Each save writes the saved settings back
+  // into the fields when its answer comes; one that came after a folder was typed put the suggested
+  // folder (the commander's Documents) back, and "Use this folder" confirmed that. Held here on purpose.
+  const errors = watchErrors(page);
+  const folder = mkdtempSync(path.join(tmpdir(), "edexo-e2e-backups-"));
+  try {
+    await page.addInitScript(() => localStorage.setItem("edexo.launcher.wizardDone", "1"));
+    await page.goto("/launcher.html");
+    await page.locator("#btnBackups").click();
+    await expect(page.locator("#backupModal")).toHaveClass(/on/);
+    await page.locator("#backupKeys").check();
+    await page.waitForTimeout(500);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let held = false;
+    await page.route("**/api/backup/status", async (route) => {
+      if (!held) {
+        held = true;
+        await gate;
+      }
+      await route.continue();
+    });
+    await page.locator("#backupKeys").uncheck();
+    await expect.poll(() => held).toBe(true);
+    await page.locator("#backupFolder").fill(folder);
+    release();
+    await page.waitForTimeout(500);
+    await expect(page.locator("#backupFolder")).toHaveValue(folder);
+    await page.locator("#backupUseFolder").click();
+    const status = async () => (await (await request.get("/api/backup/status")).json()) as { folderChosen: boolean; folder: string };
+    await expect.poll(async () => (await status()).folderChosen).toBe(true);
+    expect((await status()).folder).toBe(folder);
+    expect(errors).toEqual([]);
+  } finally {
+    // No folder chosen again, as the profile started (the test above starts from that).
+    await request.post("/api/backup/settings", { data: { folder: null, keep: 10 } });
+    if (existsSync(folder)) rmSync(folder, { recursive: true, force: true });
+  }
+});
+
 test("phone hud: chips and the portrait layout", async ({ page }) => {
   test.skip(process.platform === "darwin", "HUDs are excluded from the macOS port.");
   const errors = watchErrors(page);
@@ -630,13 +1079,296 @@ test("session log: opens from the cockpit menu and offers the Markdown copy", as
   const errors = watchErrors(page);
   await page.goto("/");
   await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
-  // Below 1700 px the cockpit buttons live behind the menu; open it first when the button is hidden.
-  const sessionLog = page.getByRole("button", { name: "Session log" });
-  if (!(await sessionLog.isVisible())) await page.getByRole("button", { name: "Menu" }).click();
-  await sessionLog.click();
+  // Below 1700 px the cockpit buttons live behind the menu, as menu items.
+  await openFromMenu(page, "Session log");
   await expect(page.locator(".modal-panel--session")).toBeVisible();
   await expect(page.getByRole("button", { name: /Copy as Markdown|Copied/ })).toBeVisible();
   await page.waitForTimeout(500); // the modal fades in
   await page.screenshot({ path: `${OUT}/session-log.png` });
   expect(errors).toEqual([]);
+});
+
+/* ---- added 2026-10-02 (review F-6.5): the screens and today's features without e2e cover ---- */
+
+/** A screen from the cockpit menu: a button on a wide bar, a menu item behind "Menu" below 1,700 px. */
+async function openFromMenu(page: import("@playwright/test").Page, name: string) {
+  const btn = page.getByRole("button", { name, exact: true });
+  if (await btn.isVisible()) return btn.click();
+  await page.getByRole("button", { name: "Menu" }).click();
+  await page.getByRole("menuitem", { name, exact: true }).click();
+}
+
+test("options: opens on the settings, the install facts folded at the bottom with Copy diagnostics", async ({
+  page,
+  context,
+}) => {
+  const errors = watchErrors(page);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await openFromMenu(page, "Options");
+  const about = page.locator(".options-about");
+  await expect(about).toBeVisible();
+  await expect(about).not.toHaveAttribute("open", "");
+  await about.locator("summary").click();
+  await page.getByRole("button", { name: "Copy diagnostics" }).click();
+  const box = page.locator(".options-diagnostics-text");
+  await expect(box).toBeVisible();
+  const text = await box.inputValue();
+  expect(text).toContain("ED Exo Compare");
+  expect(text).toContain("Journals:");
+  // Nothing of the commander's: no LAN key, no home folder.
+  expect(text).not.toMatch(/[?&]k=[^…]/);
+  await page.screenshot({ path: `${OUT}/options-about.png` });
+  expect(errors).toEqual([]);
+});
+
+test("notify me: Send a test notice puts one on the bell", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await openFromMenu(page, "Options");
+  const fold = page.locator(".fold-toggle", { hasText: "Notify me" });
+  if ((await fold.getAttribute("aria-expanded")) !== "true") await fold.click();
+  await page.getByRole("button", { name: "Send a test notice" }).click();
+  await expect(page.getByText(/Sent: look at the mail icon/)).toBeVisible();
+  const items = await page.request.get("/api/state?channel=app").then((r) => r.json());
+  expect(JSON.stringify(items)).toContain("Test notice");
+  expect(errors).toEqual([]);
+});
+
+test("streamer view: the app with nothing to click", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/?view=stream");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator("html")).toHaveAttribute("data-streamer", "1");
+  await expect(page.locator(".appbar-actions")).toBeHidden();
+  await expect(page.locator(".snapshot-btn").first()).toBeHidden();
+  expect(await page.evaluate(() => getComputedStyle(document.querySelector(".app-shell")!).pointerEvents)).toBe("none");
+  // Nothing a viewer needs: the legal footer and the Live / FDev dots.
+  await expect(page.locator(".app-legal-footer")).toBeHidden();
+  await expect(page.locator(".appbar-status").first()).toBeHidden();
+  await page.screenshot({ path: `${OUT}/streamer-view.png` });
+  expect(errors).toEqual([]);
+});
+
+test("streamer view: the link's options hide the name, scale the page, drop the backdrop", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/?view=stream&cmdr=0&zoom=1.25&bg=transparent");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator("html")).toHaveAttribute("data-streamer-cmdr", "0");
+  await expect(page.locator(".appbar-cmdr")).toBeHidden();
+  const look = await page.evaluate(() => ({
+    zoom: getComputedStyle(document.documentElement).zoom,
+    bg: getComputedStyle(document.body).backgroundColor,
+    backdrop: getComputedStyle(document.body, "::before").display,
+  }));
+  expect(look).toEqual({ zoom: "1.25", bg: "rgba(0, 0, 0, 0)", backdrop: "none" });
+  await page.screenshot({ path: `${OUT}/streamer-view-options.png` });
+  expect(errors).toEqual([]);
+});
+
+test("streamer view: shows the app as the streamer has it set up (settings mirrored)", async ({ page, browser }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".srow").first()).toBeVisible({ timeout: 60_000 });
+  // The streamer switches Compact off: cards instead of rows.
+  const compact = page.getByRole("button", { name: "Compact" });
+  await expect(compact).toHaveAttribute("aria-pressed", "true");
+  await compact.click();
+  await expect(page.locator(".srow")).toHaveCount(0);
+  await page.waitForTimeout(1500); // the app reports its settings once a second
+  // OBS is a browser of its own, with storage of its own.
+  const obs = await browser.newContext({ baseURL: page.url() });
+  const view = await obs.newPage();
+  await view.goto("/?view=stream");
+  await expect(view.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await expect(view.locator(".species-card").first()).toBeVisible();
+  await expect(view.locator(".srow")).toHaveCount(0);
+  // And back: the view follows within a couple of seconds.
+  await compact.click();
+  await expect(view.locator(".srow").first()).toBeVisible({ timeout: 10_000 });
+  await obs.close();
+  expect(errors).toEqual([]);
+});
+
+test("my discoveries: the bodies table exports as CSV", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await openFromMenu(page, "My discoveries");
+  // It opens on the foot-scan tab, empty in the fixture; the bodies table has the fixture's bodies.
+  await page.getByRole("tab", { name: "Bodies" }).click();
+  const exportBtn = page.locator(".disc-export button").first();
+  await expect(exportBtn).toBeVisible({ timeout: 30_000 });
+  const [dl] = await Promise.all([page.waitForEvent("download"), exportBtn.click()]);
+  expect(dl.suggestedFilename()).toMatch(/^edexo-.+\.csv$/);
+  await page.screenshot({ path: `${OUT}/discoveries.png` });
+  expect(errors).toEqual([]);
+});
+
+test("boxels: Plan a boxel by name, filter its systems, and the screen fits a phone", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await openFromMenu(page, "Boxel");
+  const screen = page.locator(".boxel-screen");
+  await expect(screen).toBeVisible();
+  // The fixture system has a catalogue name: no boxel to be in.
+  await expect(screen.getByRole("button", { name: /^Current boxel/ })).toBeDisabled();
+  await screen.getByLabel("Last system #").fill("9");
+  await screen.getByLabel(/^Plan a boxel/).fill("Eol Prou PX-T d3-5");
+  await screen.getByRole("button", { name: "Plan: PX-T d3" }).click();
+  await expect(screen.locator(".boxel-side__item", { hasText: "PX-T d3" })).toBeVisible();
+  await expect(screen.locator(".disc-table tbody tr", { hasText: "Eol Prou PX-T d3-" })).toHaveCount(10);
+  // One search bar, and what it looks at.
+  await screen.getByRole("button", { name: "What the search looks at" }).click();
+  await page.getByRole("option", { name: "System name" }).click();
+  await screen.getByLabel("Filter by system name").fill("d3-7");
+  await expect(screen.locator(".disc-table tbody tr", { hasText: "Eol Prou PX-T d3-" })).toHaveCount(1);
+  await page.screenshot({ path: `${OUT}/boxels.png` });
+  // A phone: cards, and no sideways scroll.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(screen.locator(".disc-card").first()).toBeVisible();
+  expect(await page.evaluate(() => document.querySelector(".boxel-screen")!.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await page.screenshot({ path: `${OUT}/phone-boxels.png` });
+  expect(errors).toEqual([]);
+});
+
+test("data value: the fleet carrier toggle takes 25 % off exploration (15 % at his own) and is saved", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: /^Data value/ }).click();
+  const toggle = page.getByLabel(/Selling at a fleet carrier/);
+  await expect(toggle).toBeVisible();
+  const before = await page.request.get("/api/state").then((r) => r.json());
+  // Controlled by the server's answer: it ticks once the setting is saved and the state comes back.
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await expect(page.getByText("· at a carrier").first()).toBeVisible();
+  const after = await page.request.get("/api/state").then((r) => r.json());
+  expect(after.sellAtFleetCarrier).toBe(true);
+  expect(after.explorationFssValueCredits).toBe(Math.round(before.explorationFssValueCredits * 0.75));
+  // His own carrier (owner, 2026-10-04): 15 %, offered only while the carrier toggle is on.
+  const own = page.getByLabel(/My own carrier/);
+  await own.click();
+  await expect(own).toBeChecked();
+  await expect(page.getByText("· at your carrier (−15 %)").first()).toBeVisible();
+  const mine = await page.request.get("/api/state").then((r) => r.json());
+  expect(mine.explorationFssValueCredits).toBe(Math.round(before.explorationFssValueCredits * 0.85));
+  await own.click();
+  await expect(own).not.toBeChecked();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByLabel(/My own carrier/)).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("system map: opens from the system card and draws the fixture body", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await page.locator(".sys-card__btn").first().click();
+  const modal = page.locator(".system-map-modal, [aria-label*='System map' i]").first();
+  await expect(modal).toBeVisible();
+  // The map's own circles: with Tab view on it opens in a tab, and Main's hidden pane has icon circles too.
+  await expect(page.locator(".tab-pane--systemMap svg circle, .system-map-modal svg circle").first()).toBeVisible();
+  await page.screenshot({ path: `${OUT}/system-map.png` });
+  // The legend folds and remembers it (plan 3.7).
+  const legend = page.locator("details.system-map-legend");
+  const wasOpen = await legend.evaluate((d) => (d as HTMLDetailsElement).open);
+  await legend.locator("summary").click();
+  await expect.poll(() => legend.evaluate((d) => (d as HTMLDetailsElement).open)).toBe(!wasOpen);
+  await legend.locator("summary").click();
+  // A body on the map opens its facts.
+  await page.locator("g.system-map-node-g").last().click();
+  await expect(page.locator(".body-detail-kv-label").first()).toBeVisible();
+  // Its tab's × closes the map (Escape, as a pop-up, with Tab view off).
+  await closeScreen(page, "System map");
+  await expect(page.locator("details.system-map-legend")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("encyclopedia: opens, lists species, and the search narrows them", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await openFromMenu(page, "Encyclopedia");
+  // Within the encyclopedia: with Tab view on, Main's own species names are still in the page, hidden.
+  await expect(page.locator(".encyclopedia-panel").getByText(/Aleoida|Bacterium|Stratum/).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.screenshot({ path: `${OUT}/encyclopedia.png` });
+  const count = () => page.locator(".ency-count strong").innerText().then(Number);
+  await expect.poll(count).toBeGreaterThan(100);
+  const all = await count();
+  const search = page.getByRole("searchbox", { name: "Search species or genus" });
+  await search.fill("Tussock");
+  await expect.poll(count).toBeLessThan(all);
+  // Text content, not innerText: cards below the fold are not drawn yet, and innerText reads them as "".
+  const titles = () => page.locator(".encyclopedia-panel .encyclopedia-species-title").allTextContents();
+  await expect.poll(async () => {
+    const t = await titles();
+    return t.length > 0 && t.every((x) => /Tussock/i.test(x));
+  }).toBe(true);
+  await search.fill("");
+  await expect.poll(count).toBe(all);
+  expect(errors).toEqual([]);
+});
+
+test("phone: the main view at 390 px keeps the body and its species", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator(".species-card, .srow").first()).toBeVisible();
+  const noSideScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
+  // No sideways page scroll on a phone.
+  expect(await noSideScroll()).toBe(true);
+  await page.screenshot({ path: `${OUT}/phone-main.png`, fullPage: true });
+  // A row unfolds its card on a phone too.
+  await page.locator(".srow-main").first().click();
+  await expect(page.locator(".species-card").first()).toBeVisible();
+  expect(await noSideScroll()).toBe(true);
+  // The Encyclopedia and the system map fit a phone.
+  await openFromMenu(page, "Encyclopedia");
+  await expect(page.locator(".encyclopedia-species-title").first()).toBeVisible({ timeout: 30_000 });
+  expect(await noSideScroll()).toBe(true);
+  await page.screenshot({ path: `${OUT}/phone-encyclopedia.png` });
+  await closeScreen(page, "Encyclopedia");
+  await expect(page.locator(".ency-search")).toHaveCount(0);
+  await page.locator(".sys-card__btn").first().click();
+  await expect(page.locator("details.system-map-legend")).toBeVisible();
+  expect(await noSideScroll()).toBe(true);
+  await page.screenshot({ path: `${OUT}/phone-system-map.png` });
+  expect(errors).toEqual([]);
+});
+
+test.describe("touch", () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  test("touch: a tap shows a tooltip until the next tap elsewhere; small buttons get a 40 px hit area", async ({ page }) => {
+    const errors = watchErrors(page);
+    await page.goto("/");
+    await expect(page.locator(".body-pane")).toBeVisible({ timeout: 60_000 });
+    const anchor = page.locator(".tip-anchor").first();
+    await anchor.scrollIntoViewIfNeeded();
+    await anchor.tap();
+    await expect(page.locator(".tip-bubble")).toBeVisible();
+    await page.locator(".body-pane").tap({ position: { x: 5, y: 5 } });
+    await expect(page.locator(".tip-bubble")).toHaveCount(0);
+    // The app bar's icon buttons are under 40 px; their hit area is not.
+    const hit = await page.evaluate(() => {
+      const b = document.querySelector(".appbar-icon-btn");
+      if (!b) return null;
+      const cs = getComputedStyle(b, "::before");
+      return { w: parseFloat(cs.width), h: parseFloat(cs.height), own: b.getBoundingClientRect().height };
+    });
+    expect(hit).not.toBeNull();
+    expect(hit!.own).toBeLessThan(40);
+    expect(hit!.w).toBeGreaterThanOrEqual(40);
+    expect(hit!.h).toBeGreaterThanOrEqual(40);
+    expect(errors).toEqual([]);
+  });
 });

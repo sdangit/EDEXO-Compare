@@ -108,6 +108,8 @@ function render(data: DiscoveriesDTO, tab: "systems" | "bodies" | "stars") {
   act(() => {
     root.render(<DiscoveriesTables data={data} tab={tab} />);
   });
+  // The chip rows fold behind their labels (owner, 2026-10-04); the tests below want them open.
+  for (const b of host.querySelectorAll<HTMLButtonElement>("button.disc-chip-toggle[aria-expanded='false']")) act(() => b.click());
   return {
     host,
     rows: () => [...host.querySelectorAll("tbody tr")],
@@ -192,13 +194,30 @@ describe("the discoveries tables", () => {
     r.unmount();
   });
 
+  it("folds a chip row behind its label, and keeps what is picked in sight (owner, 2026-10-04)", () => {
+    const r = render(DATA, "systems");
+    r.click(r.chip("Biology"));
+    const toggle = [...r.host.querySelectorAll<HTMLButtonElement>("button.disc-chip-toggle")].find((b) =>
+      b.textContent?.includes("Has"),
+    );
+    r.click(toggle);
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    // Folded: the picked chip stays, the others go.
+    expect(r.chip("Biology")).toBeDefined();
+    expect(r.chip("Sold")).toBeUndefined();
+    expect(r.firstCells()).toEqual(["Beta"]);
+    r.click(toggle);
+    r.click(r.chip("Biology"));
+    r.unmount();
+  });
+
   it("does not offer a filter for something absent from the data", () => {
     const r = render(DATA, "stars");
     expect(r.chip("Water world")).toBeUndefined();
     r.unmount();
   });
 
-  it("caps what reaches the DOM and says how much it left out", () => {
+  it("draws only the rows in view, and every row is there to scroll to (plan 3.4, 2026-10-04)", () => {
     // 18,127 rows is the real number this has to survive.
     const many: DiscoveriesDTO = {
       ...DATA,
@@ -207,9 +226,12 @@ describe("the discoveries tables", () => {
       ),
     };
     const r = render(many, "bodies");
-    expect(r.rows()).toHaveLength(300);
-    // Locale-agnostic on purpose: jsdom groups digits differently from a browser, and the claim
-    // here is that the count is stated at all, not how it is punctuated.
+    const drawn = r.rows().filter((tr) => !tr.hasAttribute("aria-hidden"));
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn.length).toBeLessThan(100);
+    // The rest are a spacer of their height, not missing: the table says how many there are.
+    expect(r.host.querySelector("table")?.getAttribute("aria-rowcount")).toBe("1201");
+    expect(r.rows().some((tr) => tr.hasAttribute("aria-hidden"))).toBe(true);
     expect(r.host.textContent?.replace(/[\u202f\u00a0,]/g, "")).toContain("1200");
     r.unmount();
   });

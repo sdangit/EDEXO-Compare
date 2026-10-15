@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appDataExclusion,
   applyPendingRestore,
@@ -171,7 +171,7 @@ describe("backups", () => {
     const buf = readFileSync(first.path);
     const e = (await listZip(first.path)).find((x) => x.name === "journals/Journal.2026-09-01T100000.01.log")!;
     const at = e.offset + 30 + buf.readUInt16LE(e.offset + 26) + buf.readUInt16LE(e.offset + 28);
-    buf[at + 2] ^= 0xff;
+    buf[at + 2]! ^= 0xff;
     writeFileSync(first.path, buf);
     const r = await runBackup(w.src, w.settings, minute(1));
     const j = (await listZip(r.path)).find((x) => x.name === "journals/Journal.2026-09-01T100000.01.log")!;
@@ -203,6 +203,89 @@ describe("backups", () => {
     expect(await listBackups(w.out)).toHaveLength(3);
     // Keep 1: only the new backup; the pair goes together.
     expect((await pruneBackups(w.out, 1)).sort()).toHaveLength(2);
+  });
+
+  it("a file rewritten at the same length within the zip's 2 s is compressed again, not copied stale (code review, 2026-10-14)", async () => {
+    const w = world();
+    const settingsFile = path.join(w.app, "edexo-compare-user-settings.json");
+    const first = await runBackup(w.src, w.settings, minute(0));
+    const entry = (await listZip(first.path)).find((e) => e.name === "app-data/edexo-compare-user-settings.json")!;
+    // Same length, and the file's time put back where the zip has it.
+    writeFileSync(settingsFile, '{"a":2}');
+    utimesSync(settingsFile, entry.mtime, entry.mtime);
+    const second = await runBackup(w.src, w.settings, minute(1));
+    const now = (await listZip(second.path)).find((e) => e.name === "app-data/edexo-compare-user-settings.json")!;
+    expect((await readZipEntry(second.path, now)).toString()).toBe('{"a":2}');
+    // Everything unchanged is still copied: the journal by its size and time, the rest by its CRC.
+    expect(second.reused).toBe(first.journals + first.appDataFiles - 1);
+  });
+
+  /*
+    Code review, 2026-10-14: a backup with errors counted towards `keep` like a complete one, so with keep 1 one
+    bad run deleted the only good backup; and a journal folder that went away was skipped without a word.
+  */
+  it("a backup with errors never pushes a complete one out, and the next complete one lets it go", async () => {
+    const w = world();
+    const settings = { ...w.settings, keep: 1 };
+    const bad = { ...w.src, exports: () => [{ fileName: "../escape.json", body: {} }] };
+    const good = await runBackup(w.src, settings, minute(0));
+    const partial = await runBackup(bad, settings, minute(1));
+    expect(partial.errors).toHaveLength(1);
+    expect(partial.pruned).toEqual([]);
+    expect((await listBackups(w.out)).map((b) => b.file)).toEqual([good.file, partial.file]);
+    const next = await runBackup(w.src, settings, minute(2));
+    expect(next.pruned.sort()).toEqual([good.file, partial.file].sort());
+    expect((await listBackups(w.out)).map((b) => b.file)).toEqual([next.file]);
+  });
+
+  it("keeps at most `keep` backups with errors, the newest, and all `keep` complete ones", async () => {
+    const w = world();
+    const settings = { ...w.settings, keep: 2 };
+    const bad = { ...w.src, exports: () => [{ fileName: "../escape.json", body: {} }] };
+    const good = [await runBackup(w.src, settings, minute(0)), await runBackup(w.src, settings, minute(1))];
+    const partial = [];
+    for (let i = 2; i < 6; i++) partial.push(await runBackup(bad, settings, minute(i)));
+    expect((await listBackups(w.out)).map((b) => b.file)).toEqual([...good, ...partial.slice(-2)].map((r) => r.file));
+  });
+
+  it("a journal folder that went away is an error, not a complete backup with no journals", async () => {
+    const w = world();
+    const settings = { ...w.settings, keep: 1 };
+    const good = await runBackup(w.src, settings, minute(0));
+    const gone = await runBackup({ ...w.src, journalDir: path.join(w.root, "journals-moved") }, settings, minute(1));
+    expect(gone.journals).toBe(0);
+    expect(gone.errors.join()).toMatch(/journal folder: cannot read the folder/);
+    expect((await listBackups(w.out)).map((b) => b.file)).toEqual([good.file, gone.file]);
+  });
+
+  it("does not let another program's subfolder in the journal folder make a backup incomplete", async () => {
+    const w = world();
+    mkdirSync(path.join(w.journals, "Screenshots", "deep"), { recursive: true });
+    writeFileSync(path.join(w.journals, "Screenshots", "deep", "Journal.2026-09-02T100000.01.log"), "{}\n");
+    const r = await runBackup(w.src, w.settings, minute(0));
+    expect(r.errors).toEqual([]);
+    expect((await names(r.path)).filter((n) => n.includes("Screenshots"))).toEqual([]);
+  });
+
+  it("an archive that fails to write ends the backup, and the last good one stays (code review, 2026-10-14)", async () => {
+    const w = world();
+    const good = await runBackup(w.src, w.settings, minute(0));
+    // A journal that grew, so it is compressed again (an unchanged one is copied from the good backup).
+    writeFileSync(path.join(w.journals, "Journal.2026-09-01T100000.01.log"), '{"event":"Fileheader"}\n{"event":"Music"}\n');
+    const addFile = ZipWriter.prototype.addFile;
+    const spy = vi.spyOn(ZipWriter.prototype, "addFile").mockImplementation(async function (this: ZipWriter, ...a) {
+      const out = (this as unknown as { out: import("node:fs").WriteStream }).out;
+      out.destroy(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" }));
+      return addFile.apply(this, a);
+    });
+    try {
+      // Not one "journal …: ENOSPC" per file in a published backup: the run fails as a whole.
+      await expect(runBackup(w.src, { ...w.settings, keep: 1 }, minute(1))).rejects.toThrow(/ENOSPC/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(readdirSync(w.out).filter((f) => f.endsWith(".partial"))).toEqual([]);
+    expect((await listBackups(w.out)).map((b) => b.file)).toEqual([good.file]);
   });
 
   it("a partial file is not left behind when a backup fails", async () => {

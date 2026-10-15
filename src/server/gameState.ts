@@ -1,3 +1,4 @@
+import { reportsVolcanism } from "../shared/volcanismText.js";
 import type {
   RemoteSystemRecord,
   BodyExoState,
@@ -36,9 +37,9 @@ import {
   speciesEntryMatchesOrganicLabel,
   normOrganicToken,
 } from "./organicTracking.js";
-import { barycentreSyntheticBodyId, directParentPlanetId, planetRingCount } from "./orbitUtils.js";
+import { barycentreSyntheticBodyId, moonPairBarycentreId, planetRingCount } from "./orbitUtils.js";
 import { scanRings } from "../shared/bodyFeatures.js";
-import { greenCodexId, isK10CodexName } from "../shared/greenGasGiant.js";
+import { isK10CodexName } from "../shared/greenGasGiant.js";
 import { isNspCodexName } from "../shared/nspOutlook.js";
 import { getProjectRoot } from "./paths.js";
 import {
@@ -71,9 +72,24 @@ import {
   codexMapKeyFromLine,
   codexSpeciesFromLine,
 } from "../shared/codexLog.js";
-import { isLegacyPlantKey } from "../shared/achievements.js";
+import { GEOLOGY_KEY, isLegacyPlantKey } from "../shared/achievements.js";
 import { regionForSystem } from "./regionMapData.js";
+import { parseBoxel } from "../shared/boxel.js";
+import { emptyFsdFuel, fsdFuelCargo, fsdFuelJump, fsdFuelLoadout, type FsdFuelState } from "../shared/fsdFuel.js";
+import {
+  fsdWearJump,
+  fsdWearLoadout,
+  fsdWearRepair,
+  hydrateFsdWear,
+  newFsdWear,
+  type FsdWearState,
+} from "../shared/fsdWear.js";
+import { hydrateOwnAssets, newOwnAssets, ownAssetsLine, type OwnAssetsState } from "../shared/ownAssets.js";
+import { JUMPONIUM_EVENTS, hydrateJumponium, jumponiumLine, newJumponium, type JumponiumState } from "../shared/jumponium.js";
+import { emptyJumpRange, jumpRangeJump, jumpRangeLoadout, type JumpRangeState } from "../shared/jumpRange.js";
+import { createGreenCodexMatcher } from "../shared/greenCodexMatch.js";
 import { JOURNAL_MERGE_CACHE_FORMAT } from "./journalMergePayload.js";
+import { bodyKey, systemAddressOfBodyKey } from "../shared/bodyKey.js";
 import type {
   PendingOrganicSample,
   OrganicAnalyseProgress,
@@ -87,9 +103,6 @@ export type {
   SoldTally,
   JournalMergeCachePayload,
 } from "./journalMergePayload.js";
-function bodyKey(systemAddress: number, bodyId: number): string {
-  return `${systemAddress}:${bodyId}`;
-}
 
 /** Recent journal lines (chronological) for foot-catalog naming: find body label on lines *before* each `ScanOrganic` Analyse. */
 const FOOT_JOURNAL_BUFFER_MAX = 600;
@@ -161,6 +174,15 @@ function ensureBody(
 function asSignals(raw: unknown): { Type?: string; Type_Localised?: string; Count?: number }[] {
   if (!Array.isArray(raw)) return [];
   return raw as { Type?: string; Type_Localised?: string; Count?: number }[];
+}
+
+/** The `Geological` signal's count, or null when the line has none. */
+function geologicalCount(signals: ReturnType<typeof asSignals>): number | null {
+  for (const s of signals) {
+    const lo = `${s.Type ?? ""} ${s.Type_Localised ?? ""}`.toLowerCase();
+    if (lo.includes("geological")) return typeof s.Count === "number" ? s.Count : null;
+  }
+  return null;
 }
 
 function biologicalCount(signals: ReturnType<typeof asSignals>): number | null {
@@ -235,9 +257,7 @@ function strEqLoose(a: string | undefined, b: string | undefined): boolean {
 }
 
 function normVolc(s: string | undefined): string {
-  const v = (s ?? "").trim().toLowerCase();
-  if (!v || v.includes("no volcanism")) return "";
-  return v;
+  return reportsVolcanism(s) ? (s ?? "").trim().toLowerCase() : "";
 }
 
 /**
@@ -352,7 +372,13 @@ function organicLockGenusKey(lock: OrganicGenusLock): string {
   return `${s}\0${l}`;
 }
 
-/** All moons of the same planet as `sourceBodyId` (excludes self), using merged `Scan` parents and/or orbit map. */
+/**
+ * The moon that shares a barycentre with `sourceBodyId` (excludes self), using merged `Scan` parents
+ * and/or the orbit map. Until 2026-10-04 every moon of the same planet counted; the owner (overnight
+ * Q13): only twins on a barycentre share their biology. Spansh, DSS'd pairs: moons of one planet
+ * name the same genera on 39 % of 534,018 pairs (83 % at the same signal count); twins on one
+ * barycentre on 95 % at the same count, and at different counts one list holds the other.
+ */
 const EMPTY_ORBIT_PARENTS: ReadonlyMap<number, number> = new Map();
 
 function siblingMoonBodyIdsUnified(
@@ -362,14 +388,14 @@ function siblingMoonBodyIdsUnified(
 ): number[] {
   const sk = bodyKey(systemAddress, sourceBodyId);
   const sourceRec = store.explorationScans.get(sk);
-  const parentFromRec = sourceRec ? directParentPlanetId(sourceRec.parents) : null;
+  const parentFromRec = sourceRec ? moonPairBarycentreId(sourceRec.parents) : null;
   const parentFromOrbit = store.orbitParentPlanetByBody.get(sk);
   const parent = parentFromRec ?? parentFromOrbit ?? null;
   if (parent == null) return [];
 
   const out = new Set<number>();
   for (const rec of store.liveScansInSystem(systemAddress)) {
-    if (directParentPlanetId(rec.parents) === parent) out.add(rec.bodyId);
+    if (moonPairBarycentreId(rec.parents) === parent) out.add(rec.bodyId);
   }
   for (const [bid, p] of store.orbitParentsInSystem(systemAddress)) {
     if (p === parent) out.add(bid);
@@ -433,6 +459,18 @@ export class GameStateStore {
   viewingSystemAddress: number | null = null;
   /** Systems seen in the merged journal (jumps, Location, FSS complete) for picker / search. */
   readonly visitedSystems = new Map<number, string>();
+  /**
+   * Systems he targeted in the galaxy map (`FSDTarget`, every one in the journals): name and the star
+   * class the game gave. They exist, so a saved boxel reaches at least that far (auto-boxel detector,
+   * owner 2026-10-06).
+   */
+  readonly targetedSystems = new Map<number, { name: string; starClass: string }>();
+  /**
+   * The NavRoute finder's "Previous" list (owner, 2026-10-04): when each system was last arrived in
+   * (jump, carrier jump or a load there), and its star class as the jump to it named it (StartJump).
+   */
+  readonly systemVisitedAt = new Map<number, string>();
+  readonly systemStarClass = new Map<number, string>();
 
   /**
    * Has the commander already been to this system, by name?
@@ -551,8 +589,9 @@ export class GameStateStore {
   /** `SAAScanComplete`: `ProbesUsed` <= `EfficiencyTarget` — optional tail multiplier on mapped estimate. */
   readonly dssMappingEfficientByBodyKey = new Map<string, boolean>();
   /**
-   * Moons of a gas giant: maps `systemAddress:bodyId` → parent **planet** bodyId from journal `Parents`.
-   * Lets FSS/DSS propagate before every moon has a full merged `Scan` row.
+   * Twin moons: maps `systemAddress:bodyId` → the **barycentre** it shares with its twin, from journal
+   * `Parents` (`moonPairBarycentreId`; the parent planet until 2026-10-04, hence the name). Lets FSS/DSS
+   * propagate before both moons have a full merged `Scan` row.
    */
   readonly orbitParentPlanetByBody = new Map<string, number>();
   lastEventIso: string | null = null;
@@ -595,7 +634,7 @@ export class GameStateStore {
    */
   observeFootfall(bk: string, value: boolean, source: ObservationSource, seenAt: string): void {
     // A populated or colonising system has no unwalked ground: whatever the scan says, no bonus.
-    if (value === false && this.noFirstFootfallInSystem(Number(bk.split(":")[0]))) {
+    if (value === false && this.noFirstFootfallInSystem(systemAddressOfBodyKey(bk))) {
       value = true;
       source = "populated";
     }
@@ -720,10 +759,12 @@ export class GameStateStore {
   /** Region of each system from its `CodexEntry` lines (the only journal event naming one). */
   private readonly codexRegionBySystem = new Map<number, string>();
   /**
-   * Bodies the codex logged as a green gas giant: `bodyKey` → codex id (shared/greenGasGiant.ts).
-   * Every planet `CodexEntry` in the owner's journals carries a `BodyID` (678 of 678, 2026-09-30).
+   * Bodies the codex logged as a green gas giant: `bodyKey` → codex id (shared/greenGasGiant.ts). The
+   * codex line's own `BodyID` is the body the ship was at, not the one scanned (2026-10-08), so the
+   * body is the fitting gas giant scanned with it (shared/greenCodexMatch.ts).
    */
   readonly greenCodexBodies = new Map<string, string>();
+  private readonly greenCodexMatcher = createGreenCodexMatcher();
   /** Systems where the codex logged a K10-Type Anomaly — an NSP that only spawns around green gas giants. */
   readonly k10Systems = new Set<number>();
   /**
@@ -806,6 +847,22 @@ export class GameStateStore {
   /** Latest `FSDJump` sample for fuel-per-ly calibration. */
   lastFsdJumpFuelUsedT: number | null = null;
   lastFsdJumpDistLy: number | null = null;
+  /** The FSD is supercharged (`JetConeBoost`'s BoostValue) until the next jump; null when it is not. */
+  jetConeBoost: number | null = null;
+  /** The full jump range as flown: boosted jumps and economical-route hops left out (shared/jumpRange.ts). */
+  jumpRange: JumpRangeState = emptyJumpRange();
+  /** The drive's fuel per jump, fitted on the commander's jumps (shared/fsdFuel.ts). */
+  fsdFuel: FsdFuelState = emptyFsdFuel();
+  /** The FSD's health from Loadout and its wear per neutron supercharge (shared/fsdWear.ts, plan 8.4). */
+  fsdWear: FsdWearState = newFsdWear();
+  /** The commander's own fleet carrier and colonised systems (shared/ownAssets.ts), for the map's badges. */
+  ownAssets: OwnAssetsState = newOwnAssets();
+  /** Raw materials aboard and the FSD injections made (shared/jumponium.ts). */
+  jumponium: JumponiumState = newJumponium();
+  /** Live `Status.json` cargo (tonnes): the ship's mass now, for forecasts (the samples use the journal's, fsdFuel.ts). */
+  liveStatusCargoT: number | null = null;
+  /** When that cargo was read (ms): a jump the journal has no cargo for may take it only if made then. */
+  liveStatusCargoAtMs: number | null = null;
 
   /** From live `Status.json` poll (tonnes); null when file missing or parse failed. */
   liveStatusFuelMainT: number | null = null;
@@ -845,6 +902,16 @@ export class GameStateStore {
    * on arriving there. Second rung of the next-jump ladder, see {@link nextJumpTarget}.
    */
   fsdTarget: { starSystem: string; systemAddress: number; starClass: string; at: string } | null = null;
+  /**
+   * The boxel system last put on the clipboard (server/boxelRun.ts), for the HUD's next-jump card:
+   * "Copied … · boxel run". Not journal state; this session only.
+   */
+  boxelCopied: { name: string; at: string; run: boolean; source?: "boxel" | "neutron" } | null = null;
+  /**
+   * Bumped whenever something the Boxels screen shows changes without a jump: a route plotted, a
+   * system targeted, a run started or finished, a system copied. The screen re-reads on a change.
+   */
+  boxelsRevision = 0;
   /** Last hyperspace target from `StartJump`, for the HUD's next-jump card. See AppSnapshot.jumpTarget. */
   lastJumpTarget: {
     starSystem: string;
@@ -993,6 +1060,21 @@ export class GameStateStore {
 
   /** When true, header “Data value” includes estimated FSS/DSS UC value from merged scans (see Options). */
   includeExplorationScanDataInDataValue = false;
+  /**
+   * Data value counts the +30 % Pranav Antal exobiology sale bonus (owner, 2026-10-03). Off by default:
+   * whether a sale gets it depends on where the commander sells, which the app does not follow.
+   */
+  pranavAntalBonus = false;
+  /**
+   * Data value counts exploration data sold at a fleet carrier, which keeps 25 % (owner, 2026-10-03:
+   * his carrier sales came in 25 % under the system map). Off by default; where he sells is his choice.
+   */
+  sellAtFleetCarrier = false;
+  /**
+   * The carrier is the commander's own: of the 25 % the sale keeps, 10 % goes into the carrier's bank,
+   * which he can take back, so his real cost is 15 % (owner, 2026-10-04).
+   */
+  fleetCarrierIsOwn = false;
 
   /** Consumed once in `buildSnapshot` so the client can select that bio body tab. */
   private pendingUiAutoSelectBodyKey: string | null = null;
@@ -1128,6 +1210,11 @@ export class GameStateStore {
           dest.name !== prev.name));
     if (!changed) return false;
     this.statusDestination = dest;
+    // A system picked as destination in the galaxy map names the system itself; it exists.
+    if (dest && dest.systemAddress && parseBoxel(dest.name)?.index != null && !this.targetedSystems.has(dest.systemAddress)) {
+      this.targetedSystems.set(dest.systemAddress, { name: dest.name, starClass: "" });
+      this.boxelsRevision++;
+    }
     if (dest) this.requestUiAutoSelectBody(dest.systemAddress, dest.bodyId);
     return true;
   }
@@ -1145,10 +1232,7 @@ export class GameStateStore {
   setUiSelectedBodyKeyFromClient(key: string | null): boolean {
     if (key !== null) {
       const focus = this.viewingSystemAddress ?? this.currentSystemAddress;
-      const parts = key.split(":");
-      if (focus === null || parts.length < 2) return false;
-      const addr = Number(parts[0]);
-      if (!Number.isFinite(addr) || addr !== focus) return false;
+      if (focus === null || systemAddressOfBodyKey(key) !== focus) return false;
       if (!this.bodies.has(key)) return false;
     }
     if (this.uiSelectedBodyKey === key) return false;
@@ -1158,6 +1242,18 @@ export class GameStateStore {
 
   setIncludeExplorationScanDataInDataValue(value: boolean): void {
     this.includeExplorationScanDataInDataValue = value;
+  }
+
+  setPranavAntalBonus(value: boolean): void {
+    this.pranavAntalBonus = value;
+  }
+
+  setSellAtFleetCarrier(value: boolean): void {
+    this.sellAtFleetCarrier = value;
+  }
+
+  setFleetCarrierIsOwn(value: boolean): void {
+    this.fleetCarrierIsOwn = value;
   }
 
   setIncludeBacteriumInSearch(value: boolean): void {
@@ -1211,6 +1307,19 @@ export class GameStateStore {
     if (typeof r.audio === "boolean") out.audio = r.audio;
     if (typeof r.compact === "boolean") out.compact = r.compact;
     if (typeof r.relevant === "boolean") out.relevant = r.relevant;
+    if (r.hudType === "original" || r.hudType === "title" || r.hudType === "elite") out.hudType = r.hudType;
+    if (r.credit === "off" || r.credit === "top" || r.credit === "bottom") out.credit = r.credit;
+    if (typeof r.nextBoxel === "boolean") out.nextBoxel = r.nextBoxel;
+    if (typeof r.tilt === "number" && Number.isFinite(r.tilt)) out.tilt = Math.min(35, Math.max(-35, r.tilt));
+    if (r.tiltMode === "turn" || r.tiltMode === "slant") out.tiltMode = r.tiltMode;
+    if (typeof r.slant === "number" && Number.isFinite(r.slant)) out.slant = Math.min(15, Math.max(-15, r.slant));
+    if (Array.isArray(r.sections)) {
+      const known = ["jump", "fss", "candidates", "distance", "datavalue", "achievement", "notable", "notices"];
+      out.sections = [];
+      for (const n of r.sections) {
+        if (typeof n === "string" && known.includes(n) && !out.sections.includes(n)) out.sections.push(n);
+      }
+    }
     this.hudPrefs = out;
     return out;
   }
@@ -1614,6 +1723,7 @@ export class GameStateStore {
     this.achievementDone.clear();
     this.codexRegionBySystem.clear();
     this.greenCodexBodies.clear();
+    this.greenCodexMatcher.clear();
     this.k10Systems.clear();
     this.nspSeen.clear();
     this.landingMinutesSamples.length = 0;
@@ -1650,6 +1760,9 @@ export class GameStateStore {
     this.commanderPos = null;
     this.viewingSystemAddress = null;
     this.visitedSystems.clear();
+    this.systemVisitedAt.clear();
+    this.systemStarClass.clear();
+    this.targetedSystems.clear();
     this.visitedSystemNames = null;
     this.lastEventIso = null;
     this.organicAnalyseByKey.clear();
@@ -1664,6 +1777,7 @@ export class GameStateStore {
     this.achievementDone.clear();
     this.codexRegionBySystem.clear();
     this.greenCodexBodies.clear();
+    this.greenCodexMatcher.clear();
     this.k10Systems.clear();
     this.nspSeen.clear();
     this.landingMinutesSamples.length = 0;
@@ -1698,6 +1812,12 @@ export class GameStateStore {
     this.loadoutFuelReserveCapacityT = null;
     this.lastFsdJumpFuelUsedT = null;
     this.lastFsdJumpDistLy = null;
+    this.jetConeBoost = null;
+    this.jumpRange = emptyJumpRange();
+    this.fsdFuel = emptyFsdFuel();
+    this.fsdWear = newFsdWear();
+    this.ownAssets = newOwnAssets();
+    this.jumponium = newJumponium();
     this.liveStatusFuelMainT = null;
     this.liveStatusFuelReserveT = null;
     this.lastLiveShipFuelPushKey = null;
@@ -1818,8 +1938,8 @@ export class GameStateStore {
    * 0.144 ls. The number is the distance to the star, unambiguously.
    *
    * The distinction is load-bearing: `starDistanceLs` reads this field to answer how far a body is
-   * from its host star when a barycentre stands between them, and EDSM and Spansh both drop the
-   * event, so the journal is the only place it exists.
+   * from its host star when a barycentre stands between them. EDSM drops the event; Spansh keeps it
+   * as a `Barycentre` body, which `spanshSystemHydration.ts` turns into this same record.
    *
    * Stored at `bodyId = barycentreSyntheticBodyId(journalNullId)` so rows never collide with real
    * body scans.
@@ -2051,7 +2171,8 @@ export class GameStateStore {
     const wasSold = this.soldExplorationScans.delete(k);
     this.patchScanIndex(fresh, wasSold ? [{ kind: "live", rec }, { kind: "sold", rec, drop: true }] : [{ kind: "live", rec }]);
 
-    const moonOf = directParentPlanetId(rec.parents);
+    // The barycentre a moon shares with its twin (the map's name is older than the rule).
+    const moonOf = moonPairBarycentreId(rec.parents);
     this.setOrbitParent(systemAddress, bodyId, moonOf);
 
     const inCurrentSystem = this.currentSystemAddress !== null && systemAddress === this.currentSystemAddress;
@@ -2183,6 +2304,19 @@ export class GameStateStore {
       if (event === "LoadGame") return this.onLoadGame(line);
 
       if (event === "Loadout") return this.onLoadout(line);
+      // The hold, for the fuel model's jump mass (fsdFuel.ts cargoT); another ship's or after a death: unknown.
+      if (event === "Cargo") fsdFuelCargo(this.fsdFuel, line as Record<string, unknown>);
+      if (event === "ShipyardSwap" || event === "ShipyardNew" || event === "Died") this.fsdFuel.cargoT = null;
+      if (event === "Repair" || event === "RepairAll") fsdWearRepair(this.fsdWear, line as Record<string, unknown>);
+      // Supercharged at a neutron star or white dwarf: the next jump only (the fuel pump costs it as such).
+      if (event === "JetConeBoost") {
+        const b = (line as Record<string, unknown>).BoostValue;
+        this.jetConeBoost = typeof b === "number" && b > 1 ? b : null;
+      } else if (event === "FSDJump" || event === "CarrierJump" || event === "LoadGame" || event === "Died")
+        this.jetConeBoost = null;
+      if (typeof event === "string" && (event.startsWith("Carrier") || event.startsWith("ColonisationSystemClaim")))
+        ownAssetsLine(this.ownAssets, line as Record<string, unknown>);
+      if (JUMPONIUM_EVENTS.has(event as string)) jumponiumLine(this.jumponium, line as Record<string, unknown>);
 
       /*
         Which body the ship is at: the arrival body on a jump or a load, then whatever it approaches,
@@ -2208,6 +2342,9 @@ export class GameStateStore {
       if (event === "FSDJump") {
         const fu = (line as Record<string, unknown>).FuelUsed;
         const jd = (line as Record<string, unknown>).JumpDist;
+        if (typeof jd === "number") jumpRangeJump(this.jumpRange, jd, (line as Record<string, unknown>).BoostUsed);
+        fsdFuelJump(this.fsdFuel, line as Record<string, unknown>, this.fsdFuel.cargoT ?? this.liveCargoAt(ts));
+        fsdWearJump(this.fsdWear, line as Record<string, unknown>);
         if (
           typeof fu === "number" &&
           Number.isFinite(fu) &&
@@ -2218,6 +2355,14 @@ export class GameStateStore {
         ) {
           this.lastFsdJumpFuelUsedT = fu;
           this.lastFsdJumpDistLy = jd;
+        }
+      }
+
+      if ((event === "FSDJump" || event === "CarrierJump" || event === "Location") && typeof line.SystemAddress === "number") {
+        this.systemVisitedAt.set(line.SystemAddress, ts);
+        const jt = this.lastJumpTarget;
+        if (event === "FSDJump" && jt?.starClass && jt.systemAddress === line.SystemAddress) {
+          this.systemStarClass.set(line.SystemAddress, jt.starClass);
         }
       }
 
@@ -2303,6 +2448,14 @@ export class GameStateStore {
   /** `Loadout` — one of apply()'s event handlers. */
   private onLoadout(line: JournalLine): void {
     const mjr = (line as Record<string, unknown>).MaxJumpRange;
+    const shipId = (line as Record<string, unknown>).ShipID;
+    fsdFuelLoadout(this.fsdFuel, line as Record<string, unknown>);
+    fsdWearLoadout(this.fsdWear, line as Record<string, unknown>);
+    jumpRangeLoadout(
+      this.jumpRange,
+      typeof shipId === "number" ? shipId : null,
+      typeof mjr === "number" && Number.isFinite(mjr) && mjr > 0 ? mjr : null,
+    );
     if (typeof mjr === "number" && Number.isFinite(mjr) && mjr > 0) {
       this.loadoutMaxJumpRangeLy = mjr;
     }
@@ -2373,6 +2526,10 @@ export class GameStateStore {
     const addr = typeof line.SystemAddress === "number" ? line.SystemAddress : 0;
     const starClass = typeof line.StarClass === "string" ? line.StarClass : "";
     if (name) this.fsdTarget = { starSystem: name, systemAddress: addr, starClass, at: ts };
+    if (name && addr) {
+      this.targetedSystems.set(addr, { name, starClass });
+      this.boxelsRevision++;
+    }
     return;
   }
 
@@ -2419,10 +2576,7 @@ export class GameStateStore {
     // Green gas giants: the codex names the body; a K10 anomaly names the system (shared/greenGasGiant.ts).
     if (typeof line.SystemAddress === "number" && Number.isFinite(line.SystemAddress)) {
       const name = typeof line.Name === "string" ? line.Name : "";
-      const green = greenCodexId(name);
-      if (green && typeof line.BodyID === "number" && Number.isFinite(line.BodyID)) {
-        this.greenCodexBodies.set(bodyKey(line.SystemAddress, line.BodyID), green);
-      }
+      this.applyGreenCodex(line);
       if (isK10CodexName(name)) this.k10Systems.add(line.SystemAddress);
       // A phenomenon named by the codex (same families as the EDAstro NSP list).
       if (isNspCodexName(name)) {
@@ -2454,6 +2608,7 @@ export class GameStateStore {
       `SubCategory` has to be read, not just `Category`: the category is "Biological and
       Geological" and a fumarole would otherwise confirm a plant.
     */
+    this.noteGeologyCodex(line, ts);
     const lock = codexOrganicLockFromLine(line as Parameters<typeof codexOrganicLockFromLine>[0]);
     const codexBodyId = line.BodyID as number | undefined;
     if (!lock || typeof codexBodyId !== "number" || !Number.isFinite(codexBodyId)) return;
@@ -2492,6 +2647,28 @@ export class GameStateStore {
       this.confirmedVariantsRevision += 1;
     }
     return;
+  }
+
+  /**
+   * A surface geology codex line (fumarole, gas vent, geyser, lava spout) with the body it names: the
+   * Volcanism field marks that entry "Scanned" on this body (owner, 2026-10-05).
+   */
+  private noteGeologyCodex(line: JournalLine, ts: string): void {
+    const entry = codexEntryKey(typeof line.Name === "string" ? line.Name : "");
+    const bodyId = line.BodyID;
+    const sys = line.SystemAddress;
+    if (!entry || !GEOLOGY_KEY.test(entry) || typeof bodyId !== "number" || typeof sys !== "number") return;
+    const b = ensureBody(
+      this.bodies,
+      sys,
+      bodyId,
+      this.explorationScans.get(bodyKey(sys, bodyId))?.bodyName ??
+        this.findRecentJournalBodyName(sys, bodyId) ??
+        `Body ${bodyId}`,
+      (typeof line.System === "string" ? line.System.trim() : "") || this.visitedSystems.get(sys) || this.currentSystem || "",
+      ts,
+    );
+    if (!(b.geologyLogged ?? []).includes(entry)) b.geologyLogged = [...(b.geologyLogged ?? []), entry];
   }
 
   /** A phenomenon in a system: a name, or "" for the FSS signal before it is named. */
@@ -2572,6 +2749,8 @@ export class GameStateStore {
 
     const b = ensureBody(this.bodies, systemAddress, bodyId, bodyName, this.currentSystem ?? "", ts);
     if (n !== null) b.biologicalSignals = n;
+    const geo = geologicalCount(sigArr);
+    if (geo !== null) b.geologicalSignals = geo;
     if (hints) b.genusHints = mergeGenusHints(b.genusHints, hints);
     const mergedHints = mergeScannerSignalHints(b.signalHints ?? null, line.Signals);
     if (mergedHints) b.signalHints = mergedHints;
@@ -2599,6 +2778,8 @@ export class GameStateStore {
 
     const b = ensureBody(this.bodies, systemAddress, bodyId, bodyName, this.currentSystem ?? "", ts);
     if (n !== null) b.biologicalSignals = n;
+    const geo = geologicalCount(sigArr);
+    if (geo !== null) b.geologicalSignals = geo;
     if (hints) b.genusHints = hints;
     const mergedHints = mergeScannerSignalHints(b.signalHints ?? null, line.Signals);
     if (mergedHints) b.signalHints = mergedHints;
@@ -2726,7 +2907,16 @@ export class GameStateStore {
   }
 
   /** `Scan` — one of apply()'s event handlers. */
+  /** A green codex entry and the gas giant scanned with it, whichever line comes first. */
+  private applyGreenCodex(line: JournalLine): void {
+    for (const e of this.greenCodexMatcher.observe(line as Record<string, unknown>)) {
+      if (e.kind === "match") this.greenCodexBodies.set(e.bodyKey, e.codexId);
+      else this.greenCodexBodies.delete(e.bodyKey);
+    }
+  }
+
   private onScan(line: JournalLine, ts: string): void {
+    this.applyGreenCodex(line);
     const systemAddress = line.SystemAddress as number;
     const bodyId = line.BodyID as number;
     const bodyName = line.BodyName as string;
@@ -3101,7 +3291,7 @@ export class GameStateStore {
           const value = Number(bio.Value);
           const bonus = Number(bio.Bonus);
           const credits = (Number.isFinite(value) ? value : 0) + (Number.isFinite(bonus) ? bonus : 0);
-          const addr = Number(removed.bodyKey.split(":")[0]);
+          const addr = systemAddressOfBodyKey(removed.bodyKey);
           if (credits > 0 && Number.isFinite(addr)) {
             this.addSoldTally(this.soldOrganicBySystem, addr, credits, 1, ts);
           }
@@ -3456,7 +3646,7 @@ export class GameStateStore {
   bioBodyState(key: string): BodyExoState | undefined {
     const own = this.bodies.get(key);
     if (own) return own;
-    const addr = Number(key.split(":")[0]);
+    const addr = systemAddressOfBodyKey(key);
     if (!Number.isFinite(addr) || !this.isShowingRemoteSystem(addr)) return undefined;
     return this.remoteBodies(addr).find((b) => b.key === key);
   }
@@ -3522,17 +3712,32 @@ export class GameStateStore {
     if (focus === null) return null;
     const raw = this.bodies.get(pick);
     if (!raw || raw.systemAddress !== focus) return null;
-    const addrPart = pick.split(":")[0];
-    if (!addrPart || Number(addrPart) !== focus) return null;
+    if (systemAddressOfBodyKey(pick) !== focus) return null;
     return pick;
+  }
+
+  /**
+   * Status.json's cargo for a jump made at `iso`, or null: only when it was read within five minutes of the
+   * jump (a live one). The game writes no `Cargo` line after a ship swap (owner's history: 0 of 92), so
+   * without this a swapped-in ship learnt nothing until the next login; a replayed old jump never gets
+   * today's cargo (code review, 2026-10-14).
+   */
+  private liveCargoAt(iso: string | null | undefined): number | null {
+    const t = iso ? Date.parse(iso) : NaN;
+    if (this.liveStatusCargoT == null || this.liveStatusCargoAtMs == null || !Number.isFinite(t)) return null;
+    return Math.abs(t - this.liveStatusCargoAtMs) <= 5 * 60_000 ? this.liveStatusCargoT : null;
   }
 
   /**
    * Live `Status.json` fuel — returns true when main/reserve changed (for snapshot push).
    */
-  applyLiveShipFuel(mainT: number | null, reserveT: number | null): boolean {
+  applyLiveShipFuel(mainT: number | null, reserveT: number | null, cargoT?: number | null): boolean {
     this.liveStatusFuelMainT = mainT;
     this.liveStatusFuelReserveT = reserveT;
+    if (cargoT !== undefined) {
+      this.liveStatusCargoT = cargoT;
+      this.liveStatusCargoAtMs = cargoT != null ? Date.now() : null;
+    }
     const key =
       mainT != null && reserveT != null && Number.isFinite(mainT) && Number.isFinite(reserveT)
         ? `${mainT.toFixed(4)}|${reserveT.toFixed(4)}`
@@ -3616,6 +3821,9 @@ export class GameStateStore {
       currentSystemAddress: this.currentSystemAddress,
       viewingSystemAddress: this.viewingSystemAddress,
       visitedSystems: [...this.visitedSystems.entries()],
+      systemVisitedAt: [...this.systemVisitedAt.entries()],
+      systemStarClass: [...this.systemStarClass.entries()],
+      targetedSystems: [...this.targetedSystems.entries()].map(([a, t]) => [a, t.name, t.starClass]),
       bodies: [...this.bodies.entries()],
       explorationScans: [...this.explorationScans.entries()],
       soldExplorationScans: [...this.soldExplorationScans.entries()],
@@ -3667,6 +3875,11 @@ export class GameStateStore {
       loadoutFuelReserveCapacityT: this.loadoutFuelReserveCapacityT,
       lastFsdJumpFuelUsedT: this.lastFsdJumpFuelUsedT,
       lastFsdJumpDistLy: this.lastFsdJumpDistLy,
+      jumpRange: structuredClone(this.jumpRange),
+      fsdFuel: structuredClone(this.fsdFuel),
+      fsdWear: structuredClone(this.fsdWear),
+      ownAssets: structuredClone(this.ownAssets),
+      jumponium: structuredClone(this.jumponium),
     };
   }
 
@@ -3706,6 +3919,13 @@ export class GameStateStore {
     this.viewingSystemAddress = data.viewingSystemAddress;
     this.lastEventIso = data.lastEventIso;
     for (const [addr, name] of data.visitedSystems) this.visitedSystems.set(addr, name);
+    this.systemVisitedAt.clear();
+    for (const [a, t] of data.systemVisitedAt ?? []) if (typeof a === "number" && typeof t === "string") this.systemVisitedAt.set(a, t);
+    this.systemStarClass.clear();
+    for (const [a, c] of data.systemStarClass ?? []) if (typeof a === "number" && typeof c === "string") this.systemStarClass.set(a, c);
+    this.targetedSystems.clear();
+    for (const [a, n, c] of data.targetedSystems ?? [])
+      if (typeof a === "number" && typeof n === "string") this.targetedSystems.set(a, { name: n, starClass: typeof c === "string" ? c : "" });
     this.visitedSystemNames = null;
     for (const [k, v] of data.bodies) this.bodies.set(k, v);
     this.bodyKeysBySystem = null;
@@ -3818,6 +4038,29 @@ export class GameStateStore {
       typeof lfr === "number" && Number.isFinite(lfr) && lfr >= 0 ? lfr : null;
     const lff = data.lastFsdJumpFuelUsedT;
     this.lastFsdJumpFuelUsedT = typeof lff === "number" && Number.isFinite(lff) && lff > 0 ? lff : null;
+    const jr = data.jumpRange;
+    if (jr && Array.isArray(jr.long) && Array.isArray(jr.recent)) {
+      this.jumpRange = {
+        shipId: typeof jr.shipId === "number" ? jr.shipId : null,
+        loadoutLy: typeof jr.loadoutLy === "number" ? jr.loadoutLy : null,
+        long: jr.long.filter((d) => typeof d === "number" && d > 0),
+        recent: jr.recent.filter((d) => typeof d === "number" && d > 0),
+      };
+    }
+    const ff = data.fsdFuel;
+    if (ff && Array.isArray(ff.samples)) {
+      this.fsdFuel = {
+        shipId: typeof ff.shipId === "number" ? ff.shipId : null,
+        loadoutLy: typeof ff.loadoutLy === "number" ? ff.loadoutLy : null,
+        unladenT: typeof ff.unladenT === "number" ? ff.unladenT : null,
+        maxFuelPerJumpT: typeof ff.maxFuelPerJumpT === "number" ? ff.maxFuelPerJumpT : null,
+        cargoT: typeof ff.cargoT === "number" ? ff.cargoT : null,
+        samples: ff.samples.filter((s) => s && s.ly > 0 && s.fuelT > 0 && s.massT > 0),
+      };
+    }
+    this.fsdWear = hydrateFsdWear(data.fsdWear);
+    this.ownAssets = hydrateOwnAssets(data.ownAssets);
+    this.jumponium = hydrateJumponium(data.jumponium);
     const ljd = data.lastFsdJumpDistLy;
     this.lastFsdJumpDistLy = typeof ljd === "number" && Number.isFinite(ljd) && ljd > 0 ? ljd : null;
     return true;

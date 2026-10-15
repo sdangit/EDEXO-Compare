@@ -2,20 +2,24 @@
  * The commander's settings file: what is written, what is read back and how (the same clamps as the
  * setters). Split out of edexoBootstrap.ts (code review D, 2026-09-28).
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import type { GameStateStore } from "./gameState.js";
 import type { PhotoStampPrefs } from "../shared/types.js";
 import { parseJournalHistoryPreset } from "../shared/journalHistoryPreset.js";
 import { readEdsmCredentials } from "./edsmCredentials.js";
+import { writeFileAtomic } from "./atomicWrite.js";
 
 export function persistUserPreferences(store: GameStateStore, file: string): void {
   try {
-    writeFileSync(
+    writeFileAtomic(
       file,
       `${JSON.stringify(
         {
           includeBacteriumInSearch: store.includeBacteriumInSearch,
           includeExplorationScanDataInDataValue: store.includeExplorationScanDataInDataValue,
+          pranavAntalBonus: store.pranavAntalBonus,
+          sellAtFleetCarrier: store.sellAtFleetCarrier,
+          fleetCarrierIsOwn: store.fleetCarrierIsOwn,
           exoMapTierPlusMinCr: store.exoMapTierPlusMinCr,
           exoMapTierPlusPlusMinCr: store.exoMapTierPlusPlusMinCr,
           footTravelOdometerEnabled: store.footTravelOdometerEnabled,
@@ -47,6 +51,9 @@ export function persistUserPreferences(store: GameStateStore, file: string): voi
 export type PersistedUserPrefs = {
   includeBacteriumInSearch?: boolean;
   includeExplorationScanDataInDataValue?: boolean;
+  pranavAntalBonus?: boolean;
+  sellAtFleetCarrier?: boolean;
+  fleetCarrierIsOwn?: boolean;
   exoMapTierPlusMinCr?: number;
   exoMapTierPlusPlusMinCr?: number;
   footTravelOdometerEnabled?: boolean;
@@ -80,6 +87,9 @@ export function applyPersistedUserPrefs(store: GameStateStore, j: PersistedUserP
   if (typeof j.includeExplorationScanDataInDataValue === "boolean") {
     store.setIncludeExplorationScanDataInDataValue(j.includeExplorationScanDataInDataValue);
   }
+  if (typeof j.pranavAntalBonus === "boolean") store.setPranavAntalBonus(j.pranavAntalBonus);
+  if (typeof j.sellAtFleetCarrier === "boolean") store.setSellAtFleetCarrier(j.sellAtFleetCarrier);
+  if (typeof j.fleetCarrierIsOwn === "boolean") store.setFleetCarrierIsOwn(j.fleetCarrierIsOwn);
   if (typeof j.exoMapTierPlusMinCr === "number" && typeof j.exoMapTierPlusPlusMinCr === "number") {
     store.setExoMapTierThresholds(j.exoMapTierPlusMinCr, j.exoMapTierPlusPlusMinCr);
   }

@@ -14,6 +14,7 @@ import type {
 } from "../shared/types.js";
 import { journalPressureToAtm, journalSurfaceGravityToG } from "../shared/journalPhysics.js";
 import { spectralKeysFromJournalStarType } from "../shared/starSpectralKeys.js";
+import { foldSpelling } from "../shared/spelling.js";
 import { hostStarClassKey, hostStarClassSimilarity } from "../shared/hostStarClass.js";
 import {
   classifyHostMkPath,
@@ -62,6 +63,7 @@ import {
   relativePercentDisplay,
 } from "./exomasteryFormat.js";
 import { inferHostSpectralCohortMode } from "./exomasteryOtherMatch.js";
+import { stripAtmosphereDensity } from "../shared/atmosphereText.js";
 export { exomasteryOtherMatchCardDeckScore, buildOtherMatchDetailCards } from "./exomasteryOtherMatch.js";
 export {
   formatPathLabel,
@@ -159,10 +161,17 @@ export interface ExomasteryProfileV1 {
 }
 
 const profileCache = new Map<string, ExomasteryProfileV1 | null | undefined>();
+/**
+ * {@link resolveExomasteryExportBasename} per species. It reads and parses every profile in the genus folder to
+ * find the one whose label matches, and the foot catalog asks it for every species row of every snapshot: 22 %
+ * of a first-view snapshot's time went here (code review, 2026-10-14). Cleared with the profiles.
+ */
+const exportBasenameCache = new Map<string, string | null>();
 
 /** Drop parsed profiles so the next load re-reads `*_exomastery*.json` from disk (e.g. after feeder export). */
 export function clearExomasteryProfileCache(): void {
   profileCache.clear();
+  exportBasenameCache.clear();
 }
 
 export function speciesSlug(label: string): string {
@@ -414,6 +423,15 @@ export function hasExomasteryProfileFile(projectRoot: string, entry: SpeciesEntr
 
 /** Basename for download: JSON under `exomastery/` (matched by speciesLabel) or legacy genus-root file. */
 export function resolveExomasteryExportBasename(projectRoot: string, entry: SpeciesEntry): string | null {
+  const cacheKey = `${projectRoot}::${entry.genusDataDir}::${entry.id}`;
+  const hit = exportBasenameCache.get(cacheKey);
+  if (hit !== undefined) return hit;
+  const found = resolveExomasteryExportBasenameUncached(projectRoot, entry);
+  exportBasenameCache.set(cacheKey, found);
+  return found;
+}
+
+function resolveExomasteryExportBasenameUncached(projectRoot: string, entry: SpeciesEntry): string | null {
   const base = join(getSpeciesDataDir(projectRoot), entry.genusDataDir);
   const sub = join(base, "exomastery");
   if (existsSync(sub)) {
@@ -491,10 +509,7 @@ function normalizeAtmosphereCompareKey(path: string, val: string): string {
   if (!path.toLowerCase().includes("atmosphere") || path.toLowerCase().includes("composition")) {
     return normalizeCategoricalValueForCompare(path, val).toLowerCase().trim();
   }
-  let t = normalizeCategoricalValueForCompare(path, val).toLowerCase().trim();
-  t = t.replace(/^hot\s+/, "");
-  t = t.replace(/^thin\s+/, "");
-  t = t.replace(/^thick\s+/, "");
+  let t = stripAtmosphereDensity(normalizeCategoricalValueForCompare(path, val).toLowerCase().trim());
   t = t.replace(/\s+atmosphere$/, "");
   t = t.replace(/\bco2\b/g, "carbon dioxide");
   t = t.trim();
@@ -506,7 +521,7 @@ function normalizeAtmosphereCompareKey(path: string, val: string): string {
     sulphur dioxide and every "-rich" atmosphere never matched, and that axis of the habitat score read
     0 on all of them (code review B7, 2026-09-27). "-rich" stays: Argon and Argon-rich are different.
   */
-  return t.replace(/sulfur/g, "sulphur").replace(/[^a-z]/g, "");
+  return foldSpelling(t).replace(/[^a-z]/g, "");
 }
 
 /** Atmosphere *type* compare key for EDSM/CSV rows (thin/thick stripped; ammonia normalized). */
@@ -808,7 +823,22 @@ export function exomasterySimilarityPercent(
  * §21b.2 fixed the panel's *ordering* with tier weights. This fixes the *number*, which was still the
  * discredited one. Display only; the scorer has never read this function.
  */
+/*
+  The hints read the profile alone, and every candidate of every body asked for them anew (~4 % of a first view,
+  profiled 2026-10-14). One answer per loaded profile; a reloaded profile is a new object, so it is asked again.
+  Read-only to its callers: the rows carry it into the match as is.
+*/
+const varietyHintsMemo = new WeakMap<ExomasteryProfileV1, ExomasteryVarietyItemDTO[]>();
+
 export function buildExomasteryVarietyHints(profile: ExomasteryProfileV1): ExomasteryVarietyItemDTO[] {
+  const hit = varietyHintsMemo.get(profile);
+  if (hit) return hit;
+  const built = buildExomasteryVarietyHintsUncached(profile);
+  varietyHintsMemo.set(profile, built);
+  return built;
+}
+
+function buildExomasteryVarietyHintsUncached(profile: ExomasteryProfileV1): ExomasteryVarietyItemDTO[] {
   const rows: { label: string; concentration: number; rank: number }[] = [];
   // Lower-cased, because the loader hands back `rock` where the measured path is `…solidComposition.Rock`.
   const measured = new Map(
@@ -1147,6 +1177,22 @@ export function exomasteryObservationForProfilePath(
 }
 
 /** Per-field breakdown for UI modal (numeric + categorical; composition in {@link ExomasteryDetailDTO.compositionGroups}). */
+/**
+ * Whether {@link buildExomasteryDetail} gives this profile at least one stat on any body: every numeric fact it
+ * does not omit and that is not a composition tail becomes one, whatever the body. Read by the lazy detail
+ * (lazyMatchDetail.ts) so the push can say "there is a habitat breakdown" without building it.
+ */
+export function exomasteryDetailAlwaysHasStats(profile: ExomasteryProfileV1): boolean {
+  const comp = new Set([
+    ...Object.keys(profile.materials).map((k) => k.toLowerCase()),
+    ...Object.keys(profile.atmosphereComposition).map((k) => k.toLowerCase()),
+    ...Object.keys(profile.solidComposition ?? {}).map((k) => k.toLowerCase()),
+  ]);
+  return Object.keys(profile.numerics).some(
+    (path) => !shouldOmitExomasterySciencePath(path) && !comp.has(exomasteryPathTailLower(path)),
+  );
+}
+
 export function buildExomasteryDetail(
   profile: ExomasteryProfileV1,
   scan: PlanetScan,

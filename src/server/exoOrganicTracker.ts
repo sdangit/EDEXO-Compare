@@ -25,6 +25,8 @@ import {
 } from "./organicSampleSessionFile.js";
 import { getProjectRoot, getSpeciesDataDir } from "./paths.js";
 import { readGenusMinSampleDistanceM } from "./speciesTreeLoader.js";
+import { gameOrderSpeciesName } from "../shared/codexLog.js";
+import { bodyKey } from "../shared/bodyKey.js";
 
 export type ExoOrganicAnchors = { latDeg: number; lonDeg: number; planetRadiusM: number };
 
@@ -100,10 +102,6 @@ export function clearExoOrganicGenusMinDistCache(): void {
   genusMinDistCache.clear();
 }
 
-function organicBodyKey(systemAddress: number, bodyId: number): string {
-  return `${systemAddress}:${bodyId}`;
-}
-
 type ExoOrganicJournalStore = ExoOrganicOverlayHost &
   OrganicSampleSessionHost & {
     footTravelOdometerEnabled: boolean;
@@ -160,7 +158,11 @@ function pushAnchor(t: ExoOrganicTrackerInternal, a: ExoOrganicAnchors, scan: nu
  * its own file. So a run rebuilt from the journal (the session file gone, the app restarted) can
  * still place the scans this app watched: the same body and the same second is the same scan.
  */
-function anchorFromMarks(store: ExoOrganicJournalStore, bodyKey: string, line: JournalLine): ExoOrganicAnchors | null {
+function anchorFromMarks(
+  store: ExoOrganicJournalStore,
+  bodyKey: string,
+  line: JournalLine,
+): ExoOrganicAnchors | null {
   const at = typeof line.timestamp === "string" ? line.timestamp : "";
   if (!at) return null;
   const m = (store.surfaceSampleMarks ?? []).find((x) => x.bodyKey === bodyKey && x.atIso === at);
@@ -193,6 +195,35 @@ function resolveMinSampleDistanceM(projectRoot: string, db: SpeciesDatabase, gen
   }
   genusMinDistCache.set(g, 0);
   return 0;
+}
+
+/**
+ * The sample distance of the species a radar mark is labelled with ("Stratum Tectonicas"), from its
+ * genus file; 0 when no species of the database carries that name.
+ */
+const ringByLabel = new Map<string, number>();
+/** Set by snapshot.ts each time the species database loads (an import back would be circular). */
+let ringSpeciesDb: SpeciesDatabase | null = null;
+export function setExoOrganicSpeciesDb(db: SpeciesDatabase): void {
+  ringSpeciesDb = db;
+  ringByLabel.clear();
+}
+export function sampleDistanceForSpeciesLabel(label: string): number {
+  const key = label.trim().toLowerCase();
+  if (!key) return 0;
+  const hit = ringByLabel.get(key);
+  if (hit !== undefined) return hit;
+  const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const want = fold(label);
+  let m = 0;
+  for (const e of ringSpeciesDb?.species ?? []) {
+    if (fold(gameOrderSpeciesName(e.displayName)) === want || fold(e.displayName) === want) {
+      m = e.genusMinSampleDistanceM ?? 0;
+      break;
+    }
+  }
+  ringByLabel.set(key, m);
+  return m;
 }
 
 function speciesDisplayFromLine(line: JournalLine): string {
@@ -235,7 +266,7 @@ export function restoreOrganicSessionFromJournal(
       const sa = lines[i]!.SystemAddress;
       const bid = lines[i]!.BodyID;
       if (typeof sa !== "number" || typeof bid !== "number") break;
-      const k = organicBodyKey(sa, bid);
+      const k = bodyKey(sa, bid);
       if (surfaceKey === null) surfaceKey = k;
       else if (k !== surfaceKey) break;
       continue;
@@ -245,7 +276,7 @@ export function restoreOrganicSessionFromJournal(
       const sa = lines[i]!.SystemAddress;
       const bid = lines[i]!.Body;
       if (typeof sa === "number" && typeof bid === "number") {
-        const k = organicBodyKey(sa, bid);
+        const k = bodyKey(sa, bid);
         if (surfaceKey === null) surfaceKey = k;
         else if (k !== surfaceKey) break;
       }
@@ -310,7 +341,7 @@ export function restoreOrganicSessionFromJournal(
   const sa = last.SystemAddress;
   const bodyId = last.Body;
   if (typeof sa !== "number" || typeof bodyId !== "number") return false;
-  const bk = organicBodyKey(sa, bodyId);
+  const bk = bodyKey(sa, bodyId);
 
   const speciesKey = speciesKeyFromOrganicJournal(last);
   const genusLoc = typeof last.Genus_Localised === "string" ? last.Genus_Localised.trim() : "";
@@ -399,7 +430,7 @@ export function ingestExoOrganicJournalLine(
   const bodyId = line.Body;
   if (typeof sa !== "number" || typeof bodyId !== "number") return;
 
-  const bk = organicBodyKey(sa, bodyId);
+  const bk = bodyKey(sa, bodyId);
   /*
     What to call the body this scan happened on.
 
@@ -423,7 +454,7 @@ export function ingestExoOrganicJournalLine(
     exist only while they are standing there. Elevation is derived from that gravity against the
     body's own figures — `Altitude` is absent on foot, so there is no other source for it.
   */
-  const bodyRec = store.explorationScans.get(organicBodyKey(sa, bodyId));
+  const bodyRec = store.explorationScans.get(bodyKey(sa, bodyId));
   const conditionsAtPlant = {
     temperatureK: statusFix?.temperatureK ?? null,
     gravityG: statusFix?.gravityG ?? null,
@@ -477,7 +508,8 @@ export function ingestExoOrganicJournalLine(
     const speciesDisplay = speciesDisplayFromLine(line);
     const minM = resolveMinSampleDistanceM(projectRoot, db, genusLoc);
 
-    if (!t) {
+    /** The first plant of a run: a fresh tracker anchored here, the map's mark, the foot session. */
+    const startRun = (): void => {
       store.exoOrganicTracker = {
         bundleKey,
         bodyKey: bk,
@@ -507,6 +539,10 @@ export function ingestExoOrganicJournalLine(
         store.beginFootTravelOdometerSession(bk, bodyNameNormEarly);
       }
       persistSoon(store, projectRoot);
+    };
+
+    if (!t) {
+      startRun();
       return;
     }
 
@@ -524,35 +560,7 @@ export function ingestExoOrganicJournalLine(
     */
     if (effectiveSampleCount(t) >= 3) {
       wipeOrganicSampleSession(store, projectRoot);
-      store.exoOrganicTracker = {
-        bundleKey,
-        bodyKey: bk,
-        speciesKey,
-        speciesDisplay,
-        genusLocalised: genusLoc,
-        bodyNameNorm: bodyNameNormEarly,
-        minSampleDistanceM: minM,
-        anchors: [{ latDeg: fix.latDeg, lonDeg: fix.lonDeg, planetRadiusM: fix.planetRadiusM }],
-        phase: "tracking",
-        celebrationUntil: 0,
-      };
-      // The anchors are this species' own and are wiped when the next one starts; the map wants
-      // every plant taken on this body, so it keeps its own list.
-      store.addSurfaceSampleMark(
-        bk,
-        bodyNameNormEarly,
-        fix.latDeg,
-        fix.lonDeg,
-        speciesDisplay,
-        lineIso,
-        conditionsAtPlant,
-      );
-      store.footSessionBodyKey = bk;
-      store.footSessionBodyNameNorm = bodyNameNormEarly;
-      if (store.footTravelOdometerEnabled) {
-        store.beginFootTravelOdometerSession(bk, bodyNameNormEarly);
-      }
-      persistSoon(store, projectRoot);
+      startRun();
       return;
     }
 
@@ -677,6 +685,7 @@ export function buildExoMinimapDto(
     kind: "sample" | "ship",
     markLabel: string,
     active = false,
+    ringM = 0,
   ) => {
     // Longitude wraps; without this a plant just across the antimeridian reads as half a planet away.
     let dLon = lonDeg - fix.lonDeg;
@@ -689,6 +698,7 @@ export function buildExoMinimapDto(
       distanceM: greatCircleDistanceMeters(fix.latDeg, fix.lonDeg, latDeg, lonDeg, R),
       label: markLabel,
       active,
+      ...(ringM > 0 ? { ringM } : {}),
     });
   };
 
@@ -728,7 +738,9 @@ export function buildExoMinimapDto(
   for (const m of store.surfaceSampleMarks) {
     if (!belongsHere(m)) continue;
     const isActive = activeSpecies != null && m.label.trim().toLowerCase() === activeSpecies;
-    push(m.latDeg, m.lonDeg, "sample", m.label, isActive);
+    // The run's own distance for its marks; a leftover species' from its genus.
+    const ringM = isActive ? minSampleDistanceM : sampleDistanceForSpeciesLabel(m.label);
+    push(m.latDeg, m.lonDeg, "sample", m.label, isActive, ringM);
   }
   const ship = store.surfaceShipMark;
   if (ship && belongsHere(ship)) push(ship.latDeg, ship.lonDeg, "ship", "Your ship");
@@ -759,7 +771,9 @@ export function buildExoOrganicOverlayDto(
   let spacingBetweenSamplesM: number | null = null;
 
   const distTo = (a: ExoOrganicAnchors | undefined): number | null =>
-    fix && a && avgR(a) > 0 ? greatCircleDistanceMeters(fix.latDeg, fix.lonDeg, a.latDeg, a.lonDeg, avgR(a)) : null;
+    fix && a && avgR(a) > 0
+      ? greatCircleDistanceMeters(fix.latDeg, fix.lonDeg, a.latDeg, a.lonDeg, avgR(a))
+      : null;
   distFirstM = distTo(byScan[0]);
   distSecondM = distTo(byScan[1]);
   distThirdM = distTo(byScan[2]);

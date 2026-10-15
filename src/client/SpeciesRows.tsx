@@ -8,12 +8,13 @@ import {
   speciesHasColourVariants,
 } from "@shared/candidateSpawnHints";
 import { infoGatherReasons } from "@shared/infoGather";
-import { fmtCrExact, fmtCrShort } from "./credits";
+import { fmtCrExact, fmtCrShort } from "@shared/format";
 import { useFootfallCertainty } from "./footfallContext";
 import { useRowContext, type LiveRun, type RowContextValue } from "./rowContext";
 import { speciesPhotoVariant } from "./speciesPhotoVariant";
-import { heroPhotoUrlFor, titleCaseSpeciesWords } from "./speciesMatchHelpers";
+import { heroPhotoUrlFor, predictedColourCause, titleCaseSpeciesWords } from "./speciesMatchHelpers";
 import { RarityGem } from "./RarityGem";
+import { chanceWhyText } from "./ChanceWhyList";
 
 type Match = BodyComputed["matches"][number];
 
@@ -32,7 +33,8 @@ export function rowProgress(m: Match, ctx: RowContextValue): RowProgress {
     const n = Math.max(0, Math.min(3, live.sampleCount));
     return { text: `${n}/3`, cls: "live", rank: 0 };
   }
-  if (ctx.locks.some((l) => l.speciesLocalised.trim().toLowerCase() === name)) {
+  // The body's own finds: a sibling moon's species copied here as a hint were never seen here.
+  if (ctx.locks.some((l) => !l.fromSibling && l.speciesLocalised.trim().toLowerCase() === name)) {
     return { text: "seen", cls: "seen", rank: 2 };
   }
   return null;
@@ -101,6 +103,7 @@ export function SpeciesRow({
       : candidateMorphColorShortLabelForHosts(m.entry, hostStarTypes, scan?.materials));
   const hasColour = speciesHasColourVariants(m.entry);
   const colourUnknown = hasColour && (!colourRaw || colourRaw === "(unknown)");
+  const colourCause = predictedColourCause(m, hostStarType, hostStarTypes, scan?.materials);
   /*
     "We cannot tell you what you would find here."
 
@@ -162,6 +165,7 @@ export function SpeciesRow({
     open ? "srow--open" : "",
     prog ? `srow--${prog.cls}` : "",
     m.unlikely ? "srow--unlikely" : "",
+    m.lowChanceWhy ? "srow--low-first" : "",
     footfall === "unwalked" ? "srow--unwalked" : "",
   ]
     .filter(Boolean)
@@ -192,6 +196,12 @@ export function SpeciesRow({
             <span className={`srow-colour${colourUnknown ? " srow-colour--unknown" : ""}`}>
               {" "}
               - {colourUnknown ? "colour unknown" : colourRaw}
+              {colourCause ? (
+                <span className="colour-cause" title={`Decided by ${colourCause} on this body`}>
+                  {" "}
+                  [{colourCause}]
+                </span>
+              ) : null}
             </span>
           ) : null}
           {m.colourMismatchPredicted ? (
@@ -206,7 +216,20 @@ export function SpeciesRow({
             <span className="srow-tag srow-tag--codex srow-tag--codex-first" title={codexFirstTitle(m)}>
               [CODEX FIRST]
             </span>
-          ) : m.codexNew ? (
+          ) : null}
+          {m.lowChanceWhy ? (
+            <span className="srow-tag srow-tag--why" title={m.lowChanceWhy} aria-label={m.lowChanceWhy}>
+              [?]
+            </span>
+          ) : m.chanceWhy?.length ? (
+            // Why this chance (plan 1.7): the facts behind the number, on hover; the unfolded card lists them.
+            // A title, not an aria-label: inside the row's button an aria-label became part of the button's
+            // name, so a screen reader read the whole list as the row's name.
+            <span className="srow-tag srow-tag--chance-why" title={chanceWhyText(m)}>
+              [?]
+            </span>
+          ) : null}
+          {m.codexNew && m.codexFirst ? null : m.codexNew ? (
             <span className="srow-tag srow-tag--codex" title={codexMarkTitle(m)}>
               [CODEX]
             </span>

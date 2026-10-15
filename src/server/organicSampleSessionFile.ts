@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SpeciesDatabase } from "../shared/types.js";
 import { normOrganicToken } from "./organicTracking.js";
 import { readGenusMinSampleDistanceM } from "./speciesTreeLoader.js";
 import type { ExoOrganicTrackerInternal } from "./exoOrganicTracker.js";
 import { getSpeciesDataDir, resolveOrganicSampleSessionPath } from "./paths.js";
+import { bodyIdOfBodyKey, systemAddressOfBodyKey } from "../shared/bodyKey.js";
+import { writeFileAtomic } from "./atomicWrite.js";
 
 export const ORGANIC_SAMPLE_SESSION_FORMAT = 1;
 
@@ -95,6 +97,16 @@ export function schedulePersistOrganicSampleSession(
   }, 400);
 }
 
+/** Write a pending save now, at shutdown (code review 2026-10-10, A4). */
+export function flushPendingOrganicSampleSession(): void {
+  if (!persistTimer) return;
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  const p = persistPending;
+  persistPending = null;
+  if (p) flushPersistOrganicSampleSession(p.host, p.projectRoot);
+}
+
 function flushPersistOrganicSampleSession(host: OrganicSampleSessionHost, projectRoot: string): void {
   const t = host.exoOrganicTracker;
   if (!t) {
@@ -132,7 +144,7 @@ function flushPersistOrganicSampleSession(host: OrganicSampleSessionHost, projec
   const abs = organicSampleSessionPath(projectRoot);
   try {
     mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    writeFileAtomic(abs, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   } catch {
     /* best-effort */
   }
@@ -236,9 +248,8 @@ export function loadOrganicSampleSessionFromDisk(
   const speciesKeyFromBundle = sep >= 0 ? p.bundleKey.slice(sep + 2) : p.bundleKey;
   if (!p.bundleKey.startsWith(`${p.bodyKey}::`)) return;
 
-  const parts = p.bodyKey.split(":");
-  const addr = parts.length ? Number(parts[0]) : NaN;
-  const bid = parts.length > 1 ? Number(parts[1]) : NaN;
+  const addr = systemAddressOfBodyKey(p.bodyKey);
+  const bid = bodyIdOfBodyKey(p.bodyKey);
   if (!Number.isFinite(addr) || !Number.isFinite(bid)) return;
 
   host.exoOrganicTracker = {

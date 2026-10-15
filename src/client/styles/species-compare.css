@@ -472,7 +472,7 @@
 .species-similarity-index-pct {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
-  color: rgba(210, 240, 255, 1);
+  color: var(--accent-bright);
   text-transform: none;
   letter-spacing: 0.02em;
 }
@@ -484,34 +484,27 @@
 .species-similarity-index-bar {
   height: 6px;
   border-radius: var(--r-xs);
-  background: rgba(30, 70, 120, 0.45);
+  background: rgba(var(--accent-rgb), 0.12);
   overflow: hidden;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
+/*
+  The chance in the accent, dim to bright (plan V6, 2026-10-04): cyan is the app's "confirmed / mapped"
+  (DSS ✓, landable, analysed), and a probability drawn in it read as one more confirmation.
+*/
 .species-similarity-index-fill {
   height: 100%;
   border-radius: var(--r-xs);
-  background: linear-gradient(
-    90deg,
-    rgba(55, 130, 255, 0.88) 0%,
-    rgba(130, 200, 255, 0.95) 50%,
-    rgba(75, 155, 255, 0.9) 100%
-  );
-  box-shadow: 0 0 10px rgba(100, 180, 255, 0.35);
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.45) 0%, var(--accent) 60%, var(--accent-bright) 100%);
+  box-shadow: 0 0 8px var(--accent-glow);
   transition: width 0.25s ease;
 }
 
-/** Similarity bar: warm at low %, cool at high % (single track — no separate spawn-share row). */
+/** Similarity bar: the same accent ramp, dim at low %, bright at high % (single track). */
 .species-similarity-index-fill--graded {
-  background: linear-gradient(
-    90deg,
-    rgba(255, 200, 85, 0.95) 0%,
-    rgba(255, 220, 140, 0.75) 22%,
-    rgba(120, 190, 255, 0.92) 70%,
-    rgba(60, 130, 255, 0.95) 100%
-  );
-  box-shadow: 0 0 10px rgba(100, 180, 255, 0.3);
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.35) 0%, var(--accent) 65%, var(--accent-bright) 100%);
+  box-shadow: 0 0 8px var(--accent-glow);
 }
 
 .species-similarity-index--clickable {
@@ -654,4 +647,92 @@
 
 .species-similarity-index--clickable:focus:not(:focus-visible) {
   outline: none;
+}
+
+/* "Unknown plant": a signal the candidate list cannot fill (client/unknownPlants.ts). */
+.species-card--unknown {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.6rem 0.75rem;
+  border-style: dashed;
+  box-shadow: none;
+}
+.species-unknown-mark {
+  flex: 0 0 auto;
+  width: 2.25rem;
+  height: 2.25rem;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--accent-dim);
+  border-radius: 50%;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.species-unknown-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* "Why this chance" (owner, 2026-10-04): mini charts of where the species was found, this body marked. */
+/* The facts behind the number (plan 1.7): ChanceWhyList.tsx, in tw: utilities since plan 3.4. */
+.why-chance__toggle {
+  align-self: flex-start;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.why-chance__toggle:hover {
+  color: var(--accent-bright);
+}
+.why-chance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 4px 0 2px;
+  font-size: var(--fs-xs);
+  text-align: left;
+}
+.why-chance--note {
+  display: block;
+}
+.why-chance__stat {
+  display: grid;
+  grid-template-columns: auto;
+  gap: 1px;
+}
+.why-chance__label {
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+.why-chance__chart {
+  display: block;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--accent-a35);
+}
+.why-chance__bar {
+  fill: var(--accent-a45);
+}
+.why-chance__here {
+  stroke: var(--ok);
+  stroke-width: 1.6;
+}
+.why-chance__stat--out .why-chance__here {
+  stroke: var(--danger);
+}
+.why-chance__values {
+  font-variant-numeric: tabular-nums;
+}
+.why-chance__note {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--fs-xs);
+  text-align: left;
 }

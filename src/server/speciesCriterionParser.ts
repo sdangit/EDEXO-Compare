@@ -4,6 +4,12 @@
 import { isCodexAnyThinAtmospherePhrase } from "../shared/scanAtmosphereMatch.js";
 import { JOURNAL_PLANET_CLASS, planetClassId } from "../shared/normalise/planetClass.js";
 import type { SpeciesCriterion } from "../shared/types.js";
+import { isNoAtmosphereText } from "../shared/atmosphereText.js";
+
+/** "CarbonDioxide", "Carbon dioxide", "carbon_dioxide" -> "carbondioxide"; "-rich" stays apart. */
+export function atmosphereTypeKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z]/g, "");
+}
 
 export function asRecord(v: unknown): Record<string, unknown> | null {
   return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -52,13 +58,7 @@ export function normalizeAtmosphereToJournal(labels: string[]): string[] {
     const s = raw.trim();
     if (!s) continue;
     const lo = s.toLowerCase().replace(/_/g, " ");
-    if (
-      lo === "none" ||
-      lo === "vacuum" ||
-      lo === "airless" ||
-      lo.includes("no atmosphere") ||
-      lo === "no atmosphere"
-    ) {
+    if (isNoAtmosphereText(lo) || lo === "vacuum" || lo === "airless") {
       out.push("");
       continue;
     }
@@ -259,6 +259,7 @@ export function buildCriterionFromRecord(src: Record<string, unknown>): SpeciesC
     if (ids.length) c.systemAddressAnyOf = ids;
   }
   if (toBool(src.outside_signal_count ?? src.outsideSignalCount) === true) c.outsideSignalCount = true;
+  if (toBool(src.all_conditions_required ?? src.allConditionsRequired) === true) c.allConditionsRequired = true;
 
   const sg = asRecord(src.surfaceGravity ?? src.SurfaceGravity);
   if (sg) {
@@ -362,6 +363,16 @@ export function buildCriterionFromRecord(src: Record<string, unknown>): SpeciesC
     if (p) c.surfacePressure = p;
   }
 
+  const mpa = asRecord(src.maxPressureByAtmosphere ?? src.max_pressure_by_atmosphere);
+  if (mpa) {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(mpa)) {
+      const n = toNumber(v);
+      if (n !== undefined) out[k] = n;
+    }
+    if (Object.keys(out).length) c.maxPressureByAtmosphere = out;
+  }
+
   const vol = toStringArray(src.volcanismIncludes ?? src.volcanism ?? src.Volcanism);
   if (vol?.length) c.volcanismIncludes = vol;
 
@@ -412,6 +423,15 @@ export function buildCriterionFromRecord(src: Record<string, unknown>): SpeciesC
       min: toNumber(orbitRec.min ?? orbitRec.min_ls ?? orbitRec.minLs),
       max: toNumber(orbitRec.max ?? orbitRec.max_ls ?? orbitRec.maxLs),
     };
+    // `soft_below: [[2400, 0.14], …]` — under the minimum, a lower chance rather than a demotion.
+    const steps = Array.isArray(orbitRec.soft_below) ? orbitRec.soft_below : [];
+    const softBelow = steps
+      .map((s) => (Array.isArray(s) ? { fromLs: toNumber(s[0]), factor: toNumber(s[1]) } : null))
+      .filter(
+        (s): s is { fromLs: number; factor: number } => s?.fromLs !== undefined && s.factor !== undefined,
+      )
+      .sort((a, b) => b.fromLs - a.fromLs);
+    if (softBelow.length) c.orbitDistanceFromParentStarLs.softBelow = softBelow;
   }
 
   const apc = pickString(

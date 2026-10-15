@@ -7,9 +7,18 @@
  * the Next target of G5 skips both.
  */
 import type { GameStateStore } from "./gameState.js";
+import { backlogPassesFinished } from "./firstDiscoveryBacklog.js";
 import { footOrganicLocks } from "./organicLocks.js";
 import type { BioIndex } from "./bioIndex.js";
-import type { BacklogMapDTO, GalaxyMineDTO, GalaxyMySystemDTO, GalaxyRouteDTO } from "../shared/dto/galaxy.js";
+import type { ImportedSystem } from "./visitedCache.js";
+import type {
+  BacklogMapDTO,
+  GalaxyMineDTO,
+  GalaxyMySystemDTO,
+  GalaxyRouteDTO,
+  GalaxyVisitedDTO,
+} from "../shared/dto/galaxy.js";
+import { mainStarRecord } from "../shared/mainStar.js";
 
 /** Bit flags per system (GalaxyMineDTO rows). */
 export const MINE_VISITED = 1;
@@ -19,6 +28,8 @@ export const MINE_ORGANIC = 8;
 export const MINE_UNFINISHED = 16;
 export const MINE_FIRST_DISCOVERY = 32;
 export const MINE_FIRST_FOOTFALL = 64;
+/** Visited by the game's own list (VisitedStarsCache.dat, plan 6.1), not by a journal: no bodies, no biology. */
+export const MINE_IMPORTED = 128;
 
 interface PerSystem {
   bioBodies: number;
@@ -48,7 +59,12 @@ function perSystem(store: GameStateStore): Map<number, PerSystem> {
   return out;
 }
 
-export function mySystemsDto(store: GameStateStore, backlog: BacklogMapDTO): GalaxyMineDTO {
+export function mySystemsDto(
+  store: GameStateStore,
+  backlog: BacklogMapDTO,
+  /** The game's visited list, less what the journals have (visitedCache.ts `importedSystems`). */
+  imported: readonly ImportedSystem[] = [],
+): GalaxyMineDTO {
   const per = perSystem(store);
   const unfinished = new Map(backlog.systems.map((s) => [s.systemAddress, s.floorCr]));
   const addrs = new Set<number>([...store.visitedSystems.keys(), ...store.systemPositions.keys()]);
@@ -78,6 +94,21 @@ export function mySystemsDto(store: GameStateStore, backlog: BacklogMapDTO): Gal
       bioBodies: p?.bioBodies ?? 0,
       speciesScanned: p?.species ?? 0,
       unfinishedFloorCr: unfinished.get(addr) ?? null,
+    });
+  }
+  for (const s of imported) {
+    if (addrs.has(s.addr)) continue;
+    systems.push({
+      addr: s.addr,
+      name: s.name,
+      x: s.x,
+      y: s.y,
+      z: s.z,
+      flags: MINE_VISITED | MINE_IMPORTED,
+      bioBodies: 0,
+      speciesScanned: 0,
+      unfinishedFloorCr: null,
+      ...(s.code != null ? { code: s.code } : {}),
     });
   }
   return { available: true, systems, unplaceable };
@@ -149,5 +180,44 @@ export function sessionRouteDto(store: GameStateStore, sessionSystems: readonly 
     const pos = addr != null ? store.systemPositions.get(addr) : undefined;
     if (pos) route.push({ name: s.name, at: s.at, x: pos.x, y: pos.y, z: pos.z });
   }
-  return { position: store.commanderPos ?? null, system: store.currentSystem ?? null, route };
+  const navRoute: GalaxyRouteDTO["navRoute"] = (store.liveNavRoute ?? []).map((w) => ({
+    address: w.systemAddress,
+    name: w.starSystem,
+    starClass: w.starClass ?? "",
+    x: w.starPos[0],
+    y: w.starPos[1],
+    z: w.starPos[2],
+    visited: store.visitedSystems.has(w.systemAddress),
+  }));
+  return {
+    position: store.commanderPos ?? null,
+    system: store.currentSystem ?? null,
+    route,
+    // The backlog's passes too: "my systems" answers with the last one and the next lands later.
+    mineRev: `${store.visitedSystems.size}:${store.explorationScansRevision}:${store.dssMappedBodyKeys.size}:${store.bodies.size}:${backlogPassesFinished()}`,
+    navRoute,
+  };
+}
+
+/** The systems visited in the last `days` days (0: all), newest first — the NavRoute finder's Previous. */
+export function visitedSystemsDto(store: GameStateStore, days: number, now = Date.now()): GalaxyVisitedDTO {
+  const since = days > 0 ? now - days * 86_400_000 : -Infinity;
+  const systems: GalaxyVisitedDTO["systems"] = [];
+  let unplaced = 0;
+  for (const [address, name] of store.visitedSystems) {
+    const at = store.systemVisitedAt.get(address);
+    if (days > 0 && (!at || Date.parse(at) < since)) continue;
+    const pos = store.systemPositions.get(address);
+    if (!pos) {
+      unplaced++;
+      continue;
+    }
+    const starClass =
+      store.systemStarClass.get(address) ??
+      mainStarRecord([...store.liveScansInSystem(address), ...store.soldScansInSystem(address)])?.starType ??
+      "";
+    systems.push({ address, name, starClass, x: pos.x, y: pos.y, z: pos.z, at: at ?? "" });
+  }
+  systems.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  return { days, systems, unplaced };
 }

@@ -1,14 +1,17 @@
 /**
  * Green gas giants on the server (shared/greenGasGiant.ts has the what and why): the commander's own
  * calls, kept in `edexo-ggg-marks.json` beside the user settings, and the verdict for a scanned body
- * from everything the app knows — the codex, the edGGG catalogue, the temperature, a K10 anomaly in
- * the system (from the journals or EDAstro's codex file), and the commander's call.
+ * from everything the app knows — the codex, the edGGG catalogue, the temperature and density (the cloud
+ * ladder), a K10 anomaly in the system (from the journals or EDAstro's codex file), and the commander's
+ * call.
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { ExplorationScanRecord } from "../shared/types.js";
+import { bodyKey } from "../shared/bodyKey.js";
 import {
   classifyGreenGiant,
   greenCodexFits,
+  greenQuestionWorthAsking,
   isGggClass,
   type GreenGiantMark,
   type GreenGiantVerdict,
@@ -86,14 +89,37 @@ export interface GreenGiantSources {
   marks: Pick<GreenGiantMarksService, "get">;
 }
 
+/**
+ * The commander's "green?" call on a gas giant, when the question is worth asking there
+ * (greenQuestionWorthAsking); undefined when it is not, which hides the question.
+ */
+export function greenMarkToAsk(
+  rec: Pick<ExplorationScanRecord, "systemAddress" | "bodyId" | "planetClass" | "surfaceTemperature" | "massEM" | "radius">,
+  verdict: GreenGiantVerdict | null,
+  marks: Pick<GreenGiantMarksService, "get">,
+): GreenGiantMark | null | undefined {
+  if (!isGggClass(rec.planetClass)) return undefined;
+  const mark = marks.get(bodyKey(rec.systemAddress, rec.bodyId));
+  const ask = greenQuestionWorthAsking(
+    { planetClass: rec.planetClass, surfaceTemperatureK: rec.surfaceTemperature, massEM: rec.massEM, radiusM: rec.radius },
+    verdict,
+    mark,
+  );
+  return ask ? mark : undefined;
+}
+
 /** The verdict for one scanned body, or null when it is not a green gas giant candidate at all. */
 export function greenGiantForRecord(
-  rec: Pick<ExplorationScanRecord, "systemAddress" | "bodyId" | "bodyName" | "planetClass" | "surfaceTemperature">,
+  rec: Pick<
+    ExplorationScanRecord,
+    "systemAddress" | "bodyId" | "bodyName" | "planetClass" | "surfaceTemperature" | "massEM" | "radius"
+  >,
   src: GreenGiantSources,
 ): GreenGiantVerdict | null {
   if (!isGggClass(rec.planetClass)) return null;
-  const key = `${rec.systemAddress}:${rec.bodyId}`;
+  const key = bodyKey(rec.systemAddress, rec.bodyId);
   let edastroReport: "only" | "shared" | null = null;
+  let edastroCandidates: number | undefined;
   const ids = (src.edastroGreenFor?.(rec.systemAddress) ?? []).filter((id) => greenCodexFits(id, rec.planetClass));
   if (ids.length) {
     // Pinned to this body only when no other body of the class is known there.
@@ -105,14 +131,18 @@ export function greenGiantForRecord(
       }
     }
     edastroReport = others === 0 ? "only" : "shared";
+    if (src.bodiesInSystem && others > 0) edastroCandidates = others + 1;
   }
   return classifyGreenGiant({
     planetClass: rec.planetClass,
     surfaceTemperatureK: rec.surfaceTemperature,
+    massEM: rec.massEM,
+    radiusM: rec.radius,
     bodyName: rec.bodyName,
     codex: src.greenCodexBodies.has(key),
     k10InSystem: src.k10Systems.has(rec.systemAddress) || (src.k10FromEdastro?.().has(rec.systemAddress) ?? false),
     mark: src.marks.get(key),
     edastroReport,
+    edastroCandidates,
   });
 }

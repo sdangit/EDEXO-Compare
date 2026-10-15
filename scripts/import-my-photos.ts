@@ -32,6 +32,9 @@
  * which is the existing `Bacterium-vesicula.png` convention with the variant appended, so the
  * species still resolves and the colour is available to pick between variants.
  *
+ * A photograph already in the tree (named in photo-credits.json) is skipped even when the source
+ * differs, because the tree's copy is recompressed; pass `--replace` to overwrite it with a new shot.
+ *
  * ## Two things it refuses to do
  *
  * It will not import a species the database does not have, and it will not import a colour the
@@ -70,6 +73,7 @@
 import {
   copyFileSync,
   existsSync,
+  rmSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -238,7 +242,14 @@ function normaliseColourSpelling(colour: string, allowed: ReadonlySet<string>): 
 }
 
 function main(): void {
-  const source = process.argv[2]?.trim() || DEFAULT_SOURCE;
+  const args = process.argv.slice(2);
+  /*
+    A photograph already imported is left alone: the tree holds it recompressed (same pixels, ~40 %
+    smaller), so its size never matches the original again and a re-run would copy the original back
+    over it (2026-10-05). `--replace` is for a new shot of the same colour, meant to take its place.
+  */
+  const REPLACE = args.includes("--replace");
+  const source = args.find((a) => a !== "--replace")?.trim() || DEFAULT_SOURCE;
   const root = getProjectRoot();
   if (!source) {
     console.error(
@@ -325,7 +336,7 @@ function main(): void {
         const target = `${entry.displayName.trim().split(/\s+/).join("-")}${bare.index ? `-${bare.index}` : ""}.${bare.ext}`;
         const abs = path.join(photosDir, target);
         const src = path.join(dir, file);
-        if (existsSync(abs) && statSync(abs).size === statSync(src).size) {
+        if (existsSync(abs) && (statSync(abs).size === statSync(src).size || (credits.byFile[target] && !REPLACE))) {
           skipped++;
         } else {
           copyFileSync(src, abs);
@@ -389,7 +400,7 @@ function main(): void {
       const abs = path.join(photosDir, target);
 
       const src = path.join(dir, file);
-      if (existsSync(abs) && statSync(abs).size === statSync(src).size) {
+      if (existsSync(abs) && (statSync(abs).size === statSync(src).size || (credits.byFile[target] && !REPLACE))) {
         skipped++;
       } else {
         copyFileSync(src, abs);
@@ -412,12 +423,43 @@ function main(): void {
 
   writeFileSync(creditsPath, `${JSON.stringify(credits, null, 1)}\n`, "utf8");
 
+  /*
+    ED-DSN's photographs are here only until a replacement arrives (the agreement with ED-DSN: many
+    belong to individual commanders). Theirs are per species, ours per colour: a contributed photo of
+    a species in any colour retires ED-DSN's of that species, with its cards and thumbnails
+    (owner, 2026-10-05). tests/edDsnPhotosRetired.test.ts holds the tree to it.
+  */
+  const IMAGE = /\.(png|jpe?g|webp)$/i;
+  const retired: string[] = [];
+  for (const genus of readdirSync(getSpeciesDataDir(root))) {
+    const genusPath = path.join(getSpeciesDataDir(root), genus);
+    if (!statSync(genusPath).isDirectory()) continue;
+    for (const folder of readdirSync(genusPath).filter((d) => d.endsWith("_photos"))) {
+      const dir = path.join(genusPath, folder);
+      const files = readdirSync(dir).filter((f) => IMAGE.test(f));
+      const contributed = files.filter((f) => credits.byFile[f]).map((f) => f.toLowerCase());
+      for (const f of files.filter((x) => !credits.byFile[x])) {
+        const stem = f.replace(IMAGE, "");
+        const lower = stem.toLowerCase();
+        if (!contributed.some((c) => c.startsWith(`${lower}-`) || c.startsWith(`${lower}.`))) continue;
+        for (const p of [path.join(dir, f), ...["_cards", "_thumbs", "_large"].map((d) => path.join(dir, d, `${stem}.webp`))]) {
+          if (existsSync(p)) rmSync(p);
+        }
+        retired.push(`${genus}/${f}`);
+      }
+    }
+  }
+
   console.log(`\n${copied} copied, ${skipped} already present, ${problems.length} not imported`);
   console.log(`credits: ${path.relative(root, creditsPath)} (${Object.keys(credits.byFile).length} files)`);
   for (const [name, n] of [...byContributor].sort((a, b) => b[1] - a[1])) {
     console.log(`  ${String(n).padStart(4)}  ${name}`);
   }
   for (const p of problems) console.log(`  ! ${p}`);
+  if (retired.length) {
+    console.log(`\nRetired ${retired.length} ED-DSN photograph(s) a contributed one replaces (update NOTICE.md's counts):`);
+    for (const r of retired) console.log(`  - ${r}`);
+  }
   if (copied > 0) console.log(`\nRun \`npm run images\` to build the card and thumbnail derivatives.`);
 }
 

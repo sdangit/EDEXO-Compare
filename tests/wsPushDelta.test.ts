@@ -4,10 +4,15 @@
  * always complete; `/api/state/rev` answers the revision of the last push in a few bytes.
  */
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createHttpServer } from "../src/server/httpServer.js";
 import type { AppSnapshot } from "../src/shared/types.js";
+
+// Channel slicing includes HUDs on Windows/Linux; macOS rejects that channel.
+vi.mock("../src/server/platformFeatures.js", () => ({
+  platformFeatures: () => ({ hud: true, gameProcessPolling: true }),
+}));
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -194,6 +199,38 @@ describe("socket robustness (combined plan 1.3)", () => {
     expect(rev.ok).toBe(true);
   });
 
+  it("terminates a socket that stops answering pings, and keeps one that answers", async () => {
+    // Only the keep-alive interval is faked; sockets and the harness's waits stay real.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const t = await start({ n: 0 });
+      await t.next(1);
+      const net = await import("node:net");
+      // A raw client completes the upgrade and then never answers a ping: half-open TCP.
+      const silent = net.connect(t.port, "127.0.0.1");
+      silent.on("error", () => {});
+      await new Promise<void>((r) => silent.once("connect", () => r()));
+      silent.write(
+        "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+      );
+      // Ticks count only once the server has the socket: wait for its 101.
+      await new Promise<void>((r) => silent.once("data", () => r()));
+      const closed = new Promise<void>((r) => silent.once("close", () => r()));
+      // First tick pings everyone; the ws client pongs, the raw one cannot.
+      vi.advanceTimersByTime(25_000);
+      await new Promise((r) => setTimeout(r, 300));
+      // Second tick: no pong since the last ping, so the raw socket is terminated.
+      vi.advanceTimersByTime(25_000);
+      await closed;
+      // The client that answers is still served.
+      t.set({ n: 1 });
+      expect(((await t.next(2)).payload as Record<string, unknown>).n).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("gives a socket that connected between pushes a whole frame, so a field that changed back is not stale", async () => {
     const t = await start({ journalSystems: big("A"), n: 0 });
     await t.next(1);
@@ -219,6 +256,28 @@ describe("socket robustness (combined plan 1.3)", () => {
     const p = lateMsgs[1]!;
     expect(p.unchanged).toBeUndefined();
     expect(((p.payload as Record<string, unknown>).journalSystems as { starSystem: string }[])[0]!.starSystem).toBe("A 0");
+  });
+});
+
+/*
+  Plan O-H (2026-10-04): a client names its channel in the address and its very first frame is that
+  slice. Until then every HUD and phone got the whole app state first (923 kB) before its hello.
+*/
+describe("the channel in the address", () => {
+  it("makes the first frame the channel's own slice", async () => {
+    const t = await start({ journalSystems: big("A"), n: 0, hudPrefs: null });
+    await t.next(1);
+    const appFirst = JSON.stringify(t.messages[0]).length;
+    const hud = new WebSocket(`ws://127.0.0.1:${t.port}/ws?channel=hud`);
+    const hudMsgs: string[] = [];
+    hud.on("message", (d) => hudMsgs.push(String(d)));
+    closersPush(() => hud.close());
+    await new Promise((r) => hud.once("open", r));
+    for (let i = 0; i < 100 && hudMsgs.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
+    const first = JSON.parse(hudMsgs[0]!) as { payload: Record<string, unknown> };
+    // The HUD slice has no journal system list; the app frame does.
+    expect(first.payload.journalSystems).toBeUndefined();
+    expect(hudMsgs[0]!.length).toBeLessThan(appFirst / 10);
   });
 });
 

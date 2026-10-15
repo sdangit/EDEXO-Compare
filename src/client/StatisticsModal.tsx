@@ -21,9 +21,12 @@ import { formatRadius, type RecordRowDTO } from "@shared/notices";
 import { isStr, oneOf, usePersistedState } from "./usePersistedState";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { INCOME_CATEGORY_LABEL, type IncomeCategory } from "@shared/incomeCategories";
-import { buildLogFiveAxis, formatCredits, logFiveFraction } from "@shared/logFiveAxis";
+import { buildLogFiveAxis, logFiveFraction } from "@shared/logFiveAxis";
+import { fmtCrTick, fmtPct } from "@shared/format";
 import { STATS_WINDOWS, type CarrierAccountDTO, type StatisticsDTO } from "@shared/statisticsWindows";
 import { Tooltip } from "./ui/Tooltip";
+import { LoadingNote, RefreshBar } from "./ui/Loading";
+import { PredictionQualitySection } from "./PredictionQuality";
 import { useModal } from "./ui/useModal";
 import { formatWeeks } from "@shared/carrierUpkeep";
 import type { RankEstimateDTO } from "@shared/rankProgress";
@@ -45,7 +48,7 @@ function RankRow({ label, e }: { label: string; e: RankEstimateDTO | null }) {
   const text = !e.next
     ? "Highest rank."
     : e.creditsToNext != null
-      ? `about ${formatCredits(e.creditsToNext)} CR to ${e.next}`
+      ? `about ${fmtCrTick(e.creditsToNext)} CR to ${e.next}`
       : read === 0
         ? `to ${e.next}: sell some data first — the estimate needs progress to measure`
         : `to ${e.next}: not enough progress in your journals yet to measure`;
@@ -54,7 +57,7 @@ function RankRow({ label, e }: { label: string; e: RankEstimateDTO | null }) {
       className="stats-rank"
       title={[
         basis,
-        e.progressAt ? `The game's last reading: ${read} % (${e.progressAt.slice(0, 10)}).` : "",
+        e.progressAt ? `The game's last reading: ${fmtPct(read)} (${e.progressAt.slice(0, 10)}).` : "",
         "Frontier does not publish the thresholds; this is measured from your own journals.",
       ]
         .filter(Boolean)
@@ -69,7 +72,7 @@ function RankRow({ label, e }: { label: string; e: RankEstimateDTO | null }) {
         <i className="stats-rank__est" style={{ width: `${Math.min(100, est)}%` }} />
         <i className="stats-rank__read" style={{ width: `${Math.min(100, read)}%` }} />
       </span>
-      <span className="stats-rank__pct">{Math.floor(est)} %</span>
+      <span className="stats-rank__pct">{fmtPct(Math.floor(est))}</span>
       <span className="stats-rank__to dim">{text}</span>
     </div>
   );
@@ -96,16 +99,15 @@ interface RecordsResponse {
   galactic records"). The galactic ones download only when asked.
 */
 function RecordsSection() {
-  const [data, setData] = useState<RecordsResponse | null>(null);
+  // undefined while the first answer is on its way; null when there is none.
+  const [data, setData] = useState<RecordsResponse | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     void fetch("/api/records")
       .then((r) => (r.ok ? r.json() : null))
-      .then((j: RecordsResponse | null) => {
-        if (j?.rows) setData(j);
-      })
-      .catch(() => {});
+      .then((j: RecordsResponse | null) => setData(j?.rows ? j : null))
+      .catch(() => setData(null));
   }, []);
   const download = () => {
     setBusy(true);
@@ -123,6 +125,7 @@ function RecordsSection() {
       .catch(() => setError("EDAstro could not be reached."))
       .finally(() => setBusy(false));
   };
+  if (data === undefined) return <LoadingNote label="Reading your records…" />;
   if (!data || !data.rows.length) return null;
   const g = data.galactic;
   const cell = (
@@ -220,7 +223,7 @@ function IncomeChart({ data, measure }: { data: StatisticsDTO; measure: Measure 
             className="stats-chart__gridline"
             style={{ left: `${logFiveFraction(t, axis) * 100}%` }}
           >
-            <span>{formatCredits(t)}</span>
+            <span>{fmtCrTick(t)}</span>
           </div>
         ))}
       </div>
@@ -235,7 +238,7 @@ function IncomeChart({ data, measure }: { data: StatisticsDTO; measure: Measure 
               <span className={`stats-row__bar stats-bar--${row.category}`} style={{ width: `${pct}%` }} />
             </span>
             <span className="stats-row__value">
-              {empty ? "none" : `${formatCredits(v)}${perHour ? "/h" : ""}`}
+              {empty ? "none" : `${fmtCrTick(v)}${perHour ? "/h" : ""}`}
             </span>
           </div>
         );
@@ -286,10 +289,10 @@ function BalanceChart({ points }: { points: { at: string; credits: number }[] })
       </svg>
       <div className="stats-balance__ends dim">
         <span>
-          {points[0]!.at.slice(0, 10)} · {formatCredits(points[0]!.credits)}
+          {points[0]!.at.slice(0, 10)} · {fmtCrTick(points[0]!.credits)}
         </span>
         <span>
-          {points[points.length - 1]!.at.slice(0, 10)} · {formatCredits(points[points.length - 1]!.credits)}
+          {points[points.length - 1]!.at.slice(0, 10)} · {fmtCrTick(points[points.length - 1]!.credits)}
         </span>
       </div>
     </div>
@@ -323,11 +326,11 @@ function CarrierBlock({ c }: { c: CarrierAccountDTO }) {
       </h4>
       <div className="stats-tiles">
         <span>
-          <strong>{formatCredits(latest.balance)}</strong> in the carrier
+          <strong>{fmtCrTick(latest.balance)}</strong> in the carrier
         </span>
         {latest.reserve != null ? (
           <span>
-            <strong>{formatCredits(latest.reserve)}</strong> reserve target
+            <strong>{fmtCrTick(latest.reserve)}</strong> reserve target
           </span>
         ) : null}
         {/*
@@ -336,7 +339,7 @@ function CarrierBlock({ c }: { c: CarrierAccountDTO }) {
           of readings — the rule creditsPerHour follows.
         */}
         <span>
-          <strong>{upkeep.perWeek != null ? formatCredits(upkeep.perWeek) : "—"}</strong> per week upkeep
+          <strong>{upkeep.perWeek != null ? fmtCrTick(upkeep.perWeek) : "—"}</strong> per week upkeep
         </span>
         <span
           className={upkeep.weeksOfRunway != null && upkeep.weeksOfRunway < 4 ? "stats-negative" : undefined}
@@ -506,22 +509,24 @@ export function StatisticsModal({ onClose }: { onClose: () => void }) {
 
         {error ? <p className="fdb-empty">{error}</p> : null}
         {busy && !data ? (
-          <p className="fdb-empty">
-            {progress
-              ? `Reading your journals… ${progress.done} of ${progress.total}`
-              : "Reading your journals. The first time takes a few seconds."}
-          </p>
+          <LoadingNote
+            className="fdb-empty"
+            label={progress ? `Reading your journals… ${progress.done} of ${progress.total}` : "Reading your journals…"}
+            detail={progress ? null : "The first time takes a few seconds."}
+          />
         ) : null}
 
+        {/* Another time window: the old figures stay, dimmed, under a moving bar until the new ones land. */}
+        <RefreshBar active={busy && !!data} />
         {data ? (
-          <div className="fdb-scroll">
+          <div className={`fdb-scroll${busy ? " is-refreshing" : ""}`} aria-busy={busy}>
             <div className="fdb-summary">
               <span>
-                <strong>{formatCredits(data.totalCredits)}</strong> earned
+                <strong>{fmtCrTick(data.totalCredits)}</strong> earned
               </span>
               <span className="dim">{hours(data.playedHours)} flown</span>
               {data.creditsPerHour != null ? (
-                <span className="dim">{formatCredits(data.creditsPerHour)}/h overall</span>
+                <span className="dim">{fmtCrTick(data.creditsPerHour)}/h overall</span>
               ) : (
                 <span className="dim">no play time in this window</span>
               )}
@@ -562,6 +567,8 @@ export function StatisticsModal({ onClose }: { onClose: () => void }) {
             </div>
 
             <RecordsSection />
+
+            <PredictionQualitySection />
 
             <h3 className="stats-h3">Commander balance</h3>
             <BalanceChart points={data.commanderBalance} />

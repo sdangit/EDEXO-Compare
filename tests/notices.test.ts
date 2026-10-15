@@ -203,7 +203,19 @@ describe("nearby: points of interest and carriers", () => {
     return { c, asked };
   }
 
-  it("radius is N average jumps: the loadout's range until three jumps are flown", () => {
+  it("radius is N full-range jumps: boosts and economical-route hops left out", () => {
+    const n = createNoticesService({ filePath: null });
+    n.setPrefs({ nearby: { jumps: 2, poiGroups: { nebulae: true } } });
+    const { c } = nearCtx([]);
+    for (const d of [66, 67, 68]) n.observe(jump(d, d), c);
+    n.observe(jump(400, 260, { BoostUsed: 4 }), c);
+    for (let i = 0; i < 30; i++) n.observe(jump(500 + i, 4), c);
+    expect(n.jumpLy(c)).toBe(68);
+    // The journals' estimate, when the server passes it in, comes first.
+    expect(n.jumpLy({ ...c, fullJumpLy: () => 67.3 })).toBe(67.3);
+  });
+
+  it("radius is N jumps: the loadout's range until three jumps are flown", () => {
     const n = createNoticesService({ filePath: null });
     n.setPrefs({ nearby: { jumps: 5, poiGroups: { nebulae: true } } });
     const { c, asked } = nearCtx([]);
@@ -297,5 +309,20 @@ describe("prefs and wording", () => {
     expect(
       recordText({ subject: "planet", type: "Water world", which: "largest", radius: 7_234_000, previous: 6_900_000 }),
     ).toBe("Largest Water world you have found — 7,234 km (was 6,900 km)");
+  });
+});
+
+describe("test notice (review F-5.10)", () => {
+  it("adds one record-kind notice, a newer one replaces it, and marking read and clearing remove it", () => {
+    const n = createNoticesService({ filePath: null });
+    n.sendTest("2026-10-02T18:00:00.000Z");
+    n.sendTest("2026-10-02T18:00:05.000Z");
+    const tests = n.list().filter((x) => x.id.startsWith("test:"));
+    expect(tests).toHaveLength(1);
+    expect(tests[0]!.kind).toBe("record");
+    expect(n.snapshot(null).unread).toBe(1);
+    n.markRead("all");
+    n.clearRead();
+    expect(n.list()).toHaveLength(0);
   });
 });

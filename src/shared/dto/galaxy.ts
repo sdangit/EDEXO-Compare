@@ -432,6 +432,8 @@ export interface GalaxyMineDTO {
     speciesScanned: number;
     /** Set when bio bodies here still wait for them (the backlog), with its floor value. */
     unfinishedFloorCr: number | null;
+    /** The mass code letter, when known exactly (an imported system: from its full address). */
+    code?: string;
   }[];
   /** Systems in the journals with no StarPos, so nothing can place them. */
   unplaceable: number;
@@ -462,6 +464,25 @@ export interface GalaxyRouteDTO {
   position: { x: number; y: number; z: number } | null;
   system: string | null;
   route: { name: string; at: string; x: number; y: number; z: number }[];
+  /**
+   * Moves whenever the commander's own systems change — a jump, a scan, a map (owner, 2026-10-04:
+   * a new system only showed after a reload). The map fetches `/api/galaxy/mine` again when it does.
+   */
+  mineRev: string;
+  /** The route plotted now (`NavRoute.json`), in order: each system's star class and whether you have been. */
+  navRoute: { address: number; name: string; starClass: string; x: number; y: number; z: number; visited: boolean }[];
+}
+
+/**
+ * The systems you have been to (`/api/galaxy/visited?days=`), newest first: the NavRoute finder's
+ * Previous list (owner, 2026-10-04). Star class from the jump into the system, else your own scan of
+ * its main star; empty when neither said.
+ */
+export interface GalaxyVisitedDTO {
+  days: number;
+  systems: { address: number; name: string; starClass: string; x: number; y: number; z: number; at: string }[];
+  /** Visited in the window but with no position in the journals, so not listed. */
+  unplaced: number;
 }
 
 /** The 3D map's Find box (`/api/galaxy/find?q=`). */
@@ -473,6 +494,23 @@ export interface GalaxyFindDTO {
   systems: { name: string; x: number; y: number; z: number; ordinal: number | null; addr: string | null; mine: boolean }[];
   /** The index scan stopped at its time budget: there may be more. */
   partial: boolean;
+  /**
+   * Stations whose name matches (when the stations are downloaded): `label` adds the system when the name is
+   * not unique; `layerId` is the system's point in the Stations layer.
+   */
+  stations?: {
+    name: string;
+    system: string;
+    label: string;
+    type: string;
+    pad: string;
+    x: number;
+    y: number;
+    z: number;
+    layerId: number;
+    /** In a system the commander claimed: his own. */
+    own: boolean;
+  }[];
 }
 
 /** One sector column's panel (`/api/galaxy/sector?c=cx:cz`): its size and most valuable systems. */
@@ -497,8 +535,14 @@ export interface GalaxyNextDTO {
    */
   plan?: {
     stops: (GalaxyNextRow & { legLy: number })[];
-    /** Sum of the legs, ship to the last stop. */
+    /** Sum of the legs, ship to the last stop (and back to the ship when `loop`). */
     totalLy: number;
+    /** The same stops in the greedy chain's own order (plan 5.8: 2-opt never makes it longer). */
+    greedyLy: number;
+    /** The route returns to where the ship is. */
+    loop: boolean;
+    /** With `loop`: the last stop back to the ship. */
+    returnLy?: number;
     /** Sum of the stops' recorded species at 1×. */
     totalValueCr: number;
     /** Hops that needed a pass over the whole index (diagnostics; 0 in a dense neighbourhood). */

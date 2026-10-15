@@ -1,13 +1,23 @@
 import { HexSignals } from "./HexSignals";
 import { createRoot } from "react-dom/client";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import "./styles.css";
 import { App } from "./App";
 import { UiFeedbackProvider } from "./ui/feedback";
-import { applyAppTheme } from "./appTheme";
+import { LoadingNote } from "./ui/Loading";
+import { applyAppTheme, followAppThemeChanges } from "./appTheme";
+import { applyStreamerMode, STREAMER_MODE } from "./streamerMode";
+import { loadUiMirror, startUiMirrorSource, watchUiMirror } from "./uiMirror";
 
-// The colour scheme, before the first paint, so the page never flashes orange first.
+// The streamer view takes the streamer's own settings first (uiMirror.ts), so even its first paint
+// is what the streamer sees.
+const mirrorRev = STREAMER_MODE ? await loadUiMirror() : -1;
+// The colour scheme, before the first paint, so the page never flashes orange first; and again when
+// another window of the app changes it.
 applyAppTheme();
+followAppThemeChanges();
+// `?view=stream`: the same app, as a picture for a stream (streamerMode.ts).
+applyStreamerMode();
 
 /**
  * `?screen=triage` gets the second screen (§51) instead of the app.
@@ -30,23 +40,37 @@ const wantsSecondScreen = screen === "triage";
 const wantsMap = screen === "map";
 const wants3d = screen === "galaxy";
 
+/** The streamer view, drawn afresh whenever the streamer changes a setting in the app. */
+function StreamerApp() {
+  const [gen, setGen] = useState(0);
+  useEffect(() => {
+    watchUiMirror(mirrorRev, () => {
+      applyAppTheme();
+      setGen((g) => g + 1);
+    });
+  }, []);
+  return <App key={gen} />;
+}
+// The app on this PC tells the streamer view how it is set up.
+if (!STREAMER_MODE && !screen) startUiMirrorSource();
+
 createRoot(document.getElementById("root")!).render(
   wants3d ? (
-    <Suspense fallback={null}>
+    <Suspense fallback={<LoadingNote className="screen-loading" />}>
       <GalaxyMap3D />
     </Suspense>
   ) : wantsMap ? (
-    <Suspense fallback={null}>
+    <Suspense fallback={<LoadingNote className="screen-loading" />}>
       <GalaxyMapScreen />
     </Suspense>
   ) : wantsSecondScreen ? (
-    <Suspense fallback={null}>
+    <Suspense fallback={<LoadingNote className="screen-loading" />}>
       <SecondScreen />
     </Suspense>
   ) : (
     <UiFeedbackProvider>
       <HexSignals />
-      <App />
+      {STREAMER_MODE ? <StreamerApp /> : <App />}
     </UiFeedbackProvider>
   ),
 );

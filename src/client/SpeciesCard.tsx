@@ -2,14 +2,17 @@
  * The full species card and its sub-blocks, split out of App.tsx (7.3).
  */
 import { achievementMarkTitle, codexFirstTitle, codexMarkTitle } from "./codexMark";
+import { STREAMER_MODE } from "./streamerMode";
 import { speciesPhotoVariant } from "./speciesPhotoVariant";
-import { fmtCrExact, fmtCrShort } from "./credits";
+import { fmtCrExact, fmtCrShort } from "@shared/format";
 import { useModal } from "./ui/useModal";
 import { useFootfallCertainty } from "./footfallContext";
 import { settledMultiplier } from "@shared/footfallValue";
 import { PhotoCredit, isPlaceholderPhoto, photoCreditTitle } from "./photoCredit";
 import { PhotoGallery } from "./PhotoGallery";
 import { matchHasDetail, matchOtherCardCount, useMatchDetail } from "./useMatchDetail";
+import { WhyChanceStrip } from "./WhyChanceStrip";
+import { ChanceWhyList } from "./ChanceWhyList";
 import { useToast } from "./ui/feedback";
 import { memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -30,12 +33,13 @@ import {
   footCatalogBadgeText,
   labelForReasonField,
   primaryMatchQuad,
+  predictedColourCause,
   speciesCaptionParts,
   speciesMatchExtraReasons,
   titleCaseSpeciesWords,
   variantPhotoUrlFor,
 } from "./speciesMatchHelpers";
-import { ExomasteryHabitatMatchModal } from "./SharedModals";
+import { ExomasteryHabitatMatchModal, ModalLoading } from "./SharedModals";
 import {
   EMPTY_REASONS,
   GenusSpeciesOdds,
@@ -44,6 +48,7 @@ import {
 } from "./SpeciesCardBits";
 import { nextTempUnit, useTempUnit } from "./useUnits";
 import { RarityGem } from "./RarityGem";
+import { Tooltip } from "./ui/Tooltip";
 import {
   FootScanMatchCard,
   SpeciesStarColourSoftBadge,
@@ -97,10 +102,13 @@ export const SpeciesCard = memo(function SpeciesCard({
   }, [m, scan, estimatedSurfaceTempK, tempUnit]);
   const extras = useMemo(() => speciesMatchExtraReasons(m), [m]);
   const [exoDetailOpen, setExoDetailOpen] = useState(false);
-  const [otherDetailsOpen, setOtherDetailsOpen] = useState(false);
+  // Open from the start in streamer mode, where nobody can click it open (owner, 2026-10-03).
+  const [otherDetailsOpen, setOtherDetailsOpen] = useState(STREAMER_MODE);
   const [otherMatchModalOpen, setOtherMatchModalOpen] = useState(false);
   // Fetched on first open of the modal or the drawer (UI review P1b); see useMatchDetail.
-  const lazyDetail = useMatchDetail(m, exoDetailOpen || otherDetailsOpen || otherMatchModalOpen);
+  /* "Why this chance" (owner, 2026-10-04): the strip under the chance, fetched when opened. */
+  const [whyOpen, setWhyOpen] = useState(false);
+  const lazyDetail = useMatchDetail(m, exoDetailOpen || otherDetailsOpen || otherMatchModalOpen || whyOpen);
   const lazyCards = lazyDetail.data?.otherCards;
   const otherDetailCards = useMemo((): OtherMatchDetailCardDTO[] => {
     const xs = lazyCards ?? [];
@@ -140,6 +148,10 @@ export const SpeciesCard = memo(function SpeciesCard({
   );
   const morphColorDisplay =
     morphColorRaw === "(unknown)" ? morphColorRaw : titleCaseSpeciesWords(morphColorRaw);
+  const colourCause = useMemo(
+    () => predictedColourCause(m, hostStarType, hostStarTypes, scan?.materials),
+    [m, hostStarType, hostStarTypes, scan?.materials],
+  );
 
   /**
    * The photograph of the variant this body will actually grow, when somebody has taken it.
@@ -433,41 +445,51 @@ export const SpeciesCard = memo(function SpeciesCard({
           >
             [CODEX FIRST]
           </span>
-        ) : m.codexNew ? (
-          <span
-            className="species-codex-mark"
-            title={codexMarkTitle(m)}
-            aria-label="New codex entry for this region"
-          >
-            [CODEX]
-          </span>
+        ) : null}
+        {m.lowChanceWhy ? (
+          <Tooltip text={m.lowChanceWhy}>
+            <span className="species-codex-mark species-codex-mark--why" aria-label={m.lowChanceWhy}>
+              [?]
+            </span>
+          </Tooltip>
+        ) : null}
+        {m.codexNew && m.codexFirst ? null : m.codexNew ? (
+          <Tooltip text={codexMarkTitle(m)}>
+            <span
+              className="species-codex-mark"
+              aria-label="New codex entry for this region"
+            >
+              [CODEX]
+            </span>
+          </Tooltip>
         ) : m.notInCodex ? (
-          <span
-            className="species-codex-new"
-            title="No codex entry for this species in your journals — you have never logged one. The first sample of a species is worth more than the ones after it, and this is the page that is still blank."
-            aria-label="Not yet in your codex"
-          >
-            new to you
-          </span>
+          <Tooltip text="No codex entry for this species in your journals — you have never logged one. The first sample of a species is worth more than the ones after it, and this is the page that is still blank.">
+            <span
+              className="species-codex-new"
+              aria-label="Not yet in your codex"
+            >
+              new to you
+            </span>
+          </Tooltip>
         ) : null}
         {m.achievementAdvance ? (
-          <span
-            className="species-ach-mark"
-            title={achievementMarkTitle(m.achievementAdvance)}
-            aria-label="Advances the tracked achievement"
-          >
-            ★
-          </span>
+          <Tooltip text={achievementMarkTitle(m.achievementAdvance)}>
+            <span
+              className="species-ach-mark"
+              aria-label="Advances the tracked achievement"
+            >
+              ★
+            </span>
+          </Tooltip>
         ) : null}
         <SpeciesProvenanceBadge p={m.provenance} />
         {m.entry.predictionUnsupported ? (
-          <span
-            className="species-not-predicted"
-            title={`${m.entry.predictionUnsupported.reason}. A body scan cannot answer that, so this species is listed as possible rather than predicted — nothing here says it is likely to be present.`}
-          >
-            {" "}
-            not predicted
-          </span>
+          <Tooltip text={`${m.entry.predictionUnsupported.reason}. A body scan cannot answer that, so this species is listed as possible rather than predicted — nothing here says it is likely to be present.`}>
+            <span className="species-not-predicted">
+              {" "}
+              not predicted
+            </span>
+          </Tooltip>
         ) : null}
         {morphColorRaw ? (
           <span
@@ -479,6 +501,12 @@ export const SpeciesCard = memo(function SpeciesCard({
           >
             {" "}
             - {morphColorDisplay}
+            {colourCause ? (
+              <span className="colour-cause" title={`Decided by ${colourCause} on this body`}>
+                {" "}
+                [{colourCause}]
+              </span>
+            ) : null}
           </span>
         ) : null}
         {m.colourMismatchPredicted ? (
@@ -549,6 +577,22 @@ export const SpeciesCard = memo(function SpeciesCard({
           <p className="species-similarity-index-codex-hint-text">{EXO_CODEX_VS_EXO_PROFILE_HELP}</p>
         </div>
       )}
+      {(m.exomasteryProfilePresent && matchHasDetail(m)) || m.chanceWhy?.length ? (
+        <button
+          type="button"
+          className="why-chance__toggle"
+          aria-expanded={whyOpen}
+          onClick={() => setWhyOpen((v) => !v)}
+          title="Where this species has been found for temperature, gravity and pressure, and where this body sits"
+        >
+          {whyOpen ? "▾" : "▸"} Why this chance
+        </button>
+      ) : null}
+      {/* The facts behind the number first (plan 1.7), then where the species has been found. */}
+      {whyOpen ? <ChanceWhyList m={m} /> : null}
+      {whyOpen && m.exomasteryProfilePresent && matchHasDetail(m) ? (
+        <WhyChanceStrip detail={lazyDetail.data?.detail ?? null} loading={!lazyDetail.error} />
+      ) : null}
       {genusOdds ? <GenusSpeciesOdds items={genusOdds.items} confirmed={genusOdds.confirmed} inCard /> : null}
     </div>
   );
@@ -627,12 +671,11 @@ export const SpeciesCard = memo(function SpeciesCard({
                 </span>
               ) : null}
               {m.learnedFromFootScan ? (
-                <span
-                  className="badge-foot-learned"
-                  title="Suggested from data/foot_scanned.json. Label shows whether confirmations in the catalog used ScanOrganic Analyse and/or Sample (not the same as a completed codex line on this body)."
-                >
-                  {footCatalogBadgeText(m.footCatalogConfirmations)}
-                </span>
+                <Tooltip text="Suggested from data/foot_scanned.json. Label shows whether confirmations in the catalog used ScanOrganic Analyse and/or Sample (not the same as a completed codex line on this body).">
+                  <span className="badge-foot-learned">
+                    {footCatalogBadgeText(m.footCatalogConfirmations)}
+                  </span>
+                </Tooltip>
               ) : null}
             </p>
           ) : null}
@@ -679,6 +722,8 @@ export const SpeciesCard = memo(function SpeciesCard({
         </div>
       </div>
 
+      {/* Clicked, its breakdown still on its way from the server: the click shows, the panel follows. */}
+      {exoDetailOpen && !lazyDetail.data && !lazyDetail.error ? <ModalLoading /> : null}
       {exoDetailOpen && lazyDetail.data?.detail ? (
         <Suspense fallback={null}>
           <ExomasteryHabitatMatchModal

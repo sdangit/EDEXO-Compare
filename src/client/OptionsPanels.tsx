@@ -1,6 +1,7 @@
 /**
  * The Options dialog's panels: uploads (Canonn, EDDN, EDSM), EDSM fetching, collection focus, snapshot stamp, feeder corpus. Split out of OptionsModal.tsx (code review D, 2026-09-27).
  */
+import { tabStore, useTabState } from "./tabs/tabStore";
 import { readBackdropOn, setBackdropOn } from "./HexSignals";
 import { useFeederStatus } from "./FeederStatusPanel";
 import { FoldPanel } from "./ui/Fold";
@@ -9,10 +10,13 @@ import { useToast } from "./ui/feedback";
 import type { CollectionFocusConfig } from "@shared/collectionFocus";
 import {
   CARRIER_NOTICE_MIN_FROM_SOL_LY,
+  DEFAULT_NOTIFY_PREFS,
+  JUMPONIUM_TARGET_MAX,
   NEARBY_JUMPS_MAX,
   NEARBY_JUMPS_MIN,
   NOTABLE_KINDS,
   type CarrierNoticeMode,
+  type JumponiumNotifyPrefsDTO,
   type NearbyPrefsDTO,
   type NotifyPrefsDTO,
   type NotifySettingsDTO,
@@ -20,10 +24,20 @@ import {
 import { POI_GROUP_OPTIONS } from "@shared/gecCategories";
 import { BODY_FEATURE_GROUPS, BODY_FEATURES } from "@shared/bodyFeatures";
 import { APP_THEME_PRESETS, resolveAppTheme, rgbToHex, type AppThemeChoice, type SavedAppTheme } from "@shared/appThemes";
-import { readAppTheme, readSavedThemes, setAppTheme, writeSavedThemes } from "./appTheme";
+import {
+  readAppContrast,
+  readAppTheme,
+  readSavedThemes,
+  setAppContrast,
+  setAppTheme,
+  writeSavedThemes,
+  type AppContrast,
+} from "./appTheme";
 import { CARRIER_SERVICE_OPTIONS } from "@shared/carrierServices";
 import type { AppSnapshot } from "@shared/types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { AFM_REFILLS, INJECTIONS } from "@shared/jumponium";
+import { fmtPct } from "@shared/format";
 
 /**
  * Contributing discoveries back to Canonn Research.
@@ -41,6 +55,7 @@ export function CanonnUploadPanel({ state }: { state: AppSnapshot["canonnUpload"
   return (
     <FoldPanel
       foldKey="options-canonn"
+      defaultOpen={false}
       className="options-meta-block"
       title="Send to Canonn"
       summary={state.enabled ? "on" : "off"}
@@ -116,6 +131,7 @@ export function EddnUploadPanel({ state }: { state: AppSnapshot["eddnUpload"] })
   return (
     <FoldPanel
       foldKey="options-eddn"
+      defaultOpen={false}
       className="options-meta-block"
       title="Send to EDDN"
       summary={state.enabled ? "on" : "off"}
@@ -241,6 +257,7 @@ export function CollectionFocusPanel() {
   return (
     <FoldPanel
       foldKey="options-collection-focus"
+      defaultOpen={false}
       className="options-meta-block"
       title="Worth-sampling marker"
       summary={cfg.enabled ? `${cfg.targetScans} scans · under ${cfg.corpusFloor} bodies` : "off"}
@@ -317,11 +334,74 @@ export function CollectionFocusPanel() {
  * personal records and notable stellar phenomena. Stored on the server, so the phone and this window
  * follow the same switches. No system notifications and no sound, apart from the opt-in record chime.
  */
+/**
+ * A number typed in full before it is saved (review 1.2.16): saved on Enter or when the field is left, only when it is
+ * a number, so "50" is not saved as "5" and an emptied field does not jump to the minimum mid-edit.
+ */
+function DraftNumber({
+  value,
+  min,
+  max,
+  onCommit,
+  disabled,
+  id,
+  className,
+  ariaLabel,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (v: number) => void;
+  disabled?: boolean;
+  id?: string;
+  className?: string;
+  ariaLabel?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft == null) return;
+    const n = Number(draft);
+    setDraft(null);
+    if (draft.trim() !== "" && Number.isFinite(n) && n !== value) onCommit(Math.min(max, Math.max(min, Math.round(n))));
+  };
+  return (
+    <input
+      id={id}
+      type="number"
+      className={className}
+      min={min}
+      max={max}
+      value={draft ?? String(value)}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      onChange={(ev) => setDraft(ev.target.value)}
+      onBlur={commit}
+      onKeyDown={(ev) => {
+        if (ev.key === "Enter") commit();
+        if (ev.key === "Escape") setDraft(null);
+      }}
+    />
+  );
+}
+
+/*
+  One fold per kind of notice (owner, 2026-10-13: "a bit text heavy … make everything collapsable per title"): each says
+  what is on while folded and keeps its own explanation behind its [?].
+*/
+function NotifySection({ k, title, summary, help, children }: { k: string; title: string; summary: string; help: ReactNode; children: ReactNode }) {
+  return (
+    <FoldPanel foldKey={`options-notify-${k}`} defaultOpen={false} className="options-notify-section" title={title} summary={summary} help={help}>
+      {children}
+    </FoldPanel>
+  );
+}
+
 export function NotifyPanel() {
   const [st, setSt] = useState<NotifySettingsDTO | null>(null);
   const p = st?.prefs ?? null;
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [testSent, setTestSent] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -359,203 +439,376 @@ export function NotifyPanel() {
 
   if (!st || !p) return null;
   const nb = p.nearby;
+  const jp = p.jumponium?.tiers ? p.jumponium : DEFAULT_NOTIFY_PREFS.jumponium;
   const poiOn = POI_GROUP_OPTIONS.filter((g) => nb.poiGroups[g.key]).length;
+  const notableOn = NOTABLE_KINDS.filter((k) => p.notable[k.key]).length;
+  const featuresOn = BODY_FEATURES.filter((f) => p.features?.[f.key]).length;
+  const exoOn = (p.codexFirst ?? true ? 1 : 0) + (p.codexFirstLowChance ?? true ? 1 : 0);
+  const tiersOn = INJECTIONS.filter((i) => jp.tiers[i.tier]);
+  const jpAfm = jp.afm ?? { basic: false, standard: false, premium: false };
+  const afmOn = AFM_REFILLS.filter((i) => jpAfm[i.tier]);
   const onCount =
-    NOTABLE_KINDS.filter((k) => p.notable[k.key]).length +
+    notableOn +
     (p.records ? 1 : 0) +
     (p.nsp ? 1 : 0) +
     (p.codexFirst ?? true ? 1 : 0) +
     poiOn +
     (nb.carriers !== "off" ? 1 : 0) +
-    BODY_FEATURES.filter((f) => p.features?.[f.key]).length;
+    featuresOn +
+    (jp.on ? 1 : 0);
   const radiusLy = st.jumpLy != null ? Math.round(nb.jumps * st.jumpLy) : null;
+  const saveJump = (patch: Partial<JumponiumNotifyPrefsDTO>) => save({ jumponium: { ...jp, ...patch } });
 
   return (
     <FoldPanel
       foldKey="options-notify"
+      defaultOpen={false}
       className="options-meta-block"
       title="Notify me"
       summary={`${onCount} on${p.chime ? " · chime" : ""}`}
       help={
-        <>
-          <p>
-            Finds go to the <strong>mail icon</strong> in the top bar and stay there until you mark them read. Each
-            one names the system and the body, so you can find it again several jumps later.
-          </p>
-          <p>
-            <strong>Personal records</strong>: the largest and the smallest radius of every star type and planet class
-            you have scanned. Your journals set the starting records quietly; only a record you break from now on is
-            announced. A star that broke one glows gold on the system card, and a planet gets a medal.
-          </p>
-          <p>
-            <strong>Nearby</strong>: after each jump, points of interest and carriers within that many of your
-            average jumps (your last twenty, or the ship&apos;s range until you have flown a few). Each point of
-            interest is announced once. Carriers only count out in the black, over{" "}
-            {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString()} ly from Sol, and their position is only as fresh as
-            EDAstro&apos;s last sighting — the notice says how old it is. Both use the lists you downloaded in the
-            Points of interest and Carriers panels.
-          </p>
-          <p>
-            <strong>Green gas giants</strong>: a codex entry confirms one, a body on the edGGG catalogue is a known
-            one, and a surface temperature that a known one has makes it likely. A K10-Type Anomaly in the system
-            (they spawn only around them) makes every gas giant there possible. Open a gas giant&apos;s details to
-            mark it green, or not green, yourself.
-          </p>
-          <p>
-            <strong>Body features</strong>: small bodies, fast orbits, landables with a view, rings and more, each
-            with the figures that make it one. All off until you tick them.
-          </p>
-          <p>Never a Windows notification. The chime is the only sound, and it is off unless you turn it on.</p>
-        </>
+        <p>
+          Finds go to the <strong>mail icon</strong> in the top bar (and the HUD&apos;s Notices panel) and stay there
+          until you mark them read. Each one names the system and the body. Never a Windows notification; the record
+          chime is the only sound. Open a section for what it announces.
+        </p>
       }
     >
-      <div className="options-notify-grid">
-        {NOTABLE_KINDS.map((k) => (
-          <label key={k.key} className="options-toggle">
-            <input
-              type="checkbox"
-              checked={p.notable[k.key]}
-              disabled={busy}
-              onChange={(ev) => save({ notable: { [k.key]: ev.target.checked } })}
-            />
-            <span>{k.label}</span>
-          </label>
-        ))}
-        <label className="options-toggle">
-          <input type="checkbox" checked={p.records} disabled={busy} onChange={(ev) => save({ records: ev.target.checked })} />
-          <span>Personal records (largest / smallest)</span>
-        </label>
-        <label className="options-toggle">
-          <input type="checkbox" checked={p.nsp} disabled={busy} onChange={(ev) => save({ nsp: ev.target.checked })} />
-          <span>Notable stellar phenomena</span>
-        </label>
-        <label
-          className="options-toggle"
-          title="A candidate plant on a body in your system that nobody has logged in this region yet (EDSM's codex): the gold [CODEX FIRST]."
-        >
-          <input
-            type="checkbox"
-            checked={p.codexFirst ?? true}
-            disabled={busy}
-            onChange={(ev) => save({ codexFirst: ev.target.checked })}
-          />
-          <span>Codex first: a plant nobody has logged in the region</span>
-        </label>
-        <label className="options-toggle">
-          <input
-            type="checkbox"
-            checked={p.chime}
-            disabled={busy || !p.records}
-            onChange={(ev) => save({ chime: ev.target.checked })}
-          />
-          <span>Chime when a record falls (this PC only)</span>
-        </label>
-      </div>
-
-      <h4 className="options-notify-h">Body features</h4>
-      <p className="dim tiny options-notify-sub">
-        Each one you tick shows on the Notable card with the reason, and a new scan of one comes to the mail icon.
-      </p>
-      {BODY_FEATURE_GROUPS.map((g) => (
-        <div key={g.key}>
-          <p className="dim tiny options-notify-sub">{g.label}</p>
-          <div className="options-notify-grid">
-            {BODY_FEATURES.filter((f) => f.group === g.key).map((f) => (
-              <label key={f.key} className="options-toggle" title={f.hint}>
-                <input
-                  type="checkbox"
-                  checked={p.features?.[f.key] ?? false}
-                  disabled={busy}
-                  onChange={(ev) => save({ features: { [f.key]: ev.target.checked } })}
-                />
-                <span>{f.label}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-      ))}
-
-      <h4 className="options-notify-h">Nearby</h4>
-      <div className="options-focus-grid">
-        <label htmlFor="notify-jumps">Within</label>
-        <span>
-          <input
-            id="notify-jumps"
-            type="number"
-            min={NEARBY_JUMPS_MIN}
-            max={NEARBY_JUMPS_MAX}
-            value={nb.jumps}
-            disabled={busy}
-            onChange={(ev) => save({ nearby: { jumps: Number(ev.target.value) } })}
-          />{" "}
-          <span className="dim">
-            jumps{radiusLy != null ? ` ≈ ${radiusLy.toLocaleString()} ly` : " (range known after your first jump)"}
-          </span>
-        </span>
-      </div>
-      <p className="dim tiny options-notify-sub">
-        Points of interest{st.poiDataReady ? "" : " — download the list in Points of interest first"}
-      </p>
-      <div className="options-notify-grid">
-        {POI_GROUP_OPTIONS.map((g) => (
-          <label key={g.key} className="options-toggle" title={g.hint}>
-            <input
-              type="checkbox"
-              checked={nb.poiGroups[g.key]}
-              disabled={busy}
-              onChange={(ev) => save({ nearby: { poiGroups: { [g.key]: ev.target.checked } } })}
-            />
-            <span>{g.label}</span>
-          </label>
-        ))}
-      </div>
-      <p className="dim tiny options-notify-sub">
-        Carriers, beyond {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString()} ly from Sol
-        {st.carrierDataReady ? "" : " — download the list in Carriers first"}
-      </p>
-      <div className="options-focus-grid">
-        <label htmlFor="notify-carriers">Announce</label>
-        <select
-          id="notify-carriers"
-          className="options-inline-select"
-          value={nb.carriers}
-          disabled={busy}
-          onChange={(ev) => save({ nearby: { carriers: ev.target.value as CarrierNoticeMode } })}
-        >
-          <option value="off">no carriers</option>
-          <option value="every">every carrier</option>
-          <option value="services">only carriers with a service below</option>
-        </select>
-      </div>
-      <p className="dim tiny options-notify-sub">Notable stellar phenomena, from EDAstro&apos;s codex</p>
-      <NspDownload
-        on={nb.nsp}
-        busy={busy}
-        onToggle={(v) => save({ nearby: { nsp: v } })}
-      />
-      {nb.carriers === "services" ? (
+      <NotifySection
+        k="bodies"
+        title="Notable bodies"
+        summary={`${notableOn} of ${NOTABLE_KINDS.length} on`}
+        help={
+          <p>
+            A new scan of one of these comes to the mail icon. <strong>Green gas giants</strong>: a codex entry confirms
+            one, a body on the edGGG catalogue is a known one, and a surface temperature that a known one has makes it
+            likely; a K10-Type Anomaly in the system makes every gas giant there possible. Open a gas giant&apos;s
+            details to mark it green, or not green, yourself.
+          </p>
+        }
+      >
         <div className="options-notify-grid">
-          {CARRIER_SERVICE_OPTIONS.map((o) => (
-            <label key={o.key} className="options-toggle" title={o.hint}>
+          {NOTABLE_KINDS.map((k) => (
+            <label key={k.key} className="options-toggle">
               <input
                 type="checkbox"
-                checked={nb.carrierServices.includes(o.key)}
+                checked={p.notable[k.key]}
                 disabled={busy}
-                onChange={(ev) =>
-                  save({
-                    nearby: {
-                      carrierServices: ev.target.checked
-                        ? [...nb.carrierServices, o.key]
-                        : nb.carrierServices.filter((k) => k !== o.key),
-                    },
-                  })
-                }
+                onChange={(ev) => save({ notable: { [k.key]: ev.target.checked } })}
               />
-              <span>{o.label}</span>
+              <span>{k.label}</span>
             </label>
           ))}
         </div>
-      ) : null}
+      </NotifySection>
+
+      <NotifySection
+        k="features"
+        title="Body features"
+        summary={featuresOn ? `${featuresOn} on` : "all off"}
+        help={
+          <p>
+            Small bodies, fast orbits, landables with a view, rings and more, each with the figures that make it one.
+            Each one you tick shows on the Notable card with the reason, and a new scan of one comes to the mail icon.
+            All off until you tick them.
+          </p>
+        }
+      >
+        {BODY_FEATURE_GROUPS.map((g) => (
+          <div key={g.key}>
+            <p className="dim tiny options-notify-sub">{g.label}</p>
+            <div className="options-notify-grid">
+              {BODY_FEATURES.filter((f) => f.group === g.key).map((f) => (
+                <label key={f.key} className="options-toggle" title={f.hint}>
+                  <input
+                    type="checkbox"
+                    checked={p.features?.[f.key] ?? false}
+                    disabled={busy}
+                    onChange={(ev) => save({ features: { [f.key]: ev.target.checked } })}
+                  />
+                  <span>{f.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+      </NotifySection>
+
+      <NotifySection
+        k="exobio"
+        title="Exobiology"
+        summary={`${exoOn} of 2 on`}
+        help={
+          <p>
+            <strong>Codex first</strong>: a candidate plant on a body in your system that nobody has logged in this
+            region yet (EDSM&apos;s codex), the gold [CODEX FIRST]. Kept in the list at 1 % or less, it is tinted red
+            with a [?] saying why it is there; off, it goes to the unlikely list like any low row.
+          </p>
+        }
+      >
+        <div className="options-notify-grid">
+          <label className="options-toggle">
+            <input
+              type="checkbox"
+              checked={p.codexFirst ?? true}
+              disabled={busy}
+              onChange={(ev) => save({ codexFirst: ev.target.checked })}
+            />
+            <span>Codex first: a plant nobody has logged in the region</span>
+          </label>
+          <label className="options-toggle">
+            <input
+              type="checkbox"
+              checked={p.codexFirstLowChance ?? true}
+              disabled={busy}
+              onChange={(ev) => save({ codexFirstLowChance: ev.target.checked })}
+            />
+            <span>Codex first: keep it in the list at 1 % or less</span>
+          </label>
+        </div>
+      </NotifySection>
+
+      <NotifySection
+        k="jumponium"
+        title="Laboratory"
+        summary={
+          jp.on
+            ? `on · ${[...tiersOn.map((i) => `FSD ${i.name}`), ...afmOn.map((i) => `AFM ${i.name}`)].join(", ") || "nothing ticked"}`
+            : "off"
+        }
+        help={
+          <p>
+            A scanned landable body in the top tenth of landable bodies for a material of what you tick. FSD
+            injections: Basic (carbon, vanadium, germanium), Standard (+ cadmium, niobium), Premium (carbon,
+            germanium, arsenic, niobium, yttrium, polonium). AFM refills: Basic (nickel, zinc, chromium, vanadium),
+            Standard (tin, manganese, vanadium, molybdenum, zirconium), Premium (zinc, chromium, vanadium, zirconium,
+            tellurium, ruthenium). Carbon, nickel, chromium and manganese are on most bodies and never announced.
+            With &quot;only what I am short of&quot;, only materials you hold fewer of than the number set. The
+            galaxy map&apos;s Laboratory tab shows what you hold.
+          </p>
+        }
+      >
+        <div className="options-notify-grid">
+          <label className="options-toggle">
+            <input type="checkbox" checked={jp.on} disabled={busy} onChange={(ev) => saveJump({ on: ev.target.checked })} />
+            <span>Announce rich bodies</span>
+          </label>
+        </div>
+        <p className="dim tiny options-notify-sub">FSD injections (jumponium)</p>
+        <div className="options-notify-grid">
+          {INJECTIONS.map((i) => (
+            <label key={i.tier} className="options-toggle">
+              <input
+                type="checkbox"
+                checked={jp.tiers[i.tier]}
+                disabled={busy || !jp.on}
+                onChange={(ev) => saveJump({ tiers: { ...jp.tiers, [i.tier]: ev.target.checked } })}
+              />
+              <span>
+                {i.name} <span className="dim">{i.bonus}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="dim tiny options-notify-sub">AFM refills</p>
+        <div className="options-notify-grid">
+          {AFM_REFILLS.map((i) => (
+            <label key={i.tier} className="options-toggle">
+              <input
+                type="checkbox"
+                checked={jpAfm[i.tier]}
+                disabled={busy || !jp.on}
+                onChange={(ev) => saveJump({ afm: { ...jpAfm, [i.tier]: ev.target.checked } })}
+              />
+              <span>
+                {i.name} {i.bonus ? <span className="dim">{i.bonus}</span> : null}
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="options-notify-grid">
+          <label className="options-toggle">
+            <input
+              type="checkbox"
+              checked={jp.onlyShort}
+              disabled={busy || !jp.on}
+              onChange={(ev) => saveJump({ onlyShort: ev.target.checked })}
+            />
+            <span>
+              Only what I am short of: under{" "}
+              <DraftNumber
+                className="options-inline-num"
+                min={1}
+                max={JUMPONIUM_TARGET_MAX}
+                value={jp.target}
+                disabled={!jp.on || !jp.onlyShort}
+                onCommit={(target) => saveJump({ target })}
+                ariaLabel="Short of: under this many aboard"
+              />{" "}
+              aboard
+            </span>
+          </label>
+        </div>
+      </NotifySection>
+
+      <NotifySection
+        k="records"
+        title="Personal records"
+        summary={p.records ? `on${p.chime ? " · chime" : ""}` : "off"}
+        help={
+          <p>
+            The largest and the smallest radius of every star type and planet class you have scanned. Your journals
+            set the starting records quietly; only a record you break from now on is announced. A star that broke one
+            glows gold on the system card, and a planet gets a medal.
+          </p>
+        }
+      >
+        <div className="options-notify-grid">
+          <label className="options-toggle">
+            <input type="checkbox" checked={p.records} disabled={busy} onChange={(ev) => save({ records: ev.target.checked })} />
+            <span>Personal records (largest / smallest)</span>
+          </label>
+          <label className="options-toggle">
+            <input
+              type="checkbox"
+              checked={p.chime}
+              disabled={busy || !p.records}
+              onChange={(ev) => save({ chime: ev.target.checked })}
+            />
+            <span>Chime when a record falls (this PC only)</span>
+          </label>
+        </div>
+      </NotifySection>
+
+      <NotifySection
+        k="nsp"
+        title="Stellar phenomena"
+        summary={[p.nsp ? "in the system" : "", nb.nsp ? "nearby" : ""].filter(Boolean).join(" · ") || "off"}
+        help={
+          <p>
+            Notable stellar phenomena in the system you are in (an FSS signal, then its type from the codex), and,
+            with EDAstro&apos;s codex file downloaded, the ones within your Nearby radius.
+          </p>
+        }
+      >
+        <div className="options-notify-grid">
+          <label className="options-toggle">
+            <input type="checkbox" checked={p.nsp} disabled={busy} onChange={(ev) => save({ nsp: ev.target.checked })} />
+            <span>In the system I am in</span>
+          </label>
+        </div>
+        <p className="dim tiny options-notify-sub">Nearby, from EDAstro&apos;s codex</p>
+        <NspDownload on={nb.nsp} busy={busy} onToggle={(v) => save({ nearby: { nsp: v } })} />
+      </NotifySection>
+
+      <NotifySection
+        k="nearby"
+        title="Nearby"
+        summary={`${nb.jumps} jumps · ${poiOn} POI group${poiOn === 1 ? "" : "s"} · carriers ${nb.carriers === "off" ? "off" : nb.carriers === "every" ? "all" : "by service"}`}
+        help={
+          <p>
+            After each jump, points of interest and carriers within that many of your average jumps (your last
+            twenty, or the ship&apos;s range until you have flown a few). Each point of interest is announced once.
+            Carriers only count out in the black, over {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString()} ly from Sol,
+            and their position is only as fresh as EDAstro&apos;s last sighting — the notice says how old it is. Both
+            use the lists you downloaded in the Points of interest and Carriers panels.
+          </p>
+        }
+      >
+        <div className="options-focus-grid">
+          <label htmlFor="notify-jumps">Within</label>
+          <span>
+            <DraftNumber
+              id="notify-jumps"
+              min={NEARBY_JUMPS_MIN}
+              max={NEARBY_JUMPS_MAX}
+              value={nb.jumps}
+              onCommit={(jumps) => save({ nearby: { jumps } })}
+            />{" "}
+            <span className="dim">
+              jumps{radiusLy != null ? ` ≈ ${radiusLy.toLocaleString()} ly` : " (range known after your first jump)"}
+            </span>
+          </span>
+        </div>
+        <p className="dim tiny options-notify-sub">
+          Points of interest{st.poiDataReady ? "" : " — download the list in Points of interest first"}
+        </p>
+        <div className="options-notify-grid">
+          {POI_GROUP_OPTIONS.map((g) => (
+            <label key={g.key} className="options-toggle" title={g.hint}>
+              <input
+                type="checkbox"
+                checked={nb.poiGroups[g.key]}
+                disabled={busy}
+                onChange={(ev) => save({ nearby: { poiGroups: { [g.key]: ev.target.checked } } })}
+              />
+              <span>{g.label}</span>
+            </label>
+          ))}
+        </div>
+        <p className="dim tiny options-notify-sub">
+          Carriers, beyond {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString()} ly from Sol
+          {st.carrierDataReady ? "" : " — download the list in Carriers first"}
+        </p>
+        <div className="options-focus-grid">
+          <label htmlFor="notify-carriers">Announce</label>
+          <select
+            id="notify-carriers"
+            className="options-inline-select"
+            value={nb.carriers}
+            disabled={busy}
+            onChange={(ev) => save({ nearby: { carriers: ev.target.value as CarrierNoticeMode } })}
+          >
+            <option value="off">no carriers</option>
+            <option value="every">every carrier</option>
+            <option value="services">only carriers with a service below</option>
+          </select>
+        </div>
+        {nb.carriers === "services" ? (
+          <div className="options-notify-grid">
+            {CARRIER_SERVICE_OPTIONS.map((o) => (
+              <label key={o.key} className="options-toggle" title={o.hint}>
+                <input
+                  type="checkbox"
+                  checked={nb.carrierServices.includes(o.key)}
+                  disabled={busy}
+                  onChange={(ev) =>
+                    save({
+                      nearby: {
+                        carrierServices: ev.target.checked
+                          ? [...nb.carrierServices, o.key]
+                          : nb.carrierServices.filter((k) => k !== o.key),
+                      },
+                    })
+                  }
+                />
+                <span>{o.label}</span>
+              </label>
+            ))}
+          </div>
+        ) : null}
+      </NotifySection>
+
+      {/* Review F-5.10: see (and hear, with the chime on) what a find looks like, without waiting for one. */}
+      <div className="options-oneline options-notify-test">
+        <button
+          type="button"
+          className="btn secondary"
+          disabled={busy}
+          onClick={() => {
+            setMsg(null);
+            void postSetting("/api/notices/test", {}).then((r) => {
+              setMsg(r.ok ? null : (r.error ?? "Could not send the test notice."));
+              setTestSent(r.ok);
+            });
+          }}
+        >
+          Send a test notice
+        </button>
+        {testSent ? (
+          <span className="dim tiny">Sent: look at the mail icon in the top bar{p.chime ? " (the chime plays)" : ""}.</span>
+        ) : null}
+      </div>
       {msg ? <p className="options-error">{msg}</p> : null}
     </FoldPanel>
   );
@@ -572,6 +825,12 @@ export function ColourSchemePanel() {
   const [saved, setSaved] = useState<SavedAppTheme[]>(() => readSavedThemes());
   const [name, setName] = useState("");
   const current = resolveAppTheme(choice);
+  const [contrast, setContrast] = useState<AppContrast>(() => readAppContrast());
+  const changeContrast = (c: AppContrast) => {
+    setContrast(c);
+    setAppContrast(c);
+  };
+  const lifted = contrast.readable && resolveAppTheme(choice, { readable: true }).lifted === true;
   const currentHex = "custom" in choice ? choice.custom : rgbToHex(current.rgb);
   const pick = (c: AppThemeChoice) => {
     setChoice(c);
@@ -596,6 +855,7 @@ export function ColourSchemePanel() {
   return (
     <FoldPanel
       foldKey="options-colour-scheme"
+      defaultOpen={false}
       className="options-meta-block"
       title="Colour scheme"
       summary={presetLabel ?? ("name" in choice && choice.name ? choice.name : "Your own")}
@@ -660,6 +920,39 @@ export function ColourSchemePanel() {
           Save scheme
         </button>
       </div>
+      {/* Readability (owner, 2026-10-13: a dark colour made text, checkmarks and the rest unreadable). */}
+      <label
+        className="options-toggle"
+        title="A colour too dark to read on the black page (under 4.5 : 1 contrast) is drawn lighter, the same hue: text, checkmarks, chips and borders stay readable. Off draws your colour exactly as picked."
+      >
+        <input
+          type="checkbox"
+          checked={contrast.readable}
+          onChange={(ev) => changeContrast({ ...contrast, readable: ev.target.checked })}
+        />
+        <span>Keep it readable (lighten a dark colour)</span>
+      </label>
+      {lifted ? <p className="dim tiny">This colour is too dark to read on the page: it is drawn lighter, in the same hue.</p> : null}
+      <div className="theme-custom">
+        <label className="options-toggle" title="Off: the text takes the scheme's own tint. On: the colour you pick, with its dimmer shades for secondary text.">
+          <input
+            type="checkbox"
+            checked={contrast.text != null}
+            onChange={(ev) => changeContrast({ ...contrast, text: ev.target.checked ? (contrast.text ?? "#ffffff") : null })}
+          />
+          <span>Text colour of my own</span>
+        </label>
+        {contrast.text != null ? (
+          <input
+            type="color"
+            value={contrast.text}
+            aria-label="Text colour"
+            onChange={(ev) => changeContrast({ ...contrast, text: ev.target.value })}
+          />
+        ) : (
+          <span className="dim tiny">auto: the scheme&apos;s</span>
+        )}
+      </div>
       <label
         className="options-toggle"
         title="The slow glimmer and signals over the hexagon grid behind the app. Off leaves the grid still. Kept on this device."
@@ -674,7 +967,25 @@ export function ColourSchemePanel() {
         />
         <span>Animated background</span>
       </label>
+      <TabViewToggle />
     </FoldPanel>
+  );
+}
+
+/**
+ * Tab view (owner, 2026-10-06, tabs/tabStore.ts): the big screens open as tabs beside Main instead of
+ * pop-ups. On by default, in the app and in the browser; kept on this device.
+ */
+function TabViewToggle() {
+  const st = useTabState();
+  return (
+    <label
+      className="options-toggle"
+      title="Galaxy map, Boxels, My discoveries, Encyclopedia, Achievements, Statistics, Bookmarks, Points of interest, Carriers, Unfinished business and the Session log open as tabs beside Main, instead of pop-ups over it. Off, they open as they always did. Kept on this device."
+    >
+      <input type="checkbox" checked={st.on} onChange={(ev) => tabStore.setOn(ev.target.checked)} />
+      <span>Tab view — screens open as tabs</span>
+    </label>
   );
 }
 
@@ -741,7 +1052,7 @@ function NspDownload({ on, busy, onToggle }: { on: boolean; busy: boolean; onTog
       {st.running ? (
         <p className="dim tiny">
           Downloading and sorting: {mb(st.bytesDone)}
-          {st.bytesTotal ? ` of ${mb(st.bytesTotal)} (${Math.floor((100 * st.bytesDone) / st.bytesTotal)} %)` : ""}. Only the
+          {st.bytesTotal ? ` of ${mb(st.bytesTotal)} (${fmtPct(Math.floor((100 * st.bytesDone) / st.bytesTotal))})` : ""}. Only the
           phenomena, green gas giant reports and which plants were logged in which region are kept.
         </p>
       ) : (
@@ -780,6 +1091,7 @@ export function SnapshotStampPanel({ prefs }: { prefs: AppSnapshot["photoStamp"]
   return (
     <FoldPanel
       foldKey="options-snapshot-stamp"
+      defaultOpen={false}
       className="options-meta-block"
       title="Snapshot images"
       summary={on.length ? `EDEXO + ${on.join(", ")}` : "EDEXO stamp only"}
@@ -852,6 +1164,7 @@ export function EdsmFetchPanel({ state }: { state: AppSnapshot["edsmAutoFetch"] 
   return (
     <FoldPanel
       foldKey="options-edsm-fetch"
+      defaultOpen={false}
       className="options-meta-block"
       title="Fetch from EDSM"
       summary={state.hasKey ? (state.enabled ? "on" : "key stored") : "no key"}
@@ -1009,6 +1322,7 @@ export function EdsmUploadPanel({ state, hasKey }: { state: AppSnapshot["edsmUpl
   return (
     <FoldPanel
       foldKey="options-edsm-upload"
+      defaultOpen={false}
       className="options-meta-block"
       title="Send to EDSM"
       summary={state.enabled ? (state.live ? "on, live" : "on") : "off"}

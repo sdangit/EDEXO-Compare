@@ -1,8 +1,12 @@
+import type { SpanshSystemHit } from "./spanshSystemHydration.js";
 import type { GreenGiantVerdict } from "../shared/greenGasGiant.js";
 import type { OwnGreenGiant } from "./galaxyLayers.js";
 import type { SavedBoxelsService } from "./savedBoxels.js";
+import type { Here, NeutronLive } from "./neutronLive.js";
 import type { FieldGuideDTO } from "../shared/fieldGuide.js";
 import type { RegionalRarity } from "../shared/speciesRarity.js";
+import type { EstimatedSurfaceTempBand, PlanetScan, SpeciesMatchContext } from "../shared/types.js";
+import type { EncyclopediaCardVerdict } from "../shared/speciesSpawnConditionCards.js";
 import { findMatchDetail, parseWsChannel, slimSnapshotForChannel, type WsChannel } from "./wsChannels.js";
 import { eliteDisplaySettingsPath, eliteDisplayWarning, readEliteDisplayMode } from "./eliteDisplayMode.js";
 import { linuxCheckForThisMachine } from "./linuxProbes.js";
@@ -22,6 +26,7 @@ import type {
   EncyclopediaSpeciesRowDTO,
   FeederStatusDTO,
   UpdateDownloadDTO,
+  WhatsNewDTO,
   UpdateInfoDTO,
   ImportDumpStatusDTO,
   BacklogMapDTO,
@@ -39,6 +44,7 @@ import type {
   GalaxyMineDTO,
   GalaxyMySystemDTO,
   GalaxyRouteDTO,
+  GalaxyVisitedDTO,
 } from "../shared/types.js";
 import type { JournalHistoryPreset } from "../shared/journalHistoryPreset.js";
 import type { GameStateStore } from "./gameState.js";
@@ -54,13 +60,22 @@ import {
   requestOriginIsAllowed,
 } from "./lanAuth.js";
 import type { JournalScan } from "./statisticsScan.js";
-import { isLauncherOpenMode, readLauncherOpenMode, writeLanAccess, writeLauncherOpenMode } from "./launcherPrefs.js";
+import type { PredictionQualityDTO } from "../shared/dto/predictions.js";
+import {
+  isLauncherOpenMode,
+  readLauncherOpenMode,
+  writeLanAccess,
+  writeLauncherOpenMode,
+} from "./launcherPrefs.js";
 import { type EdsmCatchUpScope } from "./edsmCatchUp.js";
 
 import { GZIP_MIN_BYTES, sendJson } from "./routes/httpHelpers.js";
 import { registerSpeciesFilesRoutes } from "./routes/speciesFilesRoutes.js";
 import { registerGalaxyRoutes } from "./routes/galaxyRoutes.js";
+import { registerExpeditionRoutes } from "./routes/expeditionRoutes.js";
+import { registerNeutronRoutes } from "./routes/neutronRoutes.js";
 import { registerCarriersPoiRoutes } from "./routes/carriersPoiRoutes.js";
+import { registerJumponiumRoutes } from "./routes/jumponiumRoutes.js";
 import { registerServerStatusRoutes } from "./routes/serverStatusRoutes.js";
 import { registerSettingsRoutes } from "./routes/settingsRoutes.js";
 import { registerHudRoutes } from "./routes/hudRoutes.js";
@@ -103,6 +118,10 @@ export interface HttpServerOptions {
    */
   lanKey?: string | null;
   getSnapshot: () => AppSnapshot;
+  /** The journal folder in use, without building a snapshot for it. */
+  getJournalDir?: () => string;
+  /** The game's visited list beyond the journals (visitedCache.ts), placed; light — for Find. */
+  getImportedSystems?: () => readonly { addr: number; name: string; x: number; y: number; z: number }[];
   /** GET /api/status — launcher-sized status; must not rebuild the snapshot. */
   getStatus: () => AppStatusDTO;
   /** §10.3 — the commander's own coordinates, or null before the first jump this session. */
@@ -114,6 +133,12 @@ export interface HttpServerOptions {
   getFieldGuide?: () => FieldGuideDTO;
   /** GET /api/encyclopedia-region?name= — every species' rarity in one region (null = no data). */
   getEncyclopediaRegion?: (name: string) => Record<string, RegionalRarity | null>;
+  /** POST /api/encyclopedia/card-verdicts — the matcher's grade of every species' condition cards on a body (plan 1.10). */
+  getCardVerdicts?: (
+    scan: PlanetScan,
+    est: EstimatedSurfaceTempBand | null,
+    ctx: SpeciesMatchContext | null,
+  ) => Record<string, Record<string, EncyclopediaCardVerdict>>;
   /**
    * GET /api/first-discovery-backlog — biology left uncollected in systems this commander found.
    *
@@ -121,9 +146,9 @@ export interface HttpServerOptions {
    * history, and the snapshot rebuilds on every journal line. Absent on a build with no store
    * behind it, in which case the panel hides itself.
    */
-  getFirstDiscoveryBacklog?: () => FirstDiscoveryBacklogDTO;
+  getFirstDiscoveryBacklog?: () => FirstDiscoveryBacklogDTO | Promise<FirstDiscoveryBacklogDTO>;
   /** GET /api/backlog-map — the same backlog rolled up to placed systems, for the galaxy map. */
-  getBacklogMap?: () => BacklogMapDTO;
+  getBacklogMap?: () => BacklogMapDTO | Promise<BacklogMapDTO>;
   /** Everything scanned, for the "My discoveries" panel. Built on request; see discoveries.ts. */
   getDiscoveries?: () => DiscoveriesDTO;
   /**
@@ -155,6 +180,7 @@ export interface HttpServerOptions {
   getMySystems?: () => GalaxyMineDTO;
   getMySystem?: (addr: number) => GalaxyMySystemDTO | null;
   getSessionRoute?: () => GalaxyRouteDTO;
+  getVisitedSystems?: (days: number) => GalaxyVisitedDTO;
   /** The journal store itself, for the map's Find box (the commander's own system names). */
   getJournalStore?: () => GameStateStore;
   /** Codex map: the commander's codex entries, `regionJoinKey|entryKey` (see codexMap.ts). */
@@ -182,6 +208,14 @@ export interface HttpServerOptions {
    * (appUpdater.ts). Answers at once with the status; GET /api/app/update carries the progress.
    */
   startUpdateDownload?: () => UpdateDownloadDTO;
+  /**
+   * GET /api/app/whats-new (`?any=1`: this version's notes even when seen) and POST
+   * /api/app/whats-new/seen — the launcher's notes after an update (whatsNew.ts).
+   */
+  getWhatsNew?: (any: boolean) => Promise<WhatsNewDTO>;
+  markWhatsNewSeen?: () => void;
+  /** GET /api/app/diagnostics — Options' Copy diagnostics, plain text with nothing private (diagnostics.ts). */
+  getDiagnostics?: () => Promise<string>;
   /**
    * POST /api/feeder/import-dump — start a Spansh JSONL export import into the feeder corpus
    * (`{ file, apply }`); GET /api/feeder/import-dump/status — its progress and last report.
@@ -230,9 +264,18 @@ export interface HttpServerOptions {
    * The commander's green gas giant call on a scanned body (`/api/ggg/mark`, server/greenGiants.ts).
    * Returns the body's verdict after the call, or false when there is no scan of that body.
    */
-  setGreenGiantMark?: (systemAddress: number, bodyId: number, mark: "yes" | "no" | null) => GreenGiantVerdict | null | false;
+  setGreenGiantMark?: (
+    systemAddress: number,
+    bodyId: number,
+    mark: "yes" | "no" | null,
+  ) => GreenGiantVerdict | null | false;
   /** Boxels the commander is scanning (`/api/boxels`, server/savedBoxels.ts). */
   savedBoxels?: SavedBoxelsService;
+  /** The neutron route being flown (`/api/neutron/live`, server/neutronLive.ts), and where the ship is. */
+  neutronLive?: NeutronLive;
+  shipHere?: () => Here;
+  /** The route being flown was stopped: what it put on the HUD goes too. */
+  onNeutronStopped?: () => void;
   /** Green gas giants the commander confirmed that edGGG does not list, for the galaxy map's layer. */
   ownGreenGiants?: () => readonly OwnGreenGiant[];
   /** Where a system is, from the journals' StarPos, for a new bookmark. */
@@ -244,9 +287,16 @@ export interface HttpServerOptions {
   markNoticesUnread?: (ids: readonly string[]) => number;
   /** POST `/api/notices/clear-read` — deletes the read ones. */
   clearReadNotices?: () => number;
+  /** POST `/api/notices/test` — one test notice (Options → Notify me). */
+  sendTestNotice?: () => void;
   setCollectionFocus?: (raw: unknown) => CollectionFocusConfig;
   setIncludeBacterium?: (value: boolean) => void;
   setIncludeExplorationScanData?: (value: boolean) => void;
+  /** POST /api/settings/pranav-antal-bonus — `{ value: boolean }`. */
+  setPranavAntalBonus?: (value: boolean) => void;
+  setSellAtFleetCarrier?: (value: boolean) => void;
+  /** POST /api/settings/fleet-carrier-own: `{ value: boolean }`, the carrier is his own (-15 %). */
+  setFleetCarrierIsOwn?: (value: boolean) => void;
   /** POST /api/settings/photo-stamp — JSON { commander?, system?, timestamp?: boolean } */
   setPhotoStamp?: (p: Partial<PhotoStampPrefs>) => void;
   /** POST /api/settings/foot-travel-odometer — JSON { value: boolean } */
@@ -267,7 +317,7 @@ export interface HttpServerOptions {
    * Loopback only, for the same reason as the miss log: the window opens on the PC running the
    * app, so a phone pressing this would open something on a screen it cannot see.
    */
-  openAppView?: (view: "app" | "phone") => { ok: boolean; error?: string };
+  openAppView?: (view: "app" | "phone" | "stream") => { ok: boolean; error?: string };
   /**
    * POST /api/settings/open-miss-log — hand `edexo-outliers.jsonl` to the desktop.
    *
@@ -305,9 +355,7 @@ export interface HttpServerOptions {
   /** GET /api/system/spansh-search?q= — the same shape from Spansh (id64 = SystemAddress). */
   searchSpanshSystems?: (
     query: string,
-  ) => Promise<
-    { ok: true; systems: { systemAddress: number; starSystem: string }[] } | { ok: false; error: string }
-  >;
+  ) => Promise<{ ok: true; systems: SpanshSystemHit[] } | { ok: false; error: string }>;
   /**
    * The statistics scan: three years of journals reduced to totals.
    *
@@ -315,6 +363,8 @@ export interface HttpServerOptions {
    * journal folder — the bootstrap already knows where it is and which files count.
    */
   getStatisticsScan?: () => Promise<JournalScan>;
+  /** GET /api/predictions/quality — the prediction log scored (plan 1.9, predictionQuality.ts). */
+  getPredictionQuality?: () => PredictionQualityDTO;
   /** POST /api/system/hydrate-from-spansh — bodies from Spansh's dump for a system the journal never scanned. */
   hydrateSystemFromSpansh?: (
     systemAddress: number,
@@ -383,6 +433,11 @@ export function createHttpServer(opts: HttpServerOptions): {
   /** A command for the app pages (key binds: previous / next body tab), to every app-channel socket. */
   broadcastUiCommand: (cmd: UiCommand) => void;
   listening: Promise<void>;
+  /**
+   * Drop every open socket and keep-alive connection, so `server.close` returns at once (code review
+   * 2026-10-10, A2): a phone or a forgotten browser tab kept its WebSocket and the quit waited the eight
+   * seconds the desktop app gives the server before ending it.
+   */
   closeConnections: () => void;
 } {
   const app = express();
@@ -402,7 +457,8 @@ export function createHttpServer(opts: HttpServerOptions): {
             ? (req: express.Request, res: express.Response, next: express.NextFunction) => {
                 try {
                   const r = (h as (a: unknown, b: unknown, c: unknown) => unknown)(req, res, next);
-                  if (r && typeof (r as Promise<unknown>).catch === "function") (r as Promise<unknown>).catch(next);
+                  if (r && typeof (r as Promise<unknown>).catch === "function")
+                    (r as Promise<unknown>).catch(next);
                 } catch (e) {
                   next(e);
                 }
@@ -448,11 +504,15 @@ export function createHttpServer(opts: HttpServerOptions): {
    * the one path: the galaxy dump is read from disk by the CLI and never travels through here.
    */
   app.use("/api/feeder/import", express.json({ limit: "8mb" }));
+  // The streamer view's settings mirror (uiMirror.ts): every edexo.* setting of the app at once.
+  app.use("/api/ui/mirror", express.json({ limit: "512kb" }));
   app.use(express.json({ limit: "48kb" }));
 
   registerSpeciesFilesRoutes(app, opts, routeCtx);
 
   registerGalaxyRoutes(app, opts, routeCtx);
+  registerExpeditionRoutes(app, opts, routeCtx);
+  registerNeutronRoutes(app, opts, routeCtx);
 
   /**
    * Where the commander is (§10.3).
@@ -502,6 +562,7 @@ export function createHttpServer(opts: HttpServerOptions): {
     the commander's machine and must never be proxied through here.
   */
   registerCarriersPoiRoutes(app, opts, routeCtx);
+  registerJumponiumRoutes(app, opts);
 
   /**
    * Whether Elite is in a display mode the HUDs can be drawn over.
@@ -563,8 +624,12 @@ export function createHttpServer(opts: HttpServerOptions): {
       res.status(404).json({ error: "HUD overlays are not included on macOS." });
       return;
     }
-    const snap = opts.getSnapshot();
-    if (chq === "app") lastAppSnap = snap;
+    /*
+      The snapshot a push or another request built in the last second, as a new socket gets it (code
+      review D7, 2026-10-14): a poller, a phone and the client's HTTP backup each used to cost a full
+      rebuild. A push replaces it, so a client fetching after the revision moved still gets the new one.
+    */
+    const snap = recentSnapshot();
     const body = perfTime("http.apiState.serialize", () => JSON.stringify(slimSnapshotForChannel(snap, chq)));
     sendJson(req, res, body, (raw, sent) => {
       perfBytes("http.apiState.bytes", raw);
@@ -600,6 +665,29 @@ export function createHttpServer(opts: HttpServerOptions): {
       return;
     }
     res.json({ region: name, species: opts.getEncyclopediaRegion(name) });
+  });
+
+  /*
+    The body comes from the client, which already holds it (the Encyclopedia's "vs this body"), so the
+    route needs no lookup and grades exactly the scan the cards are drawn from.
+  */
+  app.post("/api/encyclopedia/card-verdicts", (req, res) => {
+    const b = (req.body ?? {}) as { scan?: unknown; est?: unknown; ctx?: unknown };
+    if (typeof opts.getCardVerdicts !== "function" || !b.scan || typeof b.scan !== "object") {
+      res.status(400).json({ error: "scan is required" });
+      return;
+    }
+    try {
+      res.json({
+        verdicts: opts.getCardVerdicts(
+          b.scan as PlanetScan,
+          (b.est && typeof b.est === "object" ? b.est : null) as EstimatedSurfaceTempBand | null,
+          (b.ctx && typeof b.ctx === "object" ? b.ctx : null) as SpeciesMatchContext | null,
+        ),
+      });
+    } catch (e) {
+      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+    }
   });
 
   app.get("/api/field-guide", (req, res) => {
@@ -674,6 +762,38 @@ export function createHttpServer(opts: HttpServerOptions): {
       return;
     }
     res.json(opts.startUpdateDownload());
+  });
+
+  app.get("/api/app/whats-new", async (req, res) => {
+    if (typeof opts.getWhatsNew !== "function") {
+      res.status(501).json({ error: "Not available" });
+      return;
+    }
+    res.json(await opts.getWhatsNew(req.query.any === "1"));
+  });
+
+  app.get("/api/app/diagnostics", async (_req, res) => {
+    if (typeof opts.getDiagnostics !== "function") {
+      res.status(501).type("text/plain").send("Not available");
+      return;
+    }
+    res
+      .type("text/plain")
+      .set("Cache-Control", "no-store")
+      .send(await opts.getDiagnostics());
+  });
+
+  app.post("/api/app/whats-new/seen", localOnly, (_req, res) => {
+    if (typeof opts.markWhatsNewSeen !== "function") {
+      res.status(501).json({ ok: false, error: "Not available" });
+      return;
+    }
+    try {
+      opts.markWhatsNewSeen();
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
   });
 
   app.post("/api/app/open-update", (req, res) => {
@@ -860,7 +980,8 @@ export function createHttpServer(opts: HttpServerOptions): {
     // cookie on the handshake; a script can pass ?k= or the header.
     verifyClient: ({ req }, done) => {
       // A web page can open a WebSocket to 127.0.0.1 from anywhere: its Origin must be ours (1.4).
-      if (!requestOriginIsAllowed(req, isOwnLanHost, { checkOrigin: true })) done(false, 403, "Foreign origin");
+      if (!requestOriginIsAllowed(req, isOwnLanHost, { checkOrigin: true }))
+        done(false, 403, "Foreign origin");
       else if (requestIsAuthorized(req, lanKey)) done(true);
       else done(false, 401, "Access key required");
     },
@@ -879,7 +1000,9 @@ export function createHttpServer(opts: HttpServerOptions): {
   const alive = new WeakSet<import("ws").WebSocket>();
   /** A slow LAN client gets no push while this much is still unsent to it. */
   const WS_BACKLOG_LIMIT = 8 * 1024 * 1024;
-  wss.on("error", (e) => console.error("[edexo-compare] WebSocket server:", e instanceof Error ? e.message : e));
+  wss.on("error", (e) =>
+    console.error("[edexo-compare] WebSocket server:", e instanceof Error ? e.message : e),
+  );
   const stateMessage = (snap: AppSnapshot, channel: WsChannel): string =>
     JSON.stringify({ type: "state", channel, rev: pushRev, payload: slimSnapshotForChannel(snap, channel) });
 
@@ -975,9 +1098,26 @@ export function createHttpServer(opts: HttpServerOptions): {
     return lastAppSnap;
   };
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
     clients.add(ws);
-    channelOf.set(ws, "app");
+    /*
+      A client may name its channel in the address (`/ws?channel=hud`), so its first frame is already
+      its own slice (plan O-H, 2026-10-04): until then every HUD, launcher and phone got the whole app
+      state first — 923 kB, about 135 kB on the wire — before its hello could narrow it.
+    */
+    let first: WsChannel = "app";
+    try {
+      first = parseWsChannel(new URL(req.url ?? "/ws", "http://x").searchParams.get("channel")) ?? "app";
+    } catch {
+      /* the default */
+    }
+    if (first === "hud" && !platformFeatures().hud) {
+      clients.delete(ws);
+      ws.on("error", () => {});
+      ws.close(1008, "HUD overlays are not included on macOS.");
+      return;
+    }
+    channelOf.set(ws, first);
     alive.add(ws);
     perfCount("ws.connect");
     /*
@@ -989,7 +1129,7 @@ export function createHttpServer(opts: HttpServerOptions): {
     });
     ws.on("pong", () => alive.add(ws));
     try {
-      ws.send(stateMessage(recentSnapshot(), "app"));
+      ws.send(stateMessage(recentSnapshot(), first));
       needsFull.add(ws);
     } catch {
       /* ignore */
@@ -1125,10 +1265,18 @@ export function createHttpServer(opts: HttpServerOptions): {
     }
   };
 
-  server.listen(opts.port, opts.bindHost);
   const closeConnections = () => {
-    for (const ws of wss.clients) ws.terminate();
-    server.closeAllConnections();
+    for (const ws of wss.clients) {
+      try {
+        ws.terminate();
+      } catch {
+        /* already gone */
+      }
+    }
+    wss.close();
+    server.closeAllConnections?.();
   };
+
+  server.listen(opts.port, opts.bindHost);
   return { server, broadcast, broadcastExoLive, broadcastUiCommand, listening, closeConnections };
 }

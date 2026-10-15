@@ -15,7 +15,7 @@
           "Ammonia (thin)",
           "Nitrogen (thin)",
           "Water (thin)",
-          "Carbon dioxide (thin)",
+          "Carbon Dioxide (thin)",
           "Carbon dioxide rich (thin)"
         ],
         "max_gravity": 0.275
@@ -32,7 +32,7 @@
         "Ammonia (thin)",
         "Nitrogen (thin)",
         "Water (thin)",
-        "Carbon dioxide (thin)",
+        "Carbon Dioxide (thin)",
         "Carbon dioxide rich (thin)"
       ],
       "max_gravity": 0.275
@@ -97,15 +97,18 @@
       "description": "Carbon dioxide species with a lip-like opening that splits to reveal vertical spiky growth.",
       "conditions": {
         "atmosphere": [
-          "Carbon dioxide (thin)",
+          "Carbon Dioxide (thin)",
           "Carbon dioxide rich (thin)"
         ],
         "max_gravity": 0.275,
         "temperature_K": {
           "max": 195
         },
-        "soft_max_semi_major_axis_ls": 20,
-        "atmospherePressureCategory": "thin"
+        "soft_max_semi_major_axis_ls": 28,
+        "atmospherePressureCategory": "thin",
+        "matchContextNotes": [
+          "Moon orbit ceiling 20 -> 28 ls and moons only, 2026-10-09: of 26,489 Concha labiata moons in a year of EDDN codex entries (EDGalaxyData archive), 99.5 % orbit within 18.6 ls and 99.9 % within 27.8 ls; the 926 bodies orbiting a star are no longer demoted for it."
+        ]
       },
       "color_rules": {
         "type": "star_based",
@@ -133,19 +136,21 @@
       "description": "Heat-dependent species that grows a central stalk with luminous fronds for metabolism.",
       "conditions": {
         "atmosphere": [
-          "Carbon dioxide (thin)",
+          "Carbon Dioxide (thin)",
           "Water (thin)",
-          "Water-rich (thin)"
+          "Water-rich (thin)",
+          "Ammonia (thin)"
         ],
         "max_gravity": 0.275,
         "atmospherePressureCategory": "thin",
         "whenAtmosphereLinkedMinTempK": 180,
         "whenAtmosphereLinkedMaxTempK": 195,
         "whenAtmosphereLinkedAtmosphereAnyOf": [
-          "Carbon dioxide"
+          "Carbon Dioxide"
         ],
         "matchContextNotes": [
-          "For carbon dioxide atmospheres the codex mean temperature must sit between 180 K and 195 K. Water atmospheres carry no temperature rule at all, so the band is linked to the atmosphere rather than applied flat."
+          "For carbon dioxide atmospheres the codex mean temperature must sit between 180 K and 195 K. Water atmospheres carry no temperature rule at all, so the band is linked to the atmosphere rather than applied flat.",
+          "Ammonia added 2026-10-09: 19 of 20,697 bodies in a year of EDDN codex entries (EDGalaxyData archive) grew on it, one per system; the codex list left it out, so each was listed as unlikely."
         ]
       },
       "color_rules": {
@@ -169,7 +174,7 @@
       "Nitrogen": [
         "Concha biconcavis"
       ],
-      "Carbon dioxide": [
+      "Carbon Dioxide": [
         {
           "species": "Concha labiata",
           "temperature_K": "<190"

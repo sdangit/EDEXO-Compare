@@ -10,8 +10,10 @@ import { isTerraformableState } from "./terraformState.js";
 import { BODY_FEATURES, defaultFeaturePrefs, type BodyFeatureKey } from "./bodyFeatures.js";
 import { POI_GROUP_OPTIONS, type PoiGroup } from "./gecCategories.js";
 import { CARRIER_SERVICE_OPTIONS } from "./carrierServices.js";
+import type { InjectionTier } from "./jumponium.js";
 
-export type NoticeKind = "notable" | "record" | "nsp" | "poi" | "carrier" | "codex";
+/** `achievement`: a bronze, silver or gold reached since the app started (owner, 2026-10-05). */
+export type NoticeKind = "notable" | "record" | "nsp" | "poi" | "carrier" | "codex" | "achievement" | "jumponium";
 
 export interface NoticeDTO {
   id: string;
@@ -53,11 +55,36 @@ export interface NotifyPrefsDTO {
   nsp: boolean;
   /** A candidate plant here that nobody has logged in the region yet ([CODEX FIRST]; owner, 2026-09-30). */
   codexFirst: boolean;
+  /**
+   * Keep a [CODEX FIRST] candidate in the list at 1 % or less, tinted red with a [?] (owner,
+   * 2026-10-09). Off: it goes to the unlikely list like any low row would. On by default.
+   */
+  codexFirstLowChance: boolean;
   /** Points of interest and carriers within a few jumps (owner, 2026-09-30). */
   nearby: NearbyPrefsDTO;
   /** Body features (shared/bodyFeatures.ts): Notable card and notices. All off until chosen. */
   features: Record<BodyFeatureKey, boolean>;
+  /** A scanned body rich in a Laboratory material, FSD injection or AFM refill (shared/jumponium.ts, 1.2.16). */
+  jumponium: JumponiumNotifyPrefsDTO;
 }
+
+/**
+ * Off until chosen (owner, 2026-10-13: "should be disabled by default … custom for basic/standard/premium"). The
+ * elements watched are those of the ticked injections' recipes; with `onlyShort`, only those the commander holds
+ * fewer than `target` of (all of them while the stock is unknown). "Rich" is the top tenth of landable bodies for
+ * that element.
+ */
+export interface JumponiumNotifyPrefsDTO {
+  on: boolean;
+  /** FSD injection tiers gathered for. */
+  tiers: Record<InjectionTier, boolean>;
+  /** AFM refill tiers gathered for (owner, 2026-10-14: the Laboratory); off for a setting saved before them. */
+  afm: Record<InjectionTier, boolean>;
+  onlyShort: boolean;
+  target: number;
+}
+
+export const JUMPONIUM_TARGET_MAX = 300;
 
 export type CarrierNoticeMode = "off" | "every" | "services";
 
@@ -87,6 +114,7 @@ export const DEFAULT_NOTIFY_PREFS: NotifyPrefsDTO = {
   chime: false,
   nsp: true,
   codexFirst: true,
+  codexFirstLowChance: true,
   nearby: {
     jumps: 5,
     poiGroups: { ...ALL_POI_OFF },
@@ -95,6 +123,13 @@ export const DEFAULT_NOTIFY_PREFS: NotifyPrefsDTO = {
     nsp: false,
   },
   features: defaultFeaturePrefs(),
+  jumponium: {
+    on: false,
+    tiers: { basic: true, standard: true, premium: true },
+    afm: { basic: true, standard: true, premium: true },
+    onlyShort: true,
+    target: 30,
+  },
 };
 
 /** Only known keys and booleans get through; anything else keeps its current value. */
@@ -120,6 +155,7 @@ export function mergeNotifyPrefs(prev: NotifyPrefsDTO, raw: unknown): NotifyPref
     chime: bool(r.chime, prev.chime),
     nsp: bool(r.nsp, prev.nsp),
     codexFirst: bool(r.codexFirst, prev.codexFirst ?? true),
+    codexFirstLowChance: bool(r.codexFirstLowChance, prev.codexFirstLowChance ?? true),
     nearby: {
       jumps: Math.min(NEARBY_JUMPS_MAX, Math.max(NEARBY_JUMPS_MIN, jumpsRaw)),
       poiGroups,
@@ -130,6 +166,37 @@ export function mergeNotifyPrefs(prev: NotifyPrefsDTO, raw: unknown): NotifyPref
       nsp: bool(nr.nsp, pn.nsp ?? false),
     },
     features,
+    jumponium: mergeJumponiumPrefs(prev.jumponium ?? DEFAULT_NOTIFY_PREFS.jumponium, r.jumponium),
+  };
+}
+
+function mergeJumponiumPrefs(prevRaw: JumponiumNotifyPrefsDTO, raw: unknown): JumponiumNotifyPrefsDTO {
+  // A shape from before (1.2.16 test builds: `mode`) is not carried over: off by default means off.
+  const d = DEFAULT_NOTIFY_PREFS.jumponium;
+  const prev = typeof prevRaw?.on === "boolean" && prevRaw.tiers ? prevRaw : d;
+  const r0 = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  // The old shape (`mode`) as a whole is dropped, its target too (review 1.2.16).
+  const r = "mode" in r0 && !("on" in r0) && !("tiers" in r0) ? {} : r0;
+  const bool = (v: unknown, cur: boolean) => (typeof v === "boolean" ? v : cur);
+  const tr = r.tiers && typeof r.tiers === "object" ? (r.tiers as Record<string, unknown>) : {};
+  const ar = r.afm && typeof r.afm === "object" ? (r.afm as Record<string, unknown>) : {};
+  // A setting saved before the AFM refills: they start off, so nothing new is announced unasked.
+  const prevAfm = prev.afm ?? (prev === d ? d.afm : { basic: false, standard: false, premium: false });
+  const t = typeof r.target === "number" && Number.isFinite(r.target) ? Math.round(r.target) : prev.target;
+  return {
+    on: bool(r.on, prev.on),
+    tiers: {
+      basic: bool(tr.basic, prev.tiers.basic),
+      standard: bool(tr.standard, prev.tiers.standard),
+      premium: bool(tr.premium, prev.tiers.premium),
+    },
+    afm: {
+      basic: bool(ar.basic, prevAfm.basic),
+      standard: bool(ar.standard, prevAfm.standard),
+      premium: bool(ar.premium, prevAfm.premium),
+    },
+    onlyShort: bool(r.onlyShort, prev.onlyShort),
+    target: Math.min(JUMPONIUM_TARGET_MAX, Math.max(1, t)),
   };
 }
 

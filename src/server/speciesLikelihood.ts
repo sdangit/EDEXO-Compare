@@ -40,6 +40,7 @@ import { valueForCategoricalPath, valueForNumericPath } from "./exomasteryBodyVa
 import { shouldOmitExomasterySciencePath } from "./exomasteryPathHygiene.js";
 import { loadHistogramEdges, loadSpeciesPrevalence } from "./likelihoodData.js";
 import { getProjectRoot } from "./paths.js";
+import { atmosphereCompositionKey, normalizeScanAtmosphereForMatch } from "../shared/scanAtmosphereMatch.js";
 import { bodyTypeLogPrior, BODY_TYPE_PRIOR_WEIGHT, MIN_CELL } from "./bodyTypePrior.js";
 
 /**
@@ -256,6 +257,12 @@ export function speciesLogScore(
     minSamples?: number;
     /** Probe seam: sweep {@link VOLCANISM_TERM_WEIGHT}. Zero drops the term entirely. */
     volcanismWeight?: number;
+    /**
+     * Each term as it is added (path, its weighted log-probability), for the candidate row's "why this
+     * chance" (plan 1.7, 2026-10-11): the gases come as one pooled `body.atmosphereComposition`. Read
+     * only; the score is the same with or without it.
+     */
+    onTerm?: (path: string, weightedLogP: number) => void;
     /** Probe seam: sweep {@link ATMOSPHERE_TERM_WEIGHT}. Zero drops the pooled gas term. */
     atmosphereWeight?: number;
     /**
@@ -414,16 +421,30 @@ export function speciesLogScore(
       }
       logLik += weight * lp;
       terms += weight;
+      opts?.onTerm?.(path, weight * lp);
     }
   }
   const atmoWeight = opts?.atmosphereWeight ?? ATMOSPHERE_TERM_WEIGHT;
   if (atmoTerms > 0 && atmoWeight > 0) {
     logLik += (atmoWeight * atmoLog) / atmoTerms;
     terms += atmoWeight;
+    opts?.onTerm?.("body.atmosphereComposition", (atmoWeight * atmoLog) / atmoTerms);
   }
+
+  /*
+    On an atmosphere where the species is listed only with volcanism (volcanic_only_atmospheres), the
+    volcanism is a requirement the matcher has checked, not evidence: the profile's volcanism counts
+    come from its other atmospheres. Fungoida stabitis: none of its 11,735 carbon dioxide and water
+    bodies is volcanic, all 113 of its methane, ammonia and argon bodies have major volcanism (a year
+    of EDDN), and the term put it at 0.7 % on major-volcanic methane bodies where it is on 6-12 %.
+  */
+  const scanAtmo = atmosphereCompositionKey(normalizeScanAtmosphereForMatch(scan));
+  const volcanismRequiredHere =
+    !!scanAtmo && (entry.criteria?.volcanicOnlyAtmospheres ?? []).some((a) => atmosphereCompositionKey(a) === scanAtmo);
 
   for (const [path, counts] of Object.entries(profile.categorical ?? {})) {
     if (opts?.paths && !opts.paths.has(path)) continue;
+    if (volcanismRequiredHere && /volcanism/i.test(path)) continue;
     if (opts?.dropPaths?.has(path)) continue;
     if (shouldOmitExomasterySciencePath(path)) continue;
     const raw = valueForCategoricalPath(path, scan, rec, journalHost);
@@ -463,10 +484,12 @@ export function speciesLogScore(
       if (w <= 0) continue;
       logLik += w * lp;
       terms += w;
+      opts?.onTerm?.(path, w * lp);
       continue;
     }
     logLik += lp;
     terms++;
+    opts?.onTerm?.(path, lp);
   }
 
   if (terms === 0) return null;

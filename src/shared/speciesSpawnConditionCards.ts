@@ -5,13 +5,14 @@ import type {
   SpeciesEntry,
   SpeciesMatchContext,
 } from "./types.js";
+import { gameGravityLimitG, gameTemperatureCeilingK } from "./gameLimits.js";
 import {
   journalPressureToAtm,
   journalSurfaceGravityToG,
   LIGHT_SECOND_METERS,
   THIN_ATMOSPHERE_MAX_ATM,
 } from "./journalPhysics.js";
-import { normalizeScanAtmosphereForMatch, atmosphereCompositionKey } from "./scanAtmosphereMatch.js";
+import { normalizeScanAtmosphereForMatch, atmosphereCompositionKey, atmosphereTypeKeyOf } from "./scanAtmosphereMatch.js";
 import { spectralKeysFromJournalStarType } from "./starSpectralKeys.js";
 import { isBacteriumSpeciesEntry } from "./speciesBacterium.js";
 import { formatGenusStarColorSoftOneLine } from "./genusStarColorSoft.js";
@@ -37,7 +38,6 @@ const OPEN_HI = 1e15;
 const fmtK = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
 
 const GENUS_DATA_DIR_REQUIRING_VOLCANISM = new Set<string>(["brain-tree"]);
-const GENUS_DATA_DIR_REQUIRING_NO_ATMOSPHERE = new Set<string>(["brain-tree"]);
 
 export type EncyclopediaSpawnTier = "blue" | "red" | "yellow" | "neutral";
 
@@ -53,7 +53,7 @@ function speciesTempBand(c: SpeciesCriterion): { lo: number; hi: number } | null
   const st = c.surfaceTemperatureK;
   if (!st) return null;
   if (st.min === undefined && st.max === undefined) return null;
-  return { lo: st.min ?? OPEN_LO, hi: st.max ?? OPEN_HI };
+  return { lo: st.min ?? OPEN_LO, hi: gameTemperatureCeilingK(st.max) ?? OPEN_HI };
 }
 
 function speciesPressureBand(c: SpeciesCriterion): { lo: number; hi: number } | null {
@@ -194,7 +194,7 @@ export function buildEncyclopediaSpawnConditionCards(args: {
     out.push({ id: "planet-class", label: "Planet class", lines, caption, tier });
   }
 
-  /* Atmosphere types (+ brain-tree genus airless) — encyclopedia skips for bacterium (still matched server-side). */
+  /* Atmosphere types — encyclopedia skips for bacterium (still matched server-side). */
   if (!bac && c.atmosphereTypeAnyOf?.length) {
     const lines = [
       c.atmosphereTypeAnyOf.map((a) => (!a?.trim() ? "no atmosphere" : a)).join(", "),
@@ -206,10 +206,7 @@ export function buildEncyclopediaSpawnConditionCards(args: {
       caption = "Needs a detailed scan";
     } else {
       const atmoNorm = normalizeScanAtmosphereForMatch(scan);
-      if (GENUS_DATA_DIR_REQUIRING_NO_ATMOSPHERE.has(entry.genusDataDir) && atmoNorm !== "") {
-        tier = "red";
-        caption = "Brain trees: airless bodies only";
-      } else if (!atmoNorm && !(c.atmosphereTypeAnyOf ?? []).some((a) => !a?.trim())) {
+      if (!atmoNorm && !(c.atmosphereTypeAnyOf ?? []).some((a) => !a?.trim())) {
         tier = "red";
         caption = "Needs a detailed scan";
       } else if (atmospheresMatchSpeciesList(scan, c.atmosphereTypeAnyOf!)) {
@@ -221,15 +218,6 @@ export function buildEncyclopediaSpawnConditionCards(args: {
       }
     }
     out.push({ id: "atmosphere-type", label: "Atmosphere types", lines, caption, tier });
-  } else if (GENUS_DATA_DIR_REQUIRING_NO_ATMOSPHERE.has(entry.genusDataDir) && scan) {
-    const atmoNorm = normalizeScanAtmosphereForMatch(scan);
-    out.push({
-      id: "genus-airless",
-      label: "Brain-tree airless gate",
-      lines: ["Brain trees only appear on airless worlds."],
-      caption: atmoNorm === "" ? "No atmosphere — allowed" : `This body: ${atmoNorm || "an atmosphere"}`,
-      tier: atmoNorm === "" ? "blue" : "red",
-    });
   }
 
   /*
@@ -431,7 +419,8 @@ export function buildEncyclopediaSpawnConditionCards(args: {
     const gRaw = scan?.SurfaceGravity;
     if (scan && gRaw != null && gRaw !== undefined && Number.isFinite(gRaw)) {
       const g = journalSurfaceGravityToG(gRaw);
-      if (inRange(g, sg.min, sg.max)) {
+      // The game's limit behind the rounded codex one, as the matcher reads it (gameLimits.ts).
+      if (inRange(g, sg.min, gameGravityLimitG(sg.max))) {
         tier = "blue";
         caption = `This body ${g.toFixed(3)} g — within`;
       } else {
@@ -569,8 +558,21 @@ export function buildEncyclopediaSpawnConditionCards(args: {
     } else if (scan && sma != null) {
       const ls = sma / LIGHT_SECOND_METERS;
       const shown = ls >= 100 ? Math.round(ls).toLocaleString() : ls.toFixed(1);
-      tier = ls > max ? "yellow" : "blue";
-      caption = ls > max ? `${shown} ls — rarely recorded this wide; listed as unlikely` : `${shown} ls — within`;
+      // A planet round a star: kept at a lower chance, not demoted (matchSpecies, 2026-10-09).
+      const roundAStar = (() => {
+        const parents = (scan as unknown as { Parents?: Record<string, unknown>[] }).Parents;
+        for (const p of Array.isArray(parents) ? parents : []) {
+          if (typeof p?.Planet === "number") return false;
+          if (typeof p?.Star === "number") return true;
+        }
+        return false;
+      })();
+      tier = roundAStar || ls > max ? "yellow" : "blue";
+      caption = roundAStar
+        ? `${shown} ls round a star — rarer than on a moon; listed at a lower chance`
+        : ls > max
+          ? `${shown} ls — rarely recorded this wide; listed as unlikely`
+          : `${shown} ls — within`;
     }
     out.push({ id: "soft-orbit", label: "Orbit round its parent", lines: [`Usually ≤ ${max} ls (close moons)`], caption, tier });
   }
@@ -640,6 +642,31 @@ export function buildEncyclopediaSpawnConditionCards(args: {
         tier: "yellow",
       });
     }
+  }
+
+  /* A pressure ceiling for one atmosphere only (Crystalline Shards on thin carbon dioxide, 2026-10-10). */
+  if (c.maxPressureByAtmosphere) {
+    const key = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+    const words = (s: string) => s.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+    const caps = Object.entries(c.maxPressureByAtmosphere);
+    const here = scan ? atmosphereTypeKeyOf(scan) || null : null;
+    const hit = here ? caps.find(([k]) => key(k) === here) : undefined;
+    const rawP = scan?.SurfacePressure;
+    const pAtm = rawP != null && !Number.isNaN(rawP as number) ? journalPressureToAtm(rawP as number) : null;
+    let tier: EncyclopediaSpawnTier = "blue";
+    let caption = scan ? "Not this body's atmosphere" : "Needs a detailed scan";
+    if (!scan) tier = "yellow";
+    else if (hit && pAtm != null && Number.isFinite(pAtm)) {
+      tier = pAtm <= hit[1] ? "blue" : "red";
+      caption = `This body ${pAtm.toFixed(4)} atm — ${pAtm <= hit[1] ? "within" : "over"}`;
+    }
+    out.push({
+      id: "pressure-by-atmosphere",
+      label: "Pressure on one atmosphere",
+      lines: caps.map(([k, v]) => `≤ ${v} atm on ${words(k)}`),
+      caption,
+      tier,
+    });
   }
 
   /* Thin/thick pressure category gate */
@@ -736,6 +763,17 @@ export function buildEncyclopediaSpawnConditionCards(args: {
       label: "Signal count",
       lines: ["Not counted in the biological signals, never named by a DSS"],
       caption: "Listed whatever the DSS says",
+      tier: "neutral",
+    });
+  }
+
+  /* Every condition known and met, or not listed (Crystalline Shards, owner 2026-10-04) */
+  if (c.allConditionsRequired) {
+    out.push({
+      id: "all-conditions",
+      label: "Every condition",
+      lines: ["Listed only when every condition is known and met: a companion body scanned, the host star known"],
+      caption: "Not shown as unlikely — unless a DSS names it",
       tier: "neutral",
     });
   }
@@ -839,4 +877,29 @@ export function buildEncyclopediaSpawnConditionCards(args: {
   }
 
   return out;
+}
+
+/** The matcher's grade for one card (server `cardVerdicts.ts`). */
+export interface EncyclopediaCardVerdict {
+  tier: "blue" | "yellow" | "red";
+  detail: string;
+}
+
+/**
+ * The cards with the matcher's tiers (plan 1.10, code review B9): a card the matcher graded takes its
+ * tier, and its caption becomes the matcher's reason where the two disagreed. Only the matcher can
+ * exclude a species, so a card it did not grade is never red: its own red reads yellow, with the
+ * caption saying the matcher does not exclude on it.
+ */
+export function applyCardVerdicts(
+  cards: EncyclopediaSpawnConditionCard[],
+  verdicts: Record<string, EncyclopediaCardVerdict> | null | undefined,
+): EncyclopediaSpawnConditionCard[] {
+  if (!verdicts) return cards;
+  return cards.map((c) => {
+    const v = verdicts[c.id];
+    if (v) return v.tier === c.tier ? c : { ...c, tier: v.tier, caption: v.detail || c.caption };
+    if (c.tier === "red") return { ...c, tier: "yellow", caption: `${c.caption} — not a reason the app excludes it` };
+    return c;
+  });
 }

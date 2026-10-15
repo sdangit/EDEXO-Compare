@@ -45,23 +45,48 @@ function entry(id: string): SpeciesEntry {
 const pending = (id: string): Pending => ({ entry: entry(id), reasons: [] });
 
 describe("demoting on a failed gate", () => {
-  it("moves a gated species to the unlikely tier at the owner's home system", () => {
+  it("at the owner's home system, keeps radialem at a tenth, demotes a hard gate, and leaves the rest", () => {
     const strict: Pending[] = [
       pending("electricae_electricae_radialem"),
       pending("electricae_electricae_pluma"),
+      pending("sinuous_tuber_sinuous_tubers_roseum"),
     ];
     const unlikely: Pending[] = [];
 
     demoteFailedSpatialGates(strict, unlikely, { systemCoords: HOME }, cat);
 
-    expect(strict.map((m) => m.entry.id)).toEqual(["electricae_electricae_pluma"]);
+    expect(strict.map((m) => m.entry.id)).toEqual(["electricae_electricae_radialem", "electricae_electricae_pluma"]);
     expect(unlikely).toHaveLength(1);
-    expect(unlikely[0]!.unlikely).toBe(true);
+    const byId = (id: string) => unlikely.find((m) => m.entry.id === id)!;
+    // Radialem 175 ly from R CrA, 85 ly from the nearest radialem cluster: inside the 150-200 ly band
+    // (owner, 2026-10-14), so shown at a tenth of its chance with the reason on the row.
+    const rad = strict[0]!;
+    expect(rad.presenceFactor).toBeCloseTo(0.1, 5);
+    expect(rad.reasons.at(-1)!.detail).toMatch(/175 ly away — past the 150 ly rule but inside 200 ly/);
+    // Sinuous Tubers 26 kly from Sgr A*: no band, demoted.
+    const tub = byId("sinuous_tuber_sinuous_tubers_roseum");
+    expect(tub.unlikely).toBe(true);
     // The reader is told the distance and the rule, not merely that it was demoted.
-    const reason = unlikely[0]!.unlikelyReasons!.at(-1)!;
-    expect(reason.field).toBe("Nebula");
+    const reason = tub.unlikelyReasons!.at(-1)!;
+    expect(reason.field).toBe("GalacticCore");
     expect(reason.soft).toBe(true);
-    expect(reason.detail).toMatch(/175 ly/);
+  });
+
+  it("keeps radialem beside a planetary nebula far from every catalogued nebula (2026-10-14)", () => {
+    // The 3+ signal rescue of 2026-10-11 is gone (owner, 2026-10-14: a lone radialem away from any nebula
+    // cannot be predicted); what it was catching grows around planetary nebulae, which pass now.
+    const pn = cat.planetary!.find(
+      (p) =>
+        Math.hypot(...[p.x, p.y, p.z].map((v, i) => v - [HOME.x, HOME.y, HOME.z][i]!)) > 1000 &&
+        cat.nebulae.every((n) => Math.hypot(n.x - p.x, n.y - p.y, n.z - p.z) > 1000) &&
+        cat.records!.radialem!.every((r) => Math.hypot(r.x - p.x, r.y - p.y, r.z - p.z) > 200),
+    )!;
+    expect(pn).toBeDefined();
+    const strict: Pending[] = [pending("electricae_electricae_radialem")];
+    const unlikely: Pending[] = [];
+    demoteFailedSpatialGates(strict, unlikely, { systemCoords: { x: pn.x + 50, y: pn.y, z: pn.z } }, cat);
+    expect(unlikely).toHaveLength(0);
+    expect(strict[0]!.presenceFactor).toBeUndefined();
   });
 
   it("leaves a gated species alone where its gate passes", () => {

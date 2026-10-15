@@ -1,6 +1,5 @@
 import { bodyFeatures, directParent } from "../shared/bodyFeatures.js";
-import { greenGiantForRecord } from "./greenGiants.js";
-import { isGggClass } from "../shared/greenGasGiant.js";
+import { greenGiantForRecord, greenMarkToAsk } from "./greenGiants.js";
 import { notableOptions } from "./notableOptions.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,7 +17,13 @@ import { estimateSurfaceTemperatureRange } from "./surfaceTemperatureRange.js";
 import { shortBodyLabel } from "../shared/systemMapLabels.js";
 import { formatFullSpectralNotation, spectralDiscGlyph } from "../shared/spectralNotation.js";
 import type { GameStateStore } from "./gameState.js";
-import { bodyScanValueCredits, referenceFssAt1EarthMass, starScanValueCredits } from "./explorationValue.js";
+import {
+  bodyScanValueCredits,
+  referenceFssAt1EarthMass,
+  starScanValueCredits,
+  systemHonkCredits,
+  type HonkBody,
+} from "./explorationValue.js";
 import type { SpatialCatalogue } from "../shared/spatialGates.js";
 import { estimatedTemperatureRangeForScan } from "./planetTemperature.js";
 import { type PriceIndex } from "./priceList.js";
@@ -36,7 +41,6 @@ import { isTerraformableState } from "../shared/terraformState.js";
 import {
   isBeltClusterRecord,
   isStarOnSystemMap,
-  bodyKey,
   canonicalStarSystemNameForMap,
   buildOrbitChildMapFromJournalChains,
   parentToChildrenFromOrbitChild,
@@ -47,6 +51,7 @@ import {
   orbitPrimaryKeyFromRecord,
   inferBarycentreDisplayTag,
 } from "./systemMapOrbitGraph.js";
+import { bodyKey } from "../shared/bodyKey.js";
 import {
   bodyHasJournalExoEvidence,
   exoMatchRun,
@@ -54,9 +59,10 @@ import {
   buildExoPayoutRangeForRecord,
   scanForMatch,
   exoMatchSummaries,
+  type ExoMatchRun,
 } from "./systemMapExo.js";
 export { exoMarkerBasis, bodyHasJournalExoEvidence, bodyHasExoMarkers } from "./systemMapExo.js";
-export type { ExoMarkerBasis } from "./systemMapExo.js";
+export type { ExoMarkerBasis, ExoMatchRun } from "./systemMapExo.js";
 
 export type StarRolesConfig = {
   fuelPrefixes: string[];
@@ -184,6 +190,40 @@ function shortLabel(r: ExplorationScanRecord, starSystemName: string): string {
   return acronymFromWords(pc, 5);
 }
 
+/**
+ * A body the map draws without a scan of its own — a barycentre, an inferred parent — with every value
+ * empty. The three places that make one add what they know after it (code review C3, 2026-10-14).
+ */
+function emptyBodyDetail(bodyId: number, bodyName: string, bodyKey: string): SystemMapBodyDetailDTO {
+  return {
+    bodyId,
+    bodyName,
+    bodyKey,
+    isStar: false,
+    journalStellar: false,
+    fssCredits: null,
+    fssFirstDiscoverCredits: null,
+    fssFirstDiscoverBonus: null,
+    dssCredits: null,
+    dssFirstDiscoverCredits: null,
+    dssFirstDiscoverBonus: null,
+    dssVersusFssUpliftCredits: null,
+    dssProjectedCredits: null,
+    dssProbeEfficientApplied: null,
+    valuePlus: false,
+    hasExobiology: false,
+    bioBodyKey: null,
+    estimatedSurfaceTempK: null,
+    surfaceTemperatureRangeK: null,
+    exoMatchSummaries: [],
+    maxExoHeuristicCredits: 0,
+    exoValueTier: 0,
+    exoPayoutRange: null,
+    parentBodyId: null,
+    parentStarIds: [],
+  };
+}
+
 function exoValueTierFromHeuristic(credits: number, plusMin: number, plusPlusMin: number): 0 | 1 | 2 {
   if (credits >= plusPlusMin) return 2;
   if (credits >= plusMin) return 1;
@@ -303,6 +343,12 @@ export function buildSystemMapSnapshot(
    * panel beside it had already demoted for sitting 175 ly from the nearest nebula.
    */
   spatialCatalogue: SpatialCatalogue | null,
+  /**
+   * The body tab's own pipeline runs from the same snapshot, by body key (plan 1.2.17 Part 3, 2026-10-15): the map
+   * ran the whole chain again per body on a first view (~13 % of it). On the owner's history the two agreed on every
+   * one of 589 bodies, shown species and chances (docs/perf/map-vs-tab.mts). A body without one runs its own.
+   */
+  tabRuns?: ReadonlyMap<string, ExoMatchRun>,
 ): SystemMapSnapshot | null {
   if (focusSystemAddress == null) return null;
   /** Narrowed copy: the closures below lose the null-check on the captured parameter. */
@@ -334,6 +380,27 @@ export function buildSystemMapSnapshot(
   const byId = new Map<number, ExplorationScanRecord>();
   for (const r of recs) byId.set(r.bodyId, r);
 
+  /*
+    The honk, shown on the arrival star as the game's own map shows it (explorationValue.ts
+    systemHonkCredits): a third of every other scanned body's value, x2.6 when the system is a first.
+  */
+  const honkBodies: HonkBody[] = recs
+    .filter((r) => r !== arrivalStarRecord && !r.isBarycentreJournal)
+    .flatMap((r): HonkBody[] =>
+      explorationRecordIsStellar(r)
+        ? [{ kind: "star", stellarMass: r.stellarMass ?? 1, starType: r.starType }]
+        : r.planetClass
+          ? [
+              {
+                kind: "planet",
+                planetClass: r.planetClass,
+                terraformable: terraformableFromRecord(r),
+                massEM: r.massEM ?? 1,
+              },
+            ]
+          : [],
+    );
+
   const orbitChild = buildOrbitChildMapFromJournalChains(recs, byId, starSystemName);
   attachMoonsByParsedDesignation(recs, orbitChild, starSystemName, byId);
 
@@ -348,31 +415,7 @@ export function buildSystemMapSnapshot(
     if (r.isBarycentreJournal) {
       const bk = bodyKey(r.systemAddress, r.bodyId);
       detailsByBodyId[String(r.bodyId)] = {
-        bodyId: r.bodyId,
-        bodyName: "Mutual barycentre",
-        bodyKey: bk,
-        isStar: false,
-        journalStellar: false,
-        fssCredits: null,
-        fssFirstDiscoverCredits: null,
-        fssFirstDiscoverBonus: null,
-        dssCredits: null,
-        dssFirstDiscoverCredits: null,
-        dssFirstDiscoverBonus: null,
-        dssVersusFssUpliftCredits: null,
-        dssProjectedCredits: null,
-        dssProbeEfficientApplied: null,
-        valuePlus: false,
-        hasExobiology: false,
-        bioBodyKey: null,
-        estimatedSurfaceTempK: null,
-        surfaceTemperatureRangeK: null,
-        exoMatchSummaries: [],
-        maxExoHeuristicCredits: 0,
-        exoValueTier: 0,
-        exoPayoutRange: null,
-        parentBodyId: null,
-        parentStarIds: [],
+        ...emptyBodyDetail(r.bodyId, "Mutual barycentre", bk),
         isMutualBarycentre: true,
         semiMajorAxis: r.semiMajorAxis,
         baryEccentricity: r.eccentricity,
@@ -405,13 +448,16 @@ export function buildSystemMapSnapshot(
     let dss: number | null = null;
     let dssFd: number | null = null;
     let valuePlus = false;
+    let honk: number | null = null;
 
     if (journalStellar) {
       const sm = r.stellarMass ?? 1;
       const sv = starScanValueCredits(sm, r.starType, fd);
       const svFd = starScanValueCredits(sm, r.starType, true);
-      fss = sv.value;
-      fssFd = svFd.value;
+      const isArrival = r === arrivalStarRecord;
+      honk = isArrival ? systemHonkCredits(honkBodies, fd) : null;
+      fss = sv.value + (honk ?? 0);
+      fssFd = svFd.value + (isArrival ? systemHonkCredits(honkBodies, true) : 0);
       dss = fss;
       dssFd = fssFd;
       totalFss += fss;
@@ -422,11 +468,11 @@ export function buildSystemMapSnapshot(
       const mapped = store.dssMappedBodyKeys.has(bk);
       const fm = firstMapperForDssPayout(store, bk, r, mapped);
       const eff = mapped && store.dssMappingEfficientByBodyKey.get(bk) === true;
-      const base = bodyScanValueCredits(r.planetClass, tf, mass, fd, false, false, false);
-      const mappedVal = bodyScanValueCredits(r.planetClass, tf, mass, fd, fm, false, eff);
-      const baseFd = bodyScanValueCredits(r.planetClass, tf, mass, true, false, false, false);
-      const mapFd = bodyScanValueCredits(r.planetClass, tf, mass, true, true, false, false);
-      const projectedMapped = bodyScanValueCredits(r.planetClass, tf, mass, fd, fm, false, false).dssMapped;
+      const base = bodyScanValueCredits(r.planetClass, tf, mass, fd, false, true, false);
+      const mappedVal = bodyScanValueCredits(r.planetClass, tf, mass, fd, fm, true, eff);
+      const baseFd = bodyScanValueCredits(r.planetClass, tf, mass, true, false, true, false);
+      const mapFd = bodyScanValueCredits(r.planetClass, tf, mass, true, true, true, false);
+      const projectedMapped = bodyScanValueCredits(r.planetClass, tf, mass, fd, fm, true, false).dssMapped;
       fss = base.fss;
       dss = mapped ? mappedVal.dssMapped : base.fss;
       fssFd = baseFd.fss;
@@ -454,7 +500,7 @@ export function buildSystemMapSnapshot(
      * fetch it separately — 81 runs of the matcher on a 27-body system to produce 27 results, each
      * rebuilding the same context and walking the same 108 species.
      */
-    const matchRun = exoMatchRun(store, db, r, spatialCatalogue);
+    const matchRun = tabRuns?.get(bk) ?? exoMatchRun(store, db, r, spatialCatalogue);
     const maxExo = maxExoHeuristicPair(store, prices, r, matchRun);
     const exoTier = exoValueTierFromHeuristic(
       maxExo.tierValue,
@@ -470,17 +516,25 @@ export function buildSystemMapSnapshot(
     // Green gas giant verdict, and the body features the commander switched on (notableOptions.ts).
     const nopts = notableOptions();
     const green = nopts.green
-      ? greenGiantForRecord(r, { ...nopts.green, greenCodexBodies: store.greenCodexBodies, k10Systems: store.k10Systems })
+      ? greenGiantForRecord(r, {
+          ...nopts.green,
+          greenCodexBodies: store.greenCodexBodies,
+          k10Systems: store.k10Systems,
+        })
       : null;
+    // The "green?" question, where edGGG's ladder leaves it open (greenQuestionWorthAsking).
+    const askMark = nopts.green ? greenMarkToAsk(r, green, nopts.green.marks) : undefined;
     const dpf = nopts.features.size ? directParent(r.parents) : null;
     const featureHits = nopts.features.size
-      ? bodyFeatures(r, dpf && dpf.kind !== "Null" ? (byId.get(dpf.id) ?? null) : null).filter((f) => nopts.features.has(f.key))
+      ? bodyFeatures(r, dpf && dpf.kind !== "Null" ? (byId.get(dpf.id) ?? null) : null).filter((f) =>
+          nopts.features.has(f.key),
+        )
       : [];
 
     detailsByBodyId[String(r.bodyId)] = {
       bodyId: r.bodyId,
       ...(green ? { green } : {}),
-      ...(nopts.green && isGggClass(r.planetClass) ? { greenMark: nopts.green.marks.get(bk) } : {}),
+      ...(askMark !== undefined ? { greenMark: askMark } : {}),
       ...(featureHits.length ? { features: featureHits } : {}),
       bodyName: shortBodyLabel(r.bodyName, starSystemName),
       bodyKey: bk,
@@ -495,6 +549,7 @@ export function buildSystemMapSnapshot(
       terraformState: r.terraformState,
       landable: r.landable,
       massEM: r.massEM,
+      radius: r.radius,
       stellarMass: r.stellarMass,
       semiMajorAxis: r.semiMajorAxis,
       surfaceTemperature: r.surfaceTemperature,
@@ -509,6 +564,7 @@ export function buildSystemMapSnapshot(
       fssCredits: fss,
       fssFirstDiscoverCredits: fssFd,
       fssFirstDiscoverBonus: fss != null && fssFd != null ? fssFd - fss : null,
+      ...(honk != null ? { honkCredits: honk } : {}),
       dssCredits: dss,
       dssFirstDiscoverCredits: dssFd,
       dssFirstDiscoverBonus: dss != null && dssFd != null ? dssFd - dss : null,
@@ -559,31 +615,7 @@ export function buildSystemMapSnapshot(
         const existing = detailsByBodyId[String(bodyId)];
         if (!existing) {
           detailsByBodyId[String(bodyId)] = {
-            bodyId,
-            bodyName: pretty,
-            bodyKey: bk,
-            isStar: false,
-            journalStellar: false,
-            fssCredits: null,
-            fssFirstDiscoverCredits: null,
-            fssFirstDiscoverBonus: null,
-            dssCredits: null,
-            dssFirstDiscoverCredits: null,
-            dssFirstDiscoverBonus: null,
-            dssVersusFssUpliftCredits: null,
-            dssProjectedCredits: null,
-            dssProbeEfficientApplied: null,
-            valuePlus: false,
-            hasExobiology: false,
-            bioBodyKey: null,
-            estimatedSurfaceTempK: null,
-            surfaceTemperatureRangeK: null,
-            exoMatchSummaries: [],
-            maxExoHeuristicCredits: 0,
-            exoValueTier: 0,
-            exoPayoutRange: null,
-            parentBodyId: null,
-            parentStarIds: [],
+            ...emptyBodyDetail(bodyId, pretty, bk),
             isMutualBarycentre: true,
             baryAffectsBodyIds: children.map((c) => c.bodyId),
             baryJournalNullId: byId.get(bodyId)?.journalBarycentreNullId,
@@ -620,31 +652,7 @@ export function buildSystemMapSnapshot(
         const placeholderKey = bodyKey(focusAddr, bodyId);
         const phName = `Body ${bodyId}`;
         detailsByBodyId[String(bodyId)] = {
-          bodyId,
-          bodyName: phName,
-          bodyKey: placeholderKey,
-          isStar: false,
-          journalStellar: false,
-          fssCredits: null,
-          fssFirstDiscoverCredits: null,
-          fssFirstDiscoverBonus: null,
-          dssCredits: null,
-          dssFirstDiscoverCredits: null,
-          dssFirstDiscoverBonus: null,
-          dssVersusFssUpliftCredits: null,
-          dssProjectedCredits: null,
-          dssProbeEfficientApplied: null,
-          valuePlus: false,
-          hasExobiology: false,
-          bioBodyKey: null,
-          estimatedSurfaceTempK: null,
-          surfaceTemperatureRangeK: null,
-          exoMatchSummaries: [],
-          maxExoHeuristicCredits: 0,
-          exoValueTier: 0,
-          exoPayoutRange: null,
-          parentBodyId: null,
-          parentStarIds: [],
+          ...emptyBodyDetail(bodyId, phName, placeholderKey),
           isInferredPlaceholder: true,
         };
         return {

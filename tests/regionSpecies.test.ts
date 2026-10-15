@@ -12,6 +12,7 @@ import {
   REGION_GENUS_MIN_RECORDS,
   REGION_GENUS_SHARE_MIN,
   REGION_SIBLING_DEPLETION,
+  REGION_SIBLING_DEPLETION_MAX_SHARE,
   judgeRegionalGenusShare,
   judgeRegionalPresence,
   regionPresenceDetail,
@@ -84,8 +85,8 @@ describe("the shipped table, on the body that prompted it", () => {
   });
 
   it("makes no claim about a species the rollup has never heard of", () => {
-    // Brain Trees and Sinuous Tubers are outside the index's 102-species vocabulary.
-    expect(at("brain-tree_brain_tree_roseum")?.presence).toBe("unknown");
+    // The Thargoid entries are not biology in EDAstro's codex; every plant is in the table since 2026-10-05.
+    expect(at("thargoid_spires_major")?.presence).toBe("unknown");
   });
 
   it("makes no claim without a region", () => {
@@ -130,7 +131,13 @@ describe("the rare one of its genus", () => {
   });
 
   it("abstains for a species outside the rollup", () => {
-    expect(regionalGenusShare(root, INNER_ORION_SPUR, "brain_trees_brain_tree_roseum")).toBeNull();
+    // The Thargoid entries are not biology in EDAstro's codex, so the table has no row for them.
+    expect(regionalGenusShare(root, INNER_ORION_SPUR, "thargoid_spires_major")).toBeNull();
+  });
+
+  it("judges the species the bio index never carried (counted from EDAstro, 2026-10-05)", () => {
+    expect(regionalGenusShare(root, INNER_ORION_SPUR, "brain_trees_brain_tree_roseum")?.count).toBeGreaterThan(1000);
+    expect(regionalGenusShare(root, INNER_ORION_SPUR, "anemone_blatteum_bioluminescent")?.count).toBeGreaterThan(100);
   });
 });
 
@@ -146,6 +153,29 @@ describe("the rare sibling, in the matcher", () => {
     demoteRegionallyRareSiblings(strict as never, unlikely as never, ctx);
     expect(strict.map((m) => m.entry.id)).toEqual(["tussock_tussock_cultro"]);
     expect(unlikely.map((m) => m.entry.id)).toEqual(["tussock_tussock_divisa"]);
+  });
+
+  it("keeps a rare species the body meets on its own key (owner, 2026-10-04: no misses)", () => {
+    // Bacterium nebulus is 0.21 % of Galactic Centre's Bacterium, under the cut — because helium
+    // worlds are rare, not because it is out of place. On a helium world it is the one asked for.
+    const r = (field: string, detail: string) => [{ field, detail }] as never[];
+    const strict = [
+      { entry: entry("bacterium_bacterium_nebulus"), reasons: r("AtmosphereType", "Helium") },
+      { entry: entry("bacterium_bacterium_omentum"), reasons: r("Volcanism", "minor ammonia magma volcanism") },
+      { entry: entry("bacterium_bacterium_tela"), reasons: r("AtmosphereType", "Helium · any thin atmosphere") },
+    ];
+    const unlikely: typeof strict = [];
+    demoteRegionallyRareSiblings(strict as never, unlikely as never, ctx);
+    expect(strict.map((m) => m.entry.id).sort()).toEqual([
+      "bacterium_bacterium_nebulus",
+      "bacterium_bacterium_omentum",
+      "bacterium_bacterium_tela",
+    ]);
+    // Without the match on its key the share rule still has its say.
+    const bare = shown("bacterium_bacterium_nebulus", "bacterium_bacterium_tela");
+    const out: typeof bare = [];
+    demoteRegionallyRareSiblings(bare as never, out as never, ctx);
+    expect(out.map((m) => m.entry.id)).toEqual(["bacterium_bacterium_nebulus"]);
   });
 
   it("never demotes the last one standing", () => {
@@ -197,6 +227,23 @@ describe("the sibling out of place", () => {
     const strict = shown("bacterium_bacterium_verrata", "bacterium_bacterium_scopulum");
     const unlikely: typeof strict = [];
     demoteRegionallyRareSiblings(strict as never, unlikely as never, { regionIndex: INNER_ORION_SPUR, regionName: "Inner Orion Spur" });
+    expect(strict).toHaveLength(2);
+    expect(unlikely).toHaveLength(0);
+  });
+
+  it("does not call a species out of place where it is a fair part of its genus", () => {
+    // Inner Scutum-Centaurus: Prasinum is 18 % of the Sinuous Tubers there, but dominant in Empyrean
+    // Straits, so beside Lindigoticum (enriched eightfold here) its ratio reads under 0.05.
+    const ISC = 9;
+    const prasinum = regionalGenusEnrichment(root, ISC, "sinuous_tuber_sinuous_tubers_prasinum")!;
+    const lindigoticum = regionalGenusEnrichment(root, ISC, "sinuous_tuber_sinuous_tubers_lindigoticum")!;
+    expect(prasinum / lindigoticum).toBeLessThan(REGION_SIBLING_DEPLETION);
+    expect(regionalGenusShare(root, ISC, "sinuous_tuber_sinuous_tubers_prasinum")!.share).toBeGreaterThanOrEqual(
+      REGION_SIBLING_DEPLETION_MAX_SHARE,
+    );
+    const strict = shown("sinuous_tuber_sinuous_tubers_lindigoticum", "sinuous_tuber_sinuous_tubers_prasinum");
+    const unlikely: typeof strict = [];
+    demoteRegionallyRareSiblings(strict as never, unlikely as never, { regionIndex: ISC, regionName: "Inner Scutum-Centaurus Arm" });
     expect(strict).toHaveLength(2);
     expect(unlikely).toHaveLength(0);
   });

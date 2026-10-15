@@ -13,7 +13,7 @@
 .photo-lightbox-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  z-index: var(--z-lightbox);
   background: rgba(0, 0, 0, 0.88);
   display: flex;
   align-items: center;
@@ -26,7 +26,7 @@
   position: fixed;
   top: 0.75rem;
   right: 1rem;
-  z-index: 2001;
+  z-index: var(--z-lightbox-close);
   font: inherit;
   font-size: var(--fs-4xl);
   line-height: 1;
@@ -45,14 +45,15 @@
   background: var(--accent-a15);
 }
 
+/* Fills the screen (owner, 2026-10-04, 3440×1440: the 1200 px cap left it small in the middle). The box
+   is the whole free area and the photo is contained in it, so the glow is a drop-shadow on the photo's
+   own pixels rather than a box-shadow round the empty margins. Room is kept for the caption below. */
 .photo-lightbox-img {
-  max-width: min(92vw, 1200px);
-  max-height: 88vh;
-  width: auto;
-  height: auto;
+  width: 96vw;
+  height: calc(100vh - 9rem);
   object-fit: contain;
   border-radius: var(--radius-sm);
-  box-shadow: 0 0 32px var(--accent-glow);
+  filter: drop-shadow(0 0 24px var(--accent-glow));
   cursor: default;
 }
 
@@ -165,7 +166,7 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-modal);
   background: rgba(0, 0, 0, 0.72);
   display: flex;
   align-items: center;
@@ -252,6 +253,16 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/*
+  A windowed list (DiscoveriesTables) draws only the rows in view, and each row's real height replaces an
+  estimate as it is drawn. Chrome's scroll anchoring answered every such change by moving scrollTop to keep
+  its anchor row still; the move asked for other rows, whose heights moved it again, and fast scrolling ran
+  the position off the drawn rows — an empty screen until Ctrl+R (owner, 2026-10-11). The list keeps its own
+  place, so the browser must not.
+*/
+.scroll-area__viewport--windowed {
+  overflow-anchor: none;
 }
 .scroll-area__viewport {
   flex: 1 1 auto;
@@ -653,6 +664,19 @@
   min-width: 4.5rem;
 }
 
+/* The row's label is its fold button (owner, 2026-10-04). */
+.disc-chip-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.disc-chip-toggle:hover {
+  color: var(--text);
+}
+
 .disc-chip {
   background: transparent;
   border: 1px solid var(--accent-dim);
@@ -906,4 +930,23 @@ tr:hover .disc-ggg-mark--quiet,
 .disc-card:hover .disc-ggg-mark--quiet,
 .disc-ggg-mark--quiet:focus-within {
   opacity: 1;
+}
+
+/* Export CSV (F-5.11): above the table, out of the way. */
+.disc-export {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 0.35rem;
+}
+
+/* A part that failed to draw (ui/ErrorBoundary.tsx): the message and a button, in place of the part. */
+.error-boundary {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--warn, #ffd23f);
+  background: rgba(255, 210, 63, 0.06);
+  font-size: var(--fs-xs);
+}
+.error-boundary p {
+  margin: 0 0 0.4rem;
 }

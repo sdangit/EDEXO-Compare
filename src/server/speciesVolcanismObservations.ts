@@ -19,6 +19,7 @@
  * vocabulary problem as §27 and §40, in a field where the game itself supplies the adjectives.
  */
 import type { SpeciesEntry } from "../shared/types.js";
+import { reportsVolcanism } from "../shared/volcanismText.js";
 import { loadExomasteryProfile } from "./exomasteryProfile.js";
 import { getProjectRoot } from "./paths.js";
 import { observationFloor } from "./observationFloors.js";
@@ -60,9 +61,23 @@ export const NO_VOLCANISM = "none";
  * {@link NO_VOLCANISM}.
  */
 export function volcanismKey(value: string | null | undefined): string {
-  const raw = (value ?? "").trim().toLowerCase();
-  if (!raw) return NO_VOLCANISM;
-  if (raw.includes("no volcanism")) return NO_VOLCANISM;
+  /*
+    Pure, and asked for every volcanism label of every candidate's profile on every body a snapshot
+    computes (~6 % of a first view, profiled 2026-10-14). The vocabulary is a few dozen strings.
+  */
+  const v = value ?? "";
+  const hit = volcanismKeyMemo.get(v);
+  if (hit !== undefined) return hit;
+  const key = volcanismKeyUncached(v);
+  if (volcanismKeyMemo.size < 4096) volcanismKeyMemo.set(v, key);
+  return key;
+}
+
+const volcanismKeyMemo = new Map<string, string>();
+
+function volcanismKeyUncached(value: string): string {
+  const raw = value.trim().toLowerCase();
+  if (!reportsVolcanism(raw)) return NO_VOLCANISM;
   return raw
     .replace(/\bvolcanism\b/g, " ")
     .replace(/^\s*(minor|major)\s+/g, " ")

@@ -5,30 +5,52 @@ import { CopySystemButton } from "./CopySystemButton";
 import { speciesPhotoVariant } from "./speciesPhotoVariant";
 import { useModal } from "./ui/useModal";
 import type { OrganicPendingLineItem } from "@shared/types";
+import { fmtCrExact } from "@shared/format";
 
 export function DataValueBreakdownModal({
   lines,
   includeExplorationScanDataInDataValue,
   explorationFssScanCount,
   explorationFssValueCredits,
+  explorationHonkValueCredits = 0,
   explorationDssScanCount,
   explorationDssValueCredits,
   exobioScanCount,
   exobioValueCredits,
+  pranavAntalBonus = false,
+  onTogglePranavAntal,
+  sellAtFleetCarrier = false,
+  onToggleFleetCarrier,
+  fleetCarrierIsOwn = false,
+  onToggleOwnCarrier,
   onClose,
 }: {
   lines: OrganicPendingLineItem[];
   includeExplorationScanDataInDataValue: boolean;
   explorationFssScanCount: number;
   explorationFssValueCredits: number;
+  /** Part of the FSS value: the honk, paid with each system that has its arrival star unsold. */
+  explorationHonkValueCredits?: number;
   explorationDssScanCount: number;
   explorationDssValueCredits: number;
   /** Completed samples waiting to sell, and their value — the header pill's own two numbers. */
   exobioScanCount: number;
   exobioValueCredits: number;
+  /** The exobiology figures include the +30 % Pranav Antal sale bonus (owner, 2026-10-03). */
+  pranavAntalBonus?: boolean;
+  onTogglePranavAntal?: (on: boolean) => void;
+  /** The exploration figures are after a fleet carrier's 25 % (owner, 2026-10-03). */
+  sellAtFleetCarrier?: boolean;
+  onToggleFleetCarrier?: (on: boolean) => void;
+  /** ...at the commander's own carrier: 15 %, the other 10 % goes into its bank (owner, 2026-10-04). */
+  fleetCarrierIsOwn?: boolean;
+  onToggleOwnCarrier?: (on: boolean) => void;
   onClose: () => void;
 }) {
   const dialogRef = useModal<HTMLDivElement>(true, onClose);
+  const carrierNote = sellAtFleetCarrier ? (
+    <span className="dim tiny">{fleetCarrierIsOwn ? " · at your carrier (−15 %)" : " · at a carrier"}</span>
+  ) : null;
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div
@@ -61,12 +83,16 @@ export function DataValueBreakdownModal({
               <span className="data-value-summary-count">{explorationFssScanCount}</span>
               <span className="data-value-summary-label">
                 FSS scans
+                {explorationHonkValueCredits > 0 ? (
+                  <span className="dim tiny"> · incl. honk {fmtCrExact(explorationHonkValueCredits)}</span>
+                ) : null}
+                {carrierNote}
                 {!includeExplorationScanDataInDataValue ? (
                   <span className="dim tiny"> · not in total</span>
                 ) : null}
               </span>
               <span className="data-value-summary-value">
-                {explorationFssValueCredits.toLocaleString()} CR
+                {fmtCrExact(explorationFssValueCredits)}
               </span>
             </li>
             <li
@@ -76,12 +102,13 @@ export function DataValueBreakdownModal({
               <span className="data-value-summary-count">{explorationDssScanCount}</span>
               <span className="data-value-summary-label">
                 DSS scans
+                {carrierNote}
                 {!includeExplorationScanDataInDataValue ? (
                   <span className="dim tiny"> · not in total</span>
                 ) : null}
               </span>
               <span className="data-value-summary-value">
-                {explorationDssValueCredits.toLocaleString()} CR
+                {fmtCrExact(explorationDssValueCredits)}
               </span>
             </li>
             <li
@@ -89,10 +116,61 @@ export function DataValueBreakdownModal({
               title="Completed samples (3x Analyse) not yet sold; first footfall pays 5x"
             >
               <span className="data-value-summary-count">{exobioScanCount}</span>
-              <span className="data-value-summary-label">Exobio scans</span>
-              <span className="data-value-summary-value">{exobioValueCredits.toLocaleString()} CR</span>
+              <span className="data-value-summary-label">
+                Exobio scans
+                {pranavAntalBonus ? <span className="dim tiny"> · with +30 %</span> : null}
+              </span>
+              <span className="data-value-summary-value">{fmtCrExact(exobioValueCredits)}</span>
             </li>
           </ul>
+          {/*
+            Pranav Antal (owner, 2026-10-03): a toggle, off by default. The bonus depends on where the
+            commander sells, which is his to choose; the app does not follow Powerplay ranks or systems.
+          */}
+          {onTogglePranavAntal ? (
+            <label
+              className="data-value-bonus-toggle"
+              title="Count Pranav Antal's +30 % on exobiology sales in Data value. Turn it on when you plan to sell where you get the bonus."
+            >
+              <input
+                type="checkbox"
+                checked={pranavAntalBonus}
+                onChange={(ev) => onTogglePranavAntal(ev.target.checked)}
+              />
+              <span>+30% Pranav Antal bonus</span>
+              {pranavAntalBonus ? <span className="dim tiny">· the samples below are before it</span> : null}
+            </label>
+          ) : null}
+          {/*
+            Fleet carrier (owner, 2026-10-03): exploration data sold at a carrier pays 75 %; his carrier
+            sales came in exactly 25 % under the system map. Off by default, like Pranav Antal.
+          */}
+          {onToggleFleetCarrier ? (
+            <label
+              className="data-value-bonus-toggle"
+              title="Count exploration data as sold at a fleet carrier, which keeps 25 %. The system map still shows the full values, as the game's does."
+            >
+              <input
+                type="checkbox"
+                checked={sellAtFleetCarrier}
+                onChange={(ev) => onToggleFleetCarrier(ev.target.checked)}
+              />
+              <span>Selling at a fleet carrier (−25 %)</span>
+            </label>
+          ) : null}
+          {onToggleFleetCarrier && onToggleOwnCarrier && sellAtFleetCarrier ? (
+            <label
+              className="data-value-bonus-toggle data-value-bonus-toggle--sub"
+              title="Your own carrier: of the 25 % the sale keeps, 10 % goes into the carrier's bank, which you can take back. Vista Genomics pays in full at any carrier."
+            >
+              <input
+                type="checkbox"
+                checked={fleetCarrierIsOwn}
+                onChange={(ev) => onToggleOwnCarrier(ev.target.checked)}
+              />
+              <span>My own carrier (−15 %: 10 % goes to its bank)</span>
+            </label>
+          ) : null}
           {lines.length === 0 ? (
             <p className="dim">
               {includeExplorationScanDataInDataValue
@@ -121,7 +199,7 @@ export function DataValueBreakdownModal({
                       {line.baseCredits != null ? (
                         <>
                           <span className="data-value-breakdown-credits">
-                            {line.valueCredits.toLocaleString()} CR
+                            {fmtCrExact(line.valueCredits)}
                           </span>
                           {line.firstFootfall ? (
                             <span
@@ -138,9 +216,9 @@ export function DataValueBreakdownModal({
                     </div>
                     {line.baseCredits != null && line.firstFootfall ? (
                       <div className="data-value-footfall-detail dim">
-                        {line.baseCredits.toLocaleString()} CR base +{" "}
-                        {(line.baseCredits * 4).toLocaleString()} CR first-footfall bonus ={" "}
-                        {line.valueCredits.toLocaleString()} CR
+                        {fmtCrExact(line.baseCredits)} base +{" "}
+                        {fmtCrExact((line.baseCredits * 4))} first-footfall bonus ={" "}
+                        {fmtCrExact(line.valueCredits)}
                       </div>
                     ) : null}
                   </div>

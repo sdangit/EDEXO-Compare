@@ -7,9 +7,7 @@
       "description": "Fungal-like organic structures resembling trees with brain-shaped growths. They absorb minerals through subsurface roots and energy via their outer surfaces.",
       "min_sample_distance_m": 100,
       "planet_requirements": {
-        "planet_types": [
-          "Airless"
-        ],
+        "planet_types": [],
         "atmosphere": "None",
         "volcanism_required": true,
         "location_bias": [
@@ -18,15 +16,13 @@
         ]
       },
       "system_requirements": [
-        "Presence of Earth-Like World OR Gas Giant with water-based life (for most variants)"
+        "Presence of an Earth-like world, water world, ammonia world, water giant or gas giant with water- or ammonia-based life (all but Lividum and Roseum; measured 2026-10-14 on the EDDN year joined to Spansh systems: 98.9-100 % of each species' bodies)"
       ]
     },
     "summary": "Fungal-like organic structures resembling trees with brain-shaped growths. They absorb minerals through subsurface roots and energy via their outer surfaces.",
     "minSampleDistanceM": 100,
     "genusWideRequirements": {
-      "planet_types": [
-        "Airless"
-      ],
+      "planet_types": [],
       "atmosphere": "None",
       "volcanism_required": true,
       "location_bias": [
@@ -47,13 +43,13 @@
         },
         "requires_system_bodies": true,
         "planet_types": [
-          "Metal-Rich",
+          "Metal Rich",
           "High Metal Content"
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
           "Helium"
         ],
         "matchContextNotes": [
@@ -69,17 +65,20 @@
         "temperature_K": null,
         "requires_system_bodies": true,
         "planet_types": [
-          "Metal-Rich",
+          "Metal Rich",
           "High Metal Content"
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
-          "Helium"
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
+          "Helium",
+          "Neon-rich",
+          "Argon-rich"
         ],
         "matchContextNotes": [
-          "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 20-1,780 K, no temperature rule; a gas giant with water-based life in 50 of 58 whole systems."
+          "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 20-1,780 K, no temperature rule; a gas giant with water-based life in 50 of 58 whole systems.",
+          "Measured 2026-10-04 (owner: no misses): of 1,022 confirmed single-species bodies, 46 have a thin atmosphere: helium 27, carbon dioxide 13, neon-rich 3, argon-rich 2, silicate vapour 1 (not listed: one body). A genus-wide airless-only gate hid every Brain Tree on such bodies; it is gone and this list says where they grow."
         ]
       }
     },
@@ -91,13 +90,13 @@
         "temperature_K": null,
         "requires_system_bodies": true,
         "planet_types": [
-          "Metal-Rich",
+          "Metal Rich",
           "High Metal Content"
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
           "Helium"
         ],
         "matchContextNotes": [
@@ -121,8 +120,8 @@
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
           "Helium"
         ],
         "matchContextNotes": [
@@ -145,8 +144,8 @@
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
           "Helium"
         ],
         "matchContextNotes": [
@@ -169,8 +168,8 @@
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
           "Helium"
         ],
         "matchContextNotes": [
@@ -194,8 +193,8 @@
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
           "Helium"
         ],
         "matchContextNotes": [
@@ -214,7 +213,7 @@
         },
         "requires_system_bodies": false,
         "planet_types": [
-          "Metal-Rich",
+          "Metal Rich",
           "High Metal Content",
           "Rocky",
           "Rocky Ice",
@@ -222,12 +221,18 @@
         ],
         "atmosphere": [
           "None",
-          "Sulphur dioxide",
-          "Carbon dioxide",
-          "Helium"
+          "Sulphur Dioxide",
+          "Carbon Dioxide",
+          "Helium",
+          "Argon-rich",
+          "Argon",
+          "Oxygen",
+          "Water",
+          "Water-rich"
         ],
         "matchContextNotes": [
-          "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 200-500 K; companion rule off (about 30 of 313 whole systems)."
+          "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 200-500 K; companion rule off (about 30 of 313 whole systems).",
+          "Measured 2026-10-04 (owner: no misses): of 2,558 confirmed single-species bodies, 252 have a thin atmosphere: carbon dioxide 194 (5 of them carbon-dioxide-rich), sulphur dioxide 38, argon-rich 8, oxygen 4, argon 1, water 1, water-rich 1. A genus-wide airless-only gate hid every Brain Tree on such bodies; it is gone and this list says where they grow."
         ]
       }
     }
@@ -239,7 +244,7 @@
       "Often linked to Guardian space regions"
     ],
     "system_dependency": [
-      "Most species require presence of Earth-Like World OR Gas Giant with water-based life",
+      "All but Lividum and Roseum require an Earth-like world, water world, ammonia world, water giant or gas giant with water- or ammonia-based life in the system",
       "Roseum is the exception and does NOT require system-level bodies"
     ],
     "temperature_ranges": [

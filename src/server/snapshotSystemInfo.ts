@@ -22,9 +22,15 @@ import {
 } from "./explorationStellar.js";
 import { FirstFootfallLookup } from "./firstFootfallLookup.js";
 import type { GameStateStore } from "./gameState.js";
+import { fsdFuelModel, maxJumpLy } from "../shared/fsdFuel.js";
 import { analyzeNavRouteFuel } from "./navRouteFuel.js";
 import { isBarycentreSyntheticBodyId } from "./orbitUtils.js";
 import { StarRolesConfig, countPhysicalBodiesInSystemMapTree } from "./systemMap.js";
+import { bodyKey } from "../shared/bodyKey.js";
+import { NOTABLE_KINDS, notableKindFor, starTypeLabel, type NotableKind } from "../shared/notices.js";
+import { BODY_TRAITS, planetClassIndex, STAR_CLASSES, starClassIndex } from "../shared/galaxyTraits.js";
+import { confirmedOn } from "./discoveries.js";
+import type { JournalSystemFacts } from "./boxel.js";
 
 /**
  * One lookup for the life of the process, bound to whichever store is building the snapshot.
@@ -169,10 +175,6 @@ export function buildRemoteView(store: GameStateStore): RemoteViewDTO | null {
   };
 }
 
-export function scanBodyKey(systemAddress: number, bodyId: number): string {
-  return `${systemAddress}:${bodyId}`;
-}
-
 /**
  * Journal progress is 0–1; converting with round() often overshoots (e.g. one body in an 8-body system).
  * Use a conservative integer body count from Progress alone.
@@ -242,6 +244,7 @@ export function buildLiveShipFuelRangeDTO(
   const lookup = firstFootfallLookupFor(store);
   lookup.request((store.liveNavRoute ?? []).map((w) => w.starSystem));
 
+  const fuelModel = fsdFuelModel(store.fsdFuel);
   const navRoute = analyzeNavRouteFuel({
     route: store.liveNavRoute,
     currentSystemAddress: store.currentSystemAddress,
@@ -250,6 +253,9 @@ export function buildLiveShipFuelRangeDTO(
     lastFsdFuelT: store.lastFsdJumpFuelUsedT,
     lastFsdDistLy: store.lastFsdJumpDistLy,
     loadoutMaxJumpLy: store.loadoutMaxJumpRangeLy,
+    fuelModel,
+    cargoT: store.liveStatusCargoT,
+    firstLegBoost: store.jetConeBoost,
     starRoles,
     firstFootfallVerdict: (name) => lookup.verdict(name),
     firstFootfallNote: (name) => lookup.note(name),
@@ -263,10 +269,15 @@ export function buildLiveShipFuelRangeDTO(
   const jd = store.lastFsdJumpDistLy;
   let estFuelPerMaxJump: number | null = null;
   let calibration: LiveShipFuelRangeDTO["calibration"] = "none";
-  if (maxR != null && maxR > 0 && fu != null && fu > 0 && jd != null && jd > 0) {
+  if (fuelModel?.maxFuelPerJumpT != null) {
+    // A full-range jump spends the drive's most fuel per jump, whatever the ship weighs.
+    estFuelPerMaxJump = fuelModel.maxFuelPerJumpT;
+    calibration = "fsd_model";
+  } else if (maxR != null && maxR > 0 && fu != null && fu > 0 && jd != null && jd > 0) {
     estFuelPerMaxJump = fu * (maxR / jd);
     calibration = "fsd_sample";
   }
+  const ladenMaxJumpLy = fuelModel && hasLiveStatusFuel ? maxJumpLy(fuelModel, fuelTotal, store.liveStatusCargoT ?? 0) : null;
   const safetyT = 0.08;
   let estJumps: number | null = null;
   if (
@@ -284,6 +295,7 @@ export function buildLiveShipFuelRangeDTO(
     fuelReserveT: fuelRes,
     fuelTotalT: fuelTotal,
     maxJumpRangeLy: maxR,
+    ladenMaxJumpLy,
     estFuelPerMaxJumpT: estFuelPerMaxJump,
     estJumpsRemaining: estJumps,
     calibration,
@@ -452,7 +464,7 @@ export function notableBodiesForSystem(
     const tag =
       notableTagForRecord(rec) ?? (green ? greenGiantLabel(green) : null) ?? (features ? features.map((f) => f.label).join(" · ") : null);
     if (!tag) continue;
-    const bk = scanBodyKey(rec.systemAddress, rec.bodyId);
+    const bk = bodyKey(rec.systemAddress, rec.bodyId);
     const archived = archivedIds.has(rec.bodyId);
     const fullName = rec.bodyName?.trim() || `Body ${rec.bodyId}`;
     const bodyLabelShort = shortNotableBodyLabel(fullName, [
@@ -475,4 +487,75 @@ export function notableBodiesForSystem(
   }
   out.sort((a, b) => a.bodyId - b.bodyId);
   return out;
+}
+
+/**
+ * Bodies found of the system's total, counted as the main screen's D-Scan line counts them (owner,
+ * 2026-10-05: the Boxels table "should get the same data as the main screen"): FSS honk progress and
+ * bodies EDSM already knows count as found, not only the ones he scanned. Without the system map,
+ * which only the system on screen has; the Boxels screen takes that one's figures from the snapshot.
+ */
+function dScanTally(store: GameStateStore, systemAddress: number): { scanned: number; total: number | null } {
+  const d = buildDScanBodiesSnapshot(store, systemAddress, null, null);
+  return d ? { scanned: d.found, total: d.total } : systemBodyTally(store, systemAddress);
+}
+
+/** "K5 V", or the words for a giant, a dwarf remnant or a black hole ("M red giant", "neutron star"). */
+function boxelStarLabel(rec: ExplorationScanRecord): string {
+  const t = (rec.starType ?? "").trim();
+  if (t.includes("_") || /^(N|H|SupermassiveBlackHole|TTS|AeBe|X)$/.test(t)) return starTypeLabel(t);
+  return `${t}${rec.subclass ?? ""}${rec.luminosity ? ` ${rec.luminosity}` : ""}`;
+}
+
+/**
+ * The Boxels screen's facts for one flown system (server/boxel.ts): its stars, bodies scanned, notable
+ * bodies by kind — Earth-like, water, ammonia, other terraformables, Helium gas giants (the exact class)
+ * and green gas giants (the app's green rule, as on the Notable card) —, planet types and biology.
+ * Sold bodies count: a cashed-in system still has its stars and its worlds.
+ */
+export function boxelJournalFacts(store: GameStateStore, systemAddress: number): JournalSystemFacts {
+  const live = store.liveScansInSystem(systemAddress);
+  const liveIds = new Set(live.map((r) => r.bodyId));
+  const recs = [...live, ...store.soldScansInSystem(systemAddress).filter((r) => !liveIds.has(r.bodyId))].filter(
+    (r) => !r.isSynthetic,
+  );
+  const stars = recs.filter((r) => explorationRecordIsStellar(r) && !!r.starType?.trim());
+  const main =
+    stars.find((r) => r.bodyId === 0) ?? stars.find((r) => !((r.distanceFromArrivalLs ?? 0) > 0)) ?? null;
+  const others = stars.filter((r) => r !== main).sort((a, b) => a.bodyId - b.bodyId);
+  const jumpClass = store.systemStarClass.get(systemAddress) ?? null;
+  const classKey = (t: string | null | undefined) => {
+    const i = starClassIndex(t);
+    return i >= 0 ? STAR_CLASSES[i]!.key : null;
+  };
+  const starClasses = [...new Set([main?.starType ?? jumpClass, ...others.map((r) => r.starType)].map(classKey))].filter(
+    (k): k is string => !!k,
+  );
+
+  const count = new Map<NotableKind, number>();
+  const bodyTypes = new Set<string>();
+  let signals = 0;
+  const species = new Set<string>();
+  for (const rec of recs) {
+    if (!isPlanetLikeExplorationRecord(rec) || !rec.planetClass) continue;
+    const kind = notableKindFor(rec.planetClass, rec.terraformState);
+    if (kind) count.set(kind, (count.get(kind) ?? 0) + 1);
+    const ti = planetClassIndex(rec.planetClass);
+    if (ti >= 0) bodyTypes.add(BODY_TRAITS[ti]!.key);
+    if (isTerraformableState(rec.terraformState)) bodyTypes.add("terraformable");
+    const b = store.bodies.get(bodyKey(systemAddress, rec.bodyId));
+    signals += b?.biologicalSignals ?? 0;
+    for (const s of confirmedOn(b)) species.add(s);
+  }
+  const green = notableBodiesForSystem(store, systemAddress, null).filter((b) => b.green).length;
+  if (green) count.set("green", green);
+  return {
+    mainStar: main ? boxelStarLabel(main) : jumpClass,
+    otherStars: others.map(boxelStarLabel),
+    starClasses,
+    bodies: dScanTally(store, systemAddress),
+    notables: NOTABLE_KINDS.filter((k) => count.has(k.key)).map((k) => ({ kind: k.key, n: count.get(k.key)! })),
+    bodyTypes: [...bodyTypes],
+    bio: { signals, species: [...species].sort() },
+  };
 }

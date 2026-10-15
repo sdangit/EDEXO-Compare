@@ -118,11 +118,22 @@ describe("matchDatabaseToScan", () => {
       CO₂ is perfectly good for tela when the body is hot, 14 of 24 above 300 K. The temperature was
       doing the work all along.
     */
+    /*
+      The four metal-world Anemones pass the matcher here since 2026-10-07 (thin atmospheres allowed:
+      10 of 313 known-spawn Anemone bodies had one). The dump has none on bodies like this one, so the
+      genus prior hides them on the body tab and the system map (genusPrior.ts vetoUnseenGenera).
+    */
     expect(
       shown(r)
         .map((m) => m.entry.id)
         .sort(),
-    ).toEqual(["bacterium_bacterium_aurasus"]);
+    ).toEqual([
+      "anemone_blatteum_bioluminescent",
+      "anemone_prasinum_bioluminescent",
+      "anemone_roseum_bioluminescent",
+      "anemone_rubeum_bioluminescent",
+      "bacterium_bacterium_aurasus",
+    ]);
     const telaRow = r.matches.find((m) => m.entry.id === "bacterium_bacterium_tela");
     expect(telaRow, "cold and non-volcanic: tela is not on this body at all").toBeUndefined();
     expect(r.approximateMatchingUsed).toBe(false);
@@ -136,9 +147,9 @@ describe("matchDatabaseToScan", () => {
 
   it("drops bacterium rows unless the setting asks for them", () => {
     const without = matchDatabaseToScan(db, HMC_THIN_CO2, null, null, { includeBacterium: false });
-    // Bacterium aurasus was the only shown row here, so switching it off leaves the default panel
-    // empty and Stratum tectonicas demoted on temperature.
-    expect(shown(without)).toEqual([]);
+    // Bacterium aurasus goes with the setting; what is left shown is the metal-world Anemones (see the
+    // test above), and Stratum tectonicas stays demoted on temperature.
+    expect(shown(without).every((m) => m.entry.genusDataDir === "anemone")).toBe(true);
     expect(without.matches.some((m) => m.entry.id === "stratum_stratum_tectonicas")).toBe(true);
     // The demoted tier is genus-filtered the same way; bacterium must not sneak back in through it.
     expect(without.matches.some((m) => m.entry.genusDataDir === "bacterium")).toBe(false);
@@ -163,7 +174,12 @@ describe("matchDatabaseToScan", () => {
     // No pressure in this context, so the airless check on thin-only rows (Fumerola) abstains.
     // Sinuous Tubers left when they got their measured 200-500 K (2026-09-28): this body is 198.7 K,
     // and none of the 8,000+ Tubers bodies measured is under 200 K.
-    expect([...genera].sort()).toEqual(["anemone", "bark-mound", "fumerola"]);
+    // Bark Mounds left when their profile grew to the 8,036 Spansh DSS bodies (2026-10-14): none under 200.0 K,
+    // nor any of the EDDN year's 1,381, so the observed envelope demotes them here (soft, one click away).
+    expect([...genera].sort()).toEqual(["anemone", "fumerola"]);
+    const bark = r.matches.find((m) => m.entry.genusDataDir === "bark-mound");
+    expect(bark?.unlikely).toBe(true);
+    expect(bark!.unlikelyReasons!.map((x) => x.field)).toEqual(["ObservedTemperature"]);
 
     const gypseeum = r.matches.find((m) => m.entry.displayName === "Brain Tree Gypseeum");
     expect(gypseeum?.unlikely).toBe(true);
@@ -337,12 +353,13 @@ describe("matchDatabaseToScan", () => {
   });
 
   /**
-   * Characterisation, not endorsement: the Amphora Plant codex row gates on planet class and
-   * atmosphere but not on temperature, so the matcher lists it on a 4,594 K metal-rich body. That
-   * is the data speaking, and this test exists so that adding a temperature gate to the row is a
-   * deliberate, visible change rather than a silent one.
+   * Amphora's volcanism and temperature, measured 2026-10-14 on the 719 bodies whose DSS names it in
+   * Spansh's dump: major volcanism on all 719 (metallic magma, silicate vapour geysers, rocky magma),
+   * 955-2,669 K. Before that the row gated on planet class and atmosphere only and was listed on a
+   * 4,594 K metal-rich body with no volcanism; now the volcanism takes it off. Its profile (the same
+   * 719 bodies) keeps it on a body like theirs: 1,150 K, 1.5 g, landable, major metallic magma.
    */
-  it("still lists Amphora Plant on a scorching metal-rich body, because its row has no temperature gate", () => {
+  it("lists Amphora Plant on metal-rich bodies with major volcanism only, from 950 K up", () => {
     const inferno = {
       ...ROCKY_AIRLESS_VOLCANIC,
       PlanetClass: "Metal rich body",
@@ -351,24 +368,32 @@ describe("matchDatabaseToScan", () => {
       SurfaceGravity: 40.762663,
       Landable: false,
     } as unknown as PlanetScan;
-    const r = matchDatabaseToScan(db, inferno, null, null, { includeBacterium: true });
-    // The four glowing Anemones keep it company for the same reason: metal-rich is on their class
-    // list and none carries a temperature gate (measured to 3,000-10,000 K). With no star scanned,
-    // nothing picks between them.
-    expect(
-      shown(r)
+    const ids = (scan: PlanetScan) =>
+      shown(matchDatabaseToScan(db, scan, null, null, { includeBacterium: true }))
         .map((m) => m.entry.id)
-        .sort(),
-    ).toEqual([
-      "amphora_amphora_plant",
+        .sort();
+    // The four glowing Anemones stay: metal-rich is on their class list and none carries a
+    // temperature gate (measured to 3,000-10,000 K). With no star scanned, nothing picks between them.
+    expect(ids(inferno)).toEqual([
       "anemone_blatteum_bioluminescent",
       "anemone_prasinum_bioluminescent",
       "anemone_roseum_bioluminescent",
       "anemone_rubeum_bioluminescent",
     ]);
-    expect(
-      db.species.find((e) => e.id === "amphora_amphora_plant")!.criteria.surfaceTemperatureK,
-    ).toBeUndefined();
+    const amphoraBody = {
+      ...inferno,
+      SurfaceTemperature: 1150,
+      SurfaceGravity: 14.7,
+      Landable: true,
+      Volcanism: "major metallic magma volcanism",
+    } as PlanetScan;
+    expect(ids(amphoraBody)).toContain("amphora_amphora_plant");
+    expect(ids({ ...amphoraBody, Volcanism: "minor metallic magma volcanism" } as PlanetScan)).not.toContain(
+      "amphora_amphora_plant",
+    );
+    expect(db.species.find((e) => e.id === "amphora_amphora_plant")!.criteria.surfaceTemperatureK?.min).toBe(
+      950,
+    );
   });
 
   /**

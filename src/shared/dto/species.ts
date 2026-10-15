@@ -20,6 +20,8 @@ export interface SpeciesMatchContext {
   parentStarLuminosity?: string;
   /** Orbit distance from host star: `SemiMajorAxis` (m) / c in LS (not cumulative for nested moons). */
   orbitDistanceFromParentStarLs?: number;
+  /** The body orbits a star (or a barycentre of stars), not a planet — from its `Parents`. */
+  orbitsAStar?: boolean;
   /** The body's `DistanceFromArrivalLS`: how far it is from the system's arrival (main) star. */
   distanceFromArrivalLs?: number;
   /** The body's system (id64), for species known from one system only. */
@@ -47,6 +49,8 @@ export interface SpeciesMatchContext {
    */
   systemMainStarType?: string;
   systemMainStarLuminosity?: string;
+  /** Every star in the system as the journal writes it, for gates with `anyStar` (the Anemone colours). */
+  systemStars?: { type: string; luminosity?: string }[];
   /**
    * Journal star type of the star that sets star-coloured species' colours — the host, unless the
    * host is a brown dwarf in a planet slot, then the star that dwarf orbits (speciesMatchContext.ts
@@ -62,7 +66,7 @@ export interface SpeciesMatchContext {
   /**
    * Starlight reaching the body, in the Sun's flux at 1 AU (Earth = 1): every scanned star's
    * luminosity over distance², the colour rule's stars and distances (speciesMatchContext.ts
-   * `stellarIrradianceFor`). Read by the starlight gate (matchSpecies.ts `demoteOutsideStarlight`).
+   * `stellarIrradianceFor`). Read by the starlight gate (matchSpecies.ts `weighOutsideStarlight`).
    */
   stellarIrradiance?: number;
   /**
@@ -131,7 +135,7 @@ export interface SpeciesCriterion {
   /**
    * Body classes that must exist **elsewhere in the same system** for this species to spawn.
    *
-   * Amphora plant and the Brain Trees are the only rows that carry it. Read by
+   * Amphora plant, the Brain Trees and Crystalline Shards carry it. Read by
    * `shared/systemBodyGates.ts`, which demotes rather than excludes and abstains until the honk is
    * finished — an absence in a half-scanned system is not an absence.
    */
@@ -212,10 +216,19 @@ export interface SpeciesCriterion {
    * directly. Concha renibus, in the same climate, is a star-orbiting planet on 22 % of its bodies
    * (176 of them round Y dwarfs) and its moons sit at a median 9.6 ls. A planet round a star reads
    * thousands of light-seconds here, so the one number covers both.
+   *
+   * Moons only since 2026-10-09: a year of EDDN has 926 of 27,415 labiata bodies orbiting a star
+   * (3.4 %, not the corpus's 11), each demoted by the ceiling. Its moons: 99.9 % within 27.8 ls.
    */
   softMaxSemiMajorAxisLs?: number;
   /** Journal SurfacePressure (official docs: atmospheres for landables) */
   surfacePressure?: { min?: number; max?: number };
+  /**
+   * A pressure ceiling for one atmosphere only, in atm, keyed by the journal's AtmosphereType
+   * ("CarbonDioxide"; compared without case or spaces, and the "-rich" one is another key). Crystalline Shards on thin carbon dioxide grow at
+   * 0.0097 atm or less, while on every other atmosphere they share other plants' pressures (2026-10-10).
+   */
+  maxPressureByAtmosphere?: Record<string, number>;
   landable?: boolean;
   /**
    * Known only from these systems (id64). A wall: Ingensradices unicus, found in HIP 87621 alone
@@ -227,6 +240,14 @@ export interface SpeciesCriterion {
    * HIP 87621 2 a reports three genera and grows it as a fourth). The DSS genus filter lets it through.
    */
   outsideSignalCount?: boolean;
+  /**
+   * Listed only when every condition is known and met — no demotion, no unresolved gate (owner,
+   * 2026-10-04, on Crystalline Shards: "show crystalline only if they meet all conditions, no guess
+   * work"). A row that would be demoted, or whose companion body or host star is not known yet, is
+   * dropped rather than shown as unlikely; a DSS naming the genus still lists it. See
+   * `dropUnprovenStrictSpecies` in demotionPasses.ts.
+   */
+  allConditionsRequired?: boolean;
   /** Substring match on Volcanism journal field */
   volcanismIncludes?: string[];
   /**
@@ -250,8 +271,17 @@ export interface SpeciesCriterion {
   whenAtmosphereLinkedAtmosphereAnyOf?: string[];
   /** Host star type: any fragment (substring, case-insensitive) must appear in {@link SpeciesMatchContext.parentStarType}. */
   parentStarTypeIncludesAnyOf?: string[];
-  /** Orbit distance from host star in light-seconds; only when context provides it. */
-  orbitDistanceFromParentStarLs?: { min?: number; max?: number };
+  /**
+   * Orbit distance from host star in light-seconds; only when context provides it.
+   *
+   * `softBelow`: under `min`, the row is kept at a lower chance instead of demoted — `factor` from
+   * the first step whose `fromLs` the orbit reaches (highest first), measured on the corpus.
+   */
+  orbitDistanceFromParentStarLs?: {
+    min?: number;
+    max?: number;
+    softBelow?: { fromLs: number; factor: number }[];
+  };
   /**
    * Distance from the system's arrival star in light-seconds, soft. Crystalline Shards: every one of
    * 4,450 Bioforge sightings is ≥ 10,369 Ls from arrival, while many sit right beside a secondary star.
@@ -364,6 +394,12 @@ export interface SpeciesEntry {
   genusStarColorPreferredSpectralClasses?: string[];
   /** Genus `meta` minimum metres between organic samples (genetic diversity). */
   genusMinSampleDistanceM?: number;
+  /**
+   * Never predicted from the body (owner, 2026-10-04: the Thargoid entries, "nice to have if there"):
+   * listed only when a DSS names its genus on the body, or once the commander has logged it there.
+   * From the genus file's `meta.dssOnly`.
+   */
+  dssOnly?: boolean;
   /** Genus `meta.color_variants.rule` when present. */
   genusColorVariantRule?: string;
   /** Spectral class key (normalised) → codex colour label for star-driven morph tables. */
@@ -401,6 +437,12 @@ export interface MatchReason {
    * about habitat, it is a missing measurement.
    */
   soft?: boolean;
+  /**
+   * The Encyclopedia condition card this reason grades (`speciesSpawnConditionCards` ids), where the
+   * field alone does not say: a StarType reason may be the host-star gate or the colour table (plan
+   * 1.10). Unset: the field's own card (`server/cardVerdicts.ts`).
+   */
+  card?: string;
 }
 
 export interface SpeciesProvenance {
@@ -614,8 +656,21 @@ export interface SpeciesMatch {
   codexFirstAsOf?: string;
   /** EDAstro's codex file was checked too (fetch date), when the phenomena data is downloaded. */
   codexFirstEdastroAsOf?: string;
+  /** The EDDN collector's ledger was checked too, through this date (eddnLedger.ts, 2026-10-04). */
+  codexFirstEddnAsOf?: string;
   /** EDAstro has this species in the region but not which colour: still gold, with a note. */
   codexFirstEdastroSpeciesOnly?: boolean;
+  /**
+   * A [CODEX FIRST] row in the list at 1 % or less: why it is there (the floor rule that kept it), for
+   * the row's red tint and [?] (owner, 2026-10-09). Absent otherwise.
+   */
+  lowChanceWhy?: string;
+  /**
+   * Why this chance (plan 1.7, 2026-10-11; `server/chanceWhy.ts`): the facts behind the row's number,
+   * strongest first. `weight` is a log-odds nudge (+ for, − against) where there is one, null for a
+   * plain measured fact. Body tab only; absent on the other surfaces.
+   */
+  chanceWhy?: { label: string; weight: number | null; kind: "genus" | "field" | "measured" | "region" }[];
   /** This plant, here, would advance the tracked achievement (`server/achievements.ts`). */
   achievementAdvance?: import("./achievements.js").AchievementAdvanceDTO;
   /** This species' rarity in the body's region (`shared/speciesRarity.ts`); the DNA badge shows it. */

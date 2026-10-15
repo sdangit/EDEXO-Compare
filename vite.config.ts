@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
 /*
@@ -10,7 +11,9 @@ const API = `127.0.0.1:${process.env.EDEXO_DEV_API_PORT || "7111"}`;
 const DEV_PORT = Number(process.env.EDEXO_DEV_PORT || 5173);
 
 export default defineConfig({
-  plugins: [react()],
+  // Tailwind compiles the utilities only; minifying stays with Vite (esbuild) as before 3.2, so the
+  // app's own rules are not rewritten by a second optimiser.
+  plugins: [react(), tailwindcss({ optimize: false })],
   root: "src/client",
   publicDir: "../../public",
   resolve: {
@@ -35,6 +38,24 @@ export default defineConfig({
     // (es2020) down-levelled class fields and the like for nobody (plan 2.6, Fable 9.2).
     target: "es2022",
     rollupOptions: {
+      /*
+        The app and the HUD overlay pages (React since 1.2.17, plan 3.8). The overlays keep their names, so their
+        addresses — the Electron windows know them by path (electron/hudWindows.cjs), the phone by link — stay.
+      */
+      input: Object.fromEntries(
+        [
+          "index",
+          "hud-overlay",
+          "jump-overlay",
+          "fss-scan-overlay",
+          "exo-candidates-overlay",
+          "distance-overlay",
+          "data-value-overlay",
+          "achievement-overlay",
+          "notable-overlay",
+          "notices-overlay",
+        ].map((n) => [n, path.resolve(__dirname, "src/client", `${n}.html`)]),
+      ),
       output: {
         // React changes far less often than app code; keeping it in its own chunk means a release
         // only invalidates the app chunk in the browser cache. three.js likewise: 600 of the galaxy

@@ -114,6 +114,13 @@ export function judgeRegionalPresence(count: number, bioSystems: number): Region
  * name exactly one species. Above it the losses are the genuinely rare Bacteria (scopulum, omentum,
  * verrata), whose whole existence is being the minority.
  *
+ * The truth table holds few of those, and it hid how many fall *under* 0.25 % too: over 9,688
+ * known-spawn Bacterium and Clypeus bodies (~600 per species, 2026-10-04) the cut hid 4.7 % of
+ * verrata, 2.8 % of scopulum and 1 % of nebulus, on bodies with the volcanism or helium they need.
+ * So a species the body meets on its own key — its volcanism, or an atmosphere only it of the shown
+ * siblings asks for — is exempt (`demoteRegionallyRareSiblings`): rare in the region because such
+ * bodies are, it is the likely answer on this one.
+ *
  * It is applied **only between siblings shown together** (`demoteRegionallyRareSiblings`), never to
  * the last one of a genus. As a per-species gate it demoted Fonticulua fluctus in Inner Orion Spur
  * — the owner's rarest find — where it was the only Fonticulua on the body, and a different species
@@ -165,6 +172,20 @@ export interface RegionGenusShareVerdict {
  * offers before the knee, with four times the headroom below it.
  */
 export const REGION_SIBLING_DEPLETION = 0.05;
+
+/**
+ * At or above this share of its genus' records in the region, a species is never "out of place" there,
+ * however the sibling ratio reads.
+ *
+ * The ratio punishes a species that is dominant somewhere else. Sinuous Tubers Prasinum is 48 % of
+ * Sinuous Tubers galaxy-wide, nearly all of it Empyrean Straits; in Inner Scutum-Centaurus it is 18 %
+ * of the genus (72 of 399 records) and Lindigoticum is eight times its own galaxy share there, so the
+ * ratio read 0.044 and demoted Prasinum on 13 of 15 confirmed Prasinum bodies in that region (Norma
+ * Expanse alike, at 11 %). Everything the test demotes in the 112,372-slot replay sits under 1 % of its
+ * genus — the 0.3 % Tubus compagibus in the Trojan Belt it was made for among them — and a floor of
+ * 1, 2, 5 or 10 % changes none of those slots (2026-10-04).
+ */
+export const REGION_SIBLING_DEPLETION_MAX_SHARE = 0.05;
 
 /** The line a commander sees when the sibling test demotes a row. */
 export function regionSiblingDepletionDetail(regionName: string, name: string, favourite: string, ratio: number): string {

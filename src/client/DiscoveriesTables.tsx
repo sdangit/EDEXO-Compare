@@ -19,8 +19,15 @@
  * not the scrollbar. Sorting happens before the cut, so "most valuable" means most valuable of
  * everything rather than of the first few hundred.
  */
-import { greenGiantLabel, type GreenGiantMark, type GreenGiantVerdict } from "@shared/greenGasGiant";
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { BODY_FEATURES, type BodyFeatureKey } from "../shared/bodyFeatures.js";
+import {
+  greenGiantLabel,
+  greenGiantScoreText,
+  type GreenGiantMark,
+  type GreenGiantVerdict,
+} from "@shared/greenGasGiant";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ErrorBoundary } from "./ui/ErrorBoundary";
 import type { DiscoveriesDTO, DiscoveryBodyRow, DiscoveryStarRow, DiscoverySystemRow } from "@shared/types";
 import { fuzzyRankAny } from "./fuzzyMatch";
 import { CopySystemButton } from "./CopySystemButton";
@@ -28,6 +35,9 @@ import { ScrollArea } from "./ui/ScrollArea";
 import { Select } from "./ui/Select";
 import { isTerraformableState } from "@shared/terraformState";
 import { readableAtmosphereType } from "@shared/atmosphereLabel";
+import { fmtCrExact } from "@shared/format";
+import { csvFileName, downloadCsv, toCsv } from "./csv";
+import { isBool, usePersistedState } from "./usePersistedState";
 
 /** Rows rendered at once. Enough to scroll through, far short of what would stall the panel. */
 export const PAGE = 300;
@@ -46,7 +56,7 @@ export interface Column<T> {
   title?: string;
 }
 
-const cr = (n: number | null | undefined) => (n == null ? "—" : `${Math.round(n).toLocaleString()} CR`);
+const cr = fmtCrExact;
 const num = (n: number | null | undefined, digits = 0) =>
   n == null || !Number.isFinite(n) ? "—" : n.toLocaleString(undefined, { maximumFractionDigits: digits });
 const date = (iso: string | null) => (iso ? iso.slice(0, 10) : "—");
@@ -84,7 +94,19 @@ function SortHeader<T>({
  * than its row, and the copy icon rides along with the name (owner: "everything it currently has but
  * in a card").
  */
-export function Table<T>({
+/**
+ * The table in an error boundary: a row that fails to draw leaves a message and a button in its place, not an
+ * empty screen (owner, 2026-10-11).
+ */
+export function Table<T>(props: Parameters<typeof TableInner<T>>[0]) {
+  return (
+    <ErrorBoundary label="This table">
+      <TableInner {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function TableInner<T>({
   rows,
   columns,
   sort,
@@ -93,6 +115,7 @@ export function Table<T>({
   empty,
   layout = "list",
   resetKey,
+  csvName,
 }: {
   rows: T[];
   columns: Column<T>[];
@@ -103,6 +126,8 @@ export function Table<T>({
   layout?: DiscoveriesLayout;
   /** Scrolls back to the top when it changes. */
   resetKey?: unknown;
+  /** Offers "Export CSV" of every row (not only the first page), in the current order (F-5.11). */
+  csvName?: string;
 }) {
   const sorted = useMemo(() => {
     const col = columns.find((c) => c.key === sort.key) ?? columns[0]!;
@@ -123,7 +148,93 @@ export function Table<T>({
   }, [rows, columns, sort]);
 
   const shown = sorted.slice(0, PAGE);
+  /*
+    The table draws only the rows in view, plus a margin (owner, 2026-10-04, plan 3.4): every row is
+    there to scroll to, with no first-300 cap, and a 20,000-body log costs what a screenful does.
+
+    Each row's height is measured once it has been drawn, and a row not drawn yet counts as the
+    average of those that were. Rows can wrap (the Boxels table's species and badges run 32-90 px), so
+    one height measured off the first drawn row was wrong: every scroll put a different row first, the
+    height changed, the window moved, and the next first row changed it back — React stopped the loop
+    by unmounting the whole screen (owner, 2026-10-10: "scroll fast up and down in the boxel screen,
+    everything in it disappears"). A drawn row's height does not change, so the updates end.
+  */
+  const [view, setView] = useState({ top: 0, height: 600 });
+  const heights = useRef(new Map<string, number>());
+  const [measured, setMeasured] = useState(0);
+  const tbody = useRef<HTMLTableSectionElement>(null);
+  const OVERSCAN_PX = 640;
+  const onView = useCallback(
+    (top: number, height: number) =>
+      setView((v) => (Math.abs(v.top - top) < OVERSCAN_PX / 4 && v.height === height ? v : { top, height })),
+    [],
+  );
+  // Prefix offsets of every row: its own measured height, else the average of the measured ones.
+  const offsets = useMemo(() => {
+    let sum = 0;
+    for (const h of heights.current.values()) sum += h;
+    const avg = heights.current.size ? sum / heights.current.size : 28;
+    const out = new Float64Array(sorted.length + 1);
+    for (let i = 0; i < sorted.length; i++) out[i + 1] = out[i]! + (heights.current.get(rowKey(sorted[i]!)) ?? avg);
+    return out;
+    // `measured` stands for the contents of `heights`, which is a ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sorted, rowKey, measured]);
+  // The first row whose bottom is past `y`.
+  const rowAt = (y: number) => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid + 1]! > y) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  };
+  /*
+    Never past the end: a position beyond the rows (the list shrank, or a jump outran the estimate) drew
+    nothing but the spacers.
+  */
+  const top = Math.max(0, Math.min(view.top, offsets[sorted.length]! - view.height));
+  const from = rowAt(top - OVERSCAN_PX);
+  const to = Math.min(sorted.length, rowAt(top + view.height + OVERSCAN_PX) + 1);
+  /*
+    The columns are as wide as the rows drawn, so a row can measure differently in another window.
+    A few re-measures per scroll position settle it; past that the estimate stands until the next
+    scroll, so no window can feed itself.
+  */
+  const settle = useRef({ top: -1, n: 0 });
+  useLayoutEffect(() => {
+    if (settle.current.top !== view.top) settle.current = { top: view.top, n: 0 };
+    if (settle.current.n >= 3) return;
+    let changed = false;
+    for (const tr of tbody.current?.querySelectorAll<HTMLTableRowElement>("tr[data-row-key]") ?? []) {
+      const k = tr.dataset.rowKey!;
+      const h = tr.getBoundingClientRect().height;
+      if (h > 4 && Math.abs((heights.current.get(k) ?? 0) - h) > 0.5) {
+        heights.current.set(k, h);
+        changed = true;
+      }
+    }
+    if (changed) {
+      settle.current.n++;
+      setMeasured((n) => n + 1);
+    }
+  }, [from, to, sorted, columns, view.top]);
   if (rows.length === 0) return <p className="dim disc-empty">{empty}</p>;
+
+  const exportCsv = csvName ? (
+    <div className="disc-export">
+      <button
+        type="button"
+        className="btn secondary tiny"
+        title="Every row of this table, in this order, as a CSV file for a spreadsheet"
+        onClick={() => downloadCsv(csvFileName(csvName), toCsv(sorted, columns))}
+      >
+        Export CSV ({sorted.length.toLocaleString()})
+      </button>
+    </div>
+  ) : null;
 
   const more =
     sorted.length > PAGE ? (
@@ -137,6 +248,7 @@ export function Table<T>({
     const [title, ...facts] = columns;
     return (
       <>
+        {exportCsv}
         {/* No column headers to click in a card view, so the sort is a control of its own. */}
         <div className="disc-card-sort">
           <span className="small-caps dim">Sort</span>
@@ -180,8 +292,9 @@ export function Table<T>({
 
   return (
     <>
-      <ScrollArea className="disc-table-wrap" resetKey={resetKey}>
-        <table className="disc-table">
+      {exportCsv}
+      <ScrollArea className="disc-table-wrap" resetKey={resetKey} onView={onView}>
+        <table className="disc-table" aria-rowcount={sorted.length + 1}>
           <thead>
             <tr>
               {columns.map((c) => (
@@ -189,25 +302,37 @@ export function Table<T>({
               ))}
             </tr>
           </thead>
-          <tbody>
-            {shown.map((r) => (
-              <tr key={rowKey(r)}>
-                {columns.map((c) => (
-                  <td key={c.key} className={c.numeric ? "disc-td disc-td--num" : "disc-td"}>
-                    {c.render(r)}
-                  </td>
-                ))}
-              </tr>
-            ))}
+          <tbody ref={tbody}>
+            {from > 0 ? <tr aria-hidden style={{ height: offsets[from] }} /> : null}
+            {sorted.slice(from, to).map((r) => {
+              const k = rowKey(r);
+              return (
+                <tr key={k} data-row-key={k}>
+                  {columns.map((c) => (
+                    <td key={c.key} className={c.numeric ? "disc-td disc-td--num" : "disc-td"}>
+                      {c.render(r)}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+            {to < sorted.length ? (
+              <tr aria-hidden style={{ height: offsets[sorted.length]! - offsets[to]! }} />
+            ) : null}
           </tbody>
         </table>
       </ScrollArea>
-      {more}
     </>
   );
 }
 
-/** A filter that is on when any chip is picked; an empty set means "everything". */
+/**
+ * A filter that is on when any chip is picked; an empty set means "everything".
+ *
+ * Folded by default behind its label (owner, 2026-10-04: "they take too much space … shown at all
+ * times, + a drop down arrow"). Folded, the row still shows what is picked, so an active filter is
+ * never out of sight; the open/closed state is remembered per label.
+ */
 function ChipRow({
   label,
   options,
@@ -219,11 +344,22 @@ function ChipRow({
   picked: Set<string>;
   onToggle: (key: string) => void;
 }) {
+  const [open, setOpen] = usePersistedState(`discoveries.chips.${label}`, false, isBool);
   if (options.length === 0) return null;
+  const shown = open ? options : options.filter((o) => picked.has(o.key));
   return (
     <div className="disc-chip-row">
-      <span className="small-caps dim disc-chip-label">{label}</span>
-      {options.map((o) => (
+      <button
+        type="button"
+        className="disc-chip-label disc-chip-toggle small-caps dim"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        title={open ? "Hide these filters" : "Show these filters"}
+      >
+        {open ? "▾" : "▸"} {label}
+        {!open ? <span className="tiny"> ({options.length})</span> : null}
+      </button>
+      {shown.map((o) => (
         <button
           key={o.key}
           type="button"
@@ -272,6 +408,22 @@ function topValues<T>(rows: T[], read: (r: T) => string | null, limit = 12) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([key, n]) => ({ key, label: key, n }));
+}
+
+/**
+ * The Feature chips (owner, 2026-10-03: the Notify-me body features "never added as filters in My
+ * Discoveries"): every feature present in this tab's rows, in the Options order, with its count.
+ * Only features that occur are offered, so the row stays short on a small log.
+ */
+function featureOptions(rows: readonly { featureKeys?: BodyFeatureKey[] }[]) {
+  const counts = new Map<BodyFeatureKey, number>();
+  for (const r of rows) for (const k of r.featureKeys ?? []) counts.set(k, (counts.get(k) ?? 0) + 1);
+  return BODY_FEATURES.filter((f) => counts.has(f.key)).map((f) => ({ key: f.key, label: f.label, n: counts.get(f.key) }));
+}
+
+/** Any picked feature, like the Type chips: "small bodies or fast orbits". */
+function hasPickedFeature(picked: Set<string>, keys: readonly BodyFeatureKey[] | undefined): boolean {
+  return picked.size === 0 || (keys ?? []).some((k) => picked.has(k));
 }
 
 export type DiscoveriesTab = "systems" | "bodies" | "stars";
@@ -360,6 +512,7 @@ export function DiscoveriesTables({
       .catch(() => {});
   }, []);
   const [flagFilter, toggleFlag, clearFlags] = useToggleSet();
+  const [featureFilter, toggleFeature, clearFeatures] = useToggleSet();
 
   // Each tab has its own natural ordering and its own filter vocabulary; carrying one tab's sort
   // into another silently shows a table ordered by a column it does not have.
@@ -367,6 +520,7 @@ export function DiscoveriesTables({
     setQuery("");
     clearClass();
     clearFlags();
+    clearFeatures();
     setSort({ key: tab === "stars" ? "mass" : "estimated", dir: -1 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -501,6 +655,7 @@ export function DiscoveriesTables({
       if (flagFilter.has("ammonia") && r.ammoniaWorlds <= 0) return false;
       if (flagFilter.has("terra") && r.terraformables <= 0) return false;
       if (flagFilter.has("full") && !r.fullyScanned) return false;
+      if (!hasPickedFeature(featureFilter, r.featureKeys)) return false;
       if (!q) return true;
       return fuzzyRankAny([r.name, r.region ?? "", r.primaryStarType ?? ""], q) != null;
     });
@@ -534,12 +689,19 @@ export function DiscoveriesTables({
           picked={flagFilter}
           onToggle={toggleFlag}
         />
+        <ChipRow
+          label="Feature"
+          options={featureOptions(data.systems)}
+          picked={featureFilter}
+          onToggle={toggleFeature}
+        />
         <Table
           rows={filtered}
           columns={columns}
           sort={sort}
           onSort={onSort}
           rowKey={(r) => String(r.systemAddress)}
+          csvName="discoveries systems"
           empty="No systems match."
           layout={layout}
           resetKey={`${q}|${tab}`}
@@ -587,7 +749,9 @@ export function DiscoveriesTables({
                   className={`disc-ggg disc-ggg--${g.verdict.level}`}
                   title={`${greenGiantLabel(g.verdict)}: ${g.verdict.why}`}
                 >
-                  {g.verdict.gggNumber ? `green #${g.verdict.gggNumber}` : `green · ${g.verdict.level}`}
+                  {g.verdict.gggNumber
+                    ? `green #${g.verdict.gggNumber}`
+                    : `green · ${g.verdict.score != null ? greenGiantScoreText(g.verdict.score) : g.verdict.level}`}
                 </span>
               ) : null;
             })()}
@@ -700,6 +864,7 @@ export function DiscoveriesTables({
       if (flagFilter.has("volcanic") && !r.volcanism) return false;
       if (flagFilter.has("atmo") && !r.atmosphere) return false;
       if (flagFilter.has("green") && !greenOf(r).verdict) return false;
+      if (!hasPickedFeature(featureFilter, r.featureKeys)) return false;
       if (!q) return true;
       return (
         fuzzyRankAny(
@@ -741,12 +906,19 @@ export function DiscoveriesTables({
           picked={flagFilter}
           onToggle={toggleFlag}
         />
+        <ChipRow
+          label="Feature"
+          options={featureOptions(data.bodies)}
+          picked={featureFilter}
+          onToggle={toggleFeature}
+        />
         <Table
           rows={filtered}
           columns={columns}
           sort={sort}
           onSort={onSort}
           rowKey={(r) => r.key}
+          csvName="discoveries bodies"
           empty="No bodies match."
           layout={layout}
           resetKey={`${q}|${tab}`}
@@ -840,6 +1012,7 @@ export function DiscoveriesTables({
     // is his to have scanned first and still not his system.
     if (flagFilter.has("first") && r.firstDiscoveredSystem !== true) return false;
     if (flagFilter.has("bodyfirst") && !r.firstDiscoverer) return false;
+    if (!hasPickedFeature(featureFilter, r.featureKeys)) return false;
     if (!q) return true;
     return fuzzyRankAny([r.bodyName, r.system, r.starType, r.luminosity ?? "", r.region ?? ""], q) != null;
   });
@@ -857,12 +1030,19 @@ export function DiscoveriesTables({
         picked={flagFilter}
         onToggle={toggleFlag}
       />
+      <ChipRow
+        label="Feature"
+        options={featureOptions(data.stars)}
+        picked={featureFilter}
+        onToggle={toggleFeature}
+      />
       <Table
         rows={filtered}
         columns={columns}
         sort={sort}
         onSort={onSort}
         rowKey={(r) => r.key}
+        csvName="discoveries stars"
         empty="No stars match."
         layout={layout}
         resetKey={`${q}|${tab}`}

@@ -7,10 +7,14 @@
  * - `GET /api/dump/{id64}` — the system as Spansh holds it, bodies in the same shape EDSM uses
  *   (`subType`, `atmosphereType`, `gravity` in g, `surfaceTemperature`, `surfacePressure`,
  *   `isLandable`, `distanceToArrival`, `parents`, …), so the EDSM body mapper serves both. Bodies of
- *   type `Barycentre` are Spansh's own and are skipped: the map draws barycentres from `parents`.
+ *   type `Barycentre` are Spansh's own: they become the records a journal `ScanBaryCentre` makes,
+ *   the barycentre's orbit, which is how far a planet pair is from its star.
  */
 import type { ExplorationScanRecord } from "../shared/types.js";
-import { mapEdsmBodyToExplorationRecord } from "./edsmSystemHydration.js";
+import {
+  mapBarycentreBodyToExplorationRecord,
+  mapEdsmBodyToExplorationRecord,
+} from "./edsmSystemHydration.js";
 
 const SPANSH_NAMES_URL = "https://spansh.co.uk/api/systems/field_values/system_names";
 const SPANSH_DUMP_URL = "https://spansh.co.uk/api/dump";
@@ -23,8 +27,7 @@ function pickNum(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
-export type SpanshSearchResult =
-  { ok: true; systems: { systemAddress: number; starSystem: string }[] } | { ok: false; error: string };
+export type SpanshSearchResult = { ok: true; systems: SpanshSystemHit[] } | { ok: false; error: string };
 
 export async function searchSpanshSystemsByName(query: string, maxResults = 25): Promise<SpanshSearchResult> {
   const q = query.trim();
@@ -51,21 +54,34 @@ export async function searchSpanshSystemsByName(query: string, maxResults = 25):
   return { ok: true, systems: parseSpanshNameHits(data, maxResults) };
 }
 
+/** A Spansh name hit; the coordinates come along when Spansh gives them (the galaxy map places it). */
+export interface SpanshSystemHit {
+  systemAddress: number;
+  starSystem: string;
+  x?: number;
+  y?: number;
+  z?: number;
+}
+
 /** Exported for tests: the completion payload is `{ min_max: [{ id64, name, x, y, z }] }`. */
-export function parseSpanshNameHits(
-  data: unknown,
-  maxResults = 25,
-): { systemAddress: number; starSystem: string }[] {
+export function parseSpanshNameHits(data: unknown, maxResults = 25): SpanshSystemHit[] {
   const rows = data && typeof data === "object" ? (data as Record<string, unknown>).min_max : null;
   if (!Array.isArray(rows)) return [];
-  const out: { systemAddress: number; starSystem: string }[] = [];
+  const out: SpanshSystemHit[] = [];
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
     const rec = row as Record<string, unknown>;
     const id64 = pickNum(rec.id64);
     const name = pickStr(rec.name);
     if (id64 === undefined || !name) continue;
-    out.push({ systemAddress: Math.trunc(id64), starSystem: name });
+    const x = pickNum(rec.x);
+    const y = pickNum(rec.y);
+    const z = pickNum(rec.z);
+    out.push({
+      systemAddress: Math.trunc(id64),
+      starSystem: name,
+      ...(x !== undefined && y !== undefined && z !== undefined ? { x, y, z } : {}),
+    });
     if (out.length >= maxResults) break;
   }
   return out;
@@ -123,8 +139,10 @@ export function spanshDumpToExplorationRecords(
     if (!b || typeof b !== "object") continue;
     const body = b as Record<string, unknown>;
     const type = pickStr(body.type)?.toLowerCase();
-    if (type === "barycentre") continue;
-    const rec = mapEdsmBodyToExplorationRecord(body, systemAddress, starSystem);
+    const rec =
+      type === "barycentre"
+        ? mapBarycentreBodyToExplorationRecord(body, systemAddress, starSystem)
+        : mapEdsmBodyToExplorationRecord(body, systemAddress, starSystem);
     if (rec) out.push(rec);
   }
   if (out.length === 0) return { ok: false, error: "Spansh bodies could not be read for this system." };

@@ -31,7 +31,29 @@ function resolveLockToSpeciesId(
   const cands = db.species.filter((s) => s.genusDataDir === genusDataDir);
   const hits = cands.filter((e) => speciesMatchesOrganicLabels(e, lock));
   if (hits.length === 1) return hits[0]!.id;
+  // Names that hold each other ("Thargoid Spire" in "Major Thargoid Spire"): the exact one wins.
+  const exact = hits.filter((e) => {
+    const nd = normOrganicLabel(gameOrderSpeciesName(e.displayName));
+    return [lock.variantLocalised, lock.speciesLocalised].some((l) => !!l?.trim() && normOrganicLabel(l) === nd);
+  });
+  if (exact.length === 1) return exact[0]!.id;
   return null;
+}
+
+/**
+ * {@link collectResolvedOrganicLockSpeciesIds} over this body's **own** locks: not the ones copied from
+ * a sibling moon as a hint (`fromSibling`, gameState.ts). Copied, they read as found here — Skaude
+ * EX-A d1-228 5 c and 5 d carried 5 b's five species as "logged by you", "sampled here" and as the
+ * accuracy probe's truth, on moons nobody had landed on (2026-10-03).
+ */
+export function collectOwnOrganicLockSpeciesIds(
+  locks: OrganicGenusLock[] | null | undefined,
+  db: SpeciesDatabase,
+): string[] {
+  return collectResolvedOrganicLockSpeciesIds(
+    (locks ?? []).filter((l) => !l.fromSibling),
+    db,
+  );
 }
 
 /** Species entry ids unambiguously confirmed by on-foot ScanOrganic locks (genus + species/variant labels). */
@@ -135,6 +157,7 @@ export function organicScanConfirmsNonBacteriumGenus(
  * Absent `source` is a foot scan: every lock written before the field existed came from `ScanOrganic`.
  */
 export function footOrganicLocks(locks: OrganicGenusLock[] | null | undefined): OrganicGenusLock[] {
-  // Spansh locks are other commanders' logs for a looked-up system: never this commander's work.
-  return (locks ?? []).filter((l) => l.source !== "codex" && l.source !== "spansh");
+  // Spansh locks are other commanders' logs for a looked-up system: never this commander's work, and
+  // nor is a sibling moon's species copied here as a hint (2026-10-03).
+  return (locks ?? []).filter((l) => l.source !== "codex" && l.source !== "spansh" && !l.fromSibling);
 }

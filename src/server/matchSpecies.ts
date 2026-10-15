@@ -10,6 +10,8 @@ import type {
   EstimatedSurfaceTempBand,
   OrganicGenusLock,
 } from "../shared/types.js";
+import { orbitsAStar } from "./orbitUtils.js";
+import { atmosphereTypeKey } from "./speciesCriterionParser.js";
 import {
   REQUIRED_GAS_MIN_SHARE_PCT,
   requiredAtmosphereShare,
@@ -30,6 +32,8 @@ import {
   journalPressureToAtm,
 } from "../shared/journalPhysics.js";
 import { type SpatialCatalogue } from "../shared/spatialGates.js";
+import { gameGravityLimitG, gameTemperatureCeilingK } from "../shared/gameLimits.js";
+export { gameGravityLimitG, gameTemperatureCeilingK } from "../shared/gameLimits.js";
 import { observedAtGravity } from "./speciesGravityObservations.js";
 import { regionalPresence } from "./regionSpeciesData.js";
 import { regionPresenceDetail } from "../shared/regionAbsence.js";
@@ -41,6 +45,7 @@ import { observedUnderAtmosphere } from "./speciesAtmosphereObservations.js";
 import {
   normalizeScanAtmosphereForMatch,
   atmosphereCompositionKey,
+  atmosphereTypeKeyOf,
   atmosphereAllowlistMeansAnyThinCompositionOnly,
 } from "../shared/scanAtmosphereMatch.js";
 import { atmosphereBucketForEstimator, estimatedTemperatureRangeForScan } from "./planetTemperature.js";
@@ -49,7 +54,7 @@ import { filterByGenusHints } from "./genusMatchUtils.js";
 import {
   applyOrganicGenusLocks,
   organicScanConfirmsNonBacteriumGenus,
-  collectResolvedOrganicLockSpeciesIds,
+  collectOwnOrganicLockSpeciesIds,
 } from "./organicLocks.js";
 import { spectralKeysFromJournalStarType } from "../shared/starSpectralKeys.js";
 import { observedOnPlanetClass } from "./speciesPlanetClassObservations.js";
@@ -59,26 +64,23 @@ import {
   observedAtTemperature,
   observedNearTemperature,
 } from "./speciesTemperatureObservations.js";
+import { observedEnvelopeFactor } from "./observedEnvelope.js";
 import { observedWithVolcanism } from "./speciesVolcanismObservations.js";
 import { hostStarVerdict, type HostStarVerdict } from "./speciesHostStarObservations.js";
 import { volcanismJournalMatchesFragments } from "../shared/volcanismMatch.js";
 import { isBacteriumSpeciesEntry } from "../shared/speciesBacterium.js";
+import { reportsVolcanism } from "../shared/volcanismText.js";
 import {
   DEMOTED_NOTE,
-  restoreDemotionsBelowSignalCount,
-  demoteFailedSpatialGates,
-  demoteFailedHostStarGates,
-  demoteFailedSystemBodyGates,
-  demoteOutsideStarlight,
+  GAS_BAND_NOTE,
   OBSERVED_TEMP_TOLERANCE_K,
-  demoteRegionallyRareSiblings,
-  demoteDeltahedronixOnOneSignalIcy,
+  runDemotionPasses,
 } from "./demotionPasses.js";
 export {
   demoteFailedSpatialGates,
   demoteFailedHostStarGates,
   demoteFailedSystemBodyGates,
-  demoteOutsideStarlight,
+  weighOutsideStarlight,
   OBSERVED_TEMP_TOLERANCE_K,
   demoteRegionallyRareSiblings,
 } from "./demotionPasses.js";
@@ -109,7 +111,10 @@ function injectOrganicLockConfirmedSpecies(
   organicGenusLocks: OrganicGenusLock[] | null | undefined,
   db: SpeciesDatabase,
 ): { matches: Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">[]; injected: boolean } {
-  const wantIds = collectResolvedOrganicLockSpeciesIds(organicGenusLocks, db);
+  // The body's own finds only: a sibling moon's species are a hint (its genus is merged into this
+  // body's genus hints), and injected here they said "ScanOrganic on this body" about a moon nobody
+  // had landed on (Skaude EX-A d1-228 5 c, 2026-10-03).
+  const wantIds = collectOwnOrganicLockSpeciesIds(organicGenusLocks, db);
   if (!wantIds.length) return { matches, injected: false };
   const have = new Set(matches.map((m) => m.entry.id));
   let injected = false;
@@ -139,12 +144,6 @@ function injectOrganicLockConfirmedSpecies(
 const GENUS_DATA_DIR_REQUIRING_VOLCANISM = new Set<string>(["brain-tree"]);
 
 /**
- * In-game Brain Trees only on airless bodies; enforced even if genus JSON omits atmosphere.
- * Per-species rows still list planet classes that can exist with thin atmo — gate by scan.
- */
-const GENUS_DATA_DIR_REQUIRING_NO_ATMOSPHERE = new Set<string>(["brain-tree"]);
-
-/**
  * How much of a gas has to be in the mix before a plant can be said to live in it.
  *
  * Reported from the field: a body whose atmosphere is 99 % CO₂ and 0.99 % SO₂ is not a sulphur
@@ -158,13 +157,7 @@ function codexListMeansAll(values: string[] | undefined): boolean {
 }
 
 function journalReportsAnyVolcanism(scan: PlanetScan): boolean {
-  const raw = scan.Volcanism;
-  if (raw === undefined || raw === null) return false;
-  const v = String(raw).trim();
-  if (!v) return false;
-  const lo = v.toLowerCase();
-  if (lo.includes("no volcanism")) return false;
-  return true;
+  return reportsVolcanism(scan.Volcanism);
 }
 
 function inRange(v: number, min?: number, max?: number): boolean {
@@ -222,6 +215,8 @@ export interface CriteriaMatchResult {
   softOnly?: boolean;
   /** What did pass, kept so a demoted candidate can still show what fits. Only set when `!ok`. */
   passed?: MatchReason[];
+  /** Kept at a lower chance by a soft band (the orbit's `softBelow`); multiplies "Chance here". */
+  presenceFactor?: number;
 }
 
 export interface PlanetTemperatureBand {
@@ -233,7 +228,7 @@ function speciesTempBand(c: SpeciesCriterion): { lo: number; hi: number } | null
   const st = c.surfaceTemperatureK;
   if (!st) return null;
   if (st.min === undefined && st.max === undefined) return null;
-  return { lo: st.min ?? OPEN_LO, hi: st.max ?? OPEN_HI };
+  return { lo: st.min ?? OPEN_LO, hi: gameTemperatureCeilingK(st.max) ?? OPEN_HI };
 }
 
 /**
@@ -320,6 +315,7 @@ export function speciesMatchesExcludingTempPressure(
   const reasons: MatchReason[] = [];
   const c = entry.criteria;
   const ctx = matchContext ?? undefined;
+  let presenceFactor: number | undefined;
 
   if (!scan.PlanetClass) {
     failures.push({ field: "PlanetClass", detail: "No planet class in scan" });
@@ -475,7 +471,10 @@ export function speciesMatchesExcludingTempPressure(
           // A species that leaves its codex list only on volcanic ground: no volcanism, no rescue.
           const volcanismKnown = scan.Volcanism !== undefined && scan.Volcanism !== null;
           const rescueBarred =
-            !!observedHere && c.offListAtmosphereNeedsVolcanism === true && volcanismKnown && !presenceReportsAnyVolcanism(scan);
+            !!observedHere &&
+            c.offListAtmosphereNeedsVolcanism === true &&
+            volcanismKnown &&
+            !presenceReportsAnyVolcanism(scan);
           if (observedHere && rescueBarred) {
             failures.push({
               field: "AtmosphereType",
@@ -535,6 +534,7 @@ export function speciesMatchesExcludingTempPressure(
         if (!belowMin && !aboveMax) {
           reasons.push({
             field: "AtmosphereType",
+            card: "gas-share",
             detail: `${band.gas} ${pct.toFixed(1)} % of the atmosphere${
               band.min !== undefined && band.max !== undefined
                 ? ` (needs ${band.min}-${band.max} %)`
@@ -553,8 +553,9 @@ export function speciesMatchesExcludingTempPressure(
               : `at most ${band.max} %`;
         failures.push({
           field: "AtmosphereType",
+          card: "gas-share",
           soft: true,
-          detail: `${entry.displayName} needs ${want} ${band.gas}; this body is ${pct.toFixed(2)} % — every observed body for it sits inside that band. ${DEMOTED_NOTE}`,
+          detail: `${entry.displayName} needs ${want} ${band.gas}; this body is ${pct.toFixed(2)} % — ${GAS_BAND_NOTE} ${DEMOTED_NOTE}`,
         });
       }
     }
@@ -583,6 +584,7 @@ export function speciesMatchesExcludingTempPressure(
     if (verdict.kind !== "ok") {
       failures.push({
         field: "AtmosphereType",
+        card: "required-gas",
         soft: true,
         detail:
           verdict.kind === "trace"
@@ -592,17 +594,10 @@ export function speciesMatchesExcludingTempPressure(
     } else if (verdict.pct != null) {
       reasons.push({
         field: "AtmosphereType",
+        card: "required-gas",
         detail: `${verdict.gas} ${verdict.pct.toFixed(1)} % of the atmosphere`,
       });
     }
-  }
-
-  if (GENUS_DATA_DIR_REQUIRING_NO_ATMOSPHERE.has(entry.genusDataDir) && atmoNorm !== "") {
-    const raw = (scan.AtmosphereType ?? "").trim();
-    failures.push({
-      field: "AtmosphereType",
-      detail: `Brain trees only appear on airless worlds; journal has “${raw || "…"}”.`,
-    });
   }
 
   if (c.landable === true && scan.Landable === false) {
@@ -623,8 +618,14 @@ export function speciesMatchesExcludingTempPressure(
    * Bacterium tela is why the first claim needs overruling: its codex row requires volcanism and 177
    * of its 214 observed bodies have none. Fumerola extremus is why the second does: 10 of its 43 are
    * metallic magma, which its fragment list does not admit.
+   *
+   * The observation compares the type and drops the intensity, so it stays out where the row's own
+   * list names one: Amphora's "Major Metallic Magma" was measured on intensity (all 926 known bodies
+   * major, none minor; 2026-10-14), and a minor metallic magma body is not rescued by them.
    */
-  const volcanismSeen = observedWithVolcanism(entry, scan.Volcanism);
+  const intensityListed =
+    criteriaVolcanoFragments && c.volcanismIncludes!.every((f) => /^\s*(major|minor)\s/i.test(f));
+  const volcanismSeen = intensityListed ? null : observedWithVolcanism(entry, scan.Volcanism);
 
   if (
     (genusNeedsVolcano || criteriaVolcanoFragments || explicitVolcanoRequired) &&
@@ -673,7 +674,7 @@ export function speciesMatchesExcludingTempPressure(
   const gRaw = scan.SurfaceGravity;
   if (c.surfaceGravity && gRaw !== undefined) {
     const g = journalSurfaceGravityToG(gRaw);
-    const fit = rangeFit(g, c.surfaceGravity.min, c.surfaceGravity.max);
+    const fit = rangeFit(g, c.surfaceGravity.min, gameGravityLimitG(c.surfaceGravity.max));
     /**
      * Observation overrules the codex band, the fifth field to get it (§43). Unlike the four before
      * it this gate was never fatal — outside by under {@link NUMERIC_GATE_TOLERANCE} already only
@@ -781,6 +782,7 @@ export function speciesMatchesExcludingTempPressure(
         // bodies orbit an A-type star. The missing artwork is ours; the species is really there.
         reasons.push({
           field: "StarType",
+          card: "supported-star-types",
           detail: `${ctx.parentStarType} — no colour variant in our genus table, but ${starVerdict.observations} of ${starVerdict.total} observed bodies have this host class.`,
         });
       } else if (excluded) {
@@ -788,6 +790,7 @@ export function speciesMatchesExcludingTempPressure(
         // species cannot grow there — and it is the app's own data saying so.
         failures.push({
           field: "StarType",
+          card: "supported-star-types",
           soft: true,
           detail: `Genus colour table has no variant for host class ${specKeys.join("/")} — “${ctx.parentStarType}”.`,
         });
@@ -818,7 +821,19 @@ export function speciesMatchesExcludingTempPressure(
   if (orb && (orb.min !== undefined || orb.max !== undefined) && ctx?.orbitDistanceFromParentStarLs != null) {
     const v = ctx.orbitDistanceFromParentStarLs;
     const fit = rangeFit(v, orb.min, orb.max);
-    if (fit !== "in") {
+    const step = orb.min !== undefined && v < orb.min ? orb.softBelow?.find((s) => v >= s.fromLs) : undefined;
+    if (fit !== "in" && step) {
+      /*
+        Under the codex minimum, where the species still grows, only less often: kept, at the chance
+        the corpus gives it there. Clypeus speculumi, "5 AU" (2,495 ls): 64 of its 5,974 bodies sit at
+        2,300–2,495 ls and one was missed at 2,327 (EDDN ScanOrganic set, 2026-10-03).
+      */
+      presenceFactor = step.factor;
+      reasons.push({
+        field: "Orbit",
+        detail: `${v.toFixed(0)} LS from host — under the codex ${orb.min} LS, where it is rarer: kept at ×${step.factor} chance.`,
+      });
+    } else if (fit !== "in") {
       // Soft either way: the codex orbit range is one more claim about where a species has been
       // seen, and a body outside it is a candidate to rank low rather than one to hide (§6).
       failures.push({
@@ -846,7 +861,8 @@ export function speciesMatchesExcludingTempPressure(
    * Distance from the arrival star — a wall, unlike the orbit range. Crystalline Shards, the one species
    * carrying it: all 5,932 Spansh-dump bodies are ≥ 12,004 Ls from arrival, so a body well inside the
    * rule is not a place they grow. Just inside it (the numeric tolerance) demotes; an unknown distance
-   * demotes too, since a cold rock anywhere would otherwise list them.
+   * demotes too, since a cold rock anywhere would otherwise list them. (Shards also carry
+   * `allConditionsRequired`, so for them either demotion drops the row: dropUnprovenStrictSpecies.)
    */
   const arr = c.distanceFromArrivalLs;
   if (arr && (arr.min !== undefined || arr.max !== undefined)) {
@@ -941,10 +957,24 @@ export function speciesMatchesExcludingTempPressure(
     how rare the species is (Common 50 systems … Legendary 1) instead of one share for everything.
     The EDAstro share gate below stays as the fallback for anything the tier data does not know.
   */
-  const tierVerdict = ctx?.regionName ? tierRegionalPresence(getProjectRoot(), ctx.regionName, entry.id) : null;
+  const tierVerdict = ctx?.regionName
+    ? tierRegionalPresence(getProjectRoot(), ctx.regionName, entry.id)
+    : null;
   if (tierVerdict && ctx?.regionName) {
-    if (tierVerdict.presence === "absent") {
-      failures.push({ field: "Region", soft: true, detail: tierRegionDetail(ctx.regionName, tierVerdict, true) });
+    /*
+      Logged in the region at all, on a body that meets every other condition: it grows there (owner,
+      2026-10-04: "exempt it if logged at least once"). Clypeus speculumi in Aquila's Halo, 4 systems
+      against an uncommon species' 10, was hidden on 5 of 606 of its own known-spawn bodies.
+    */
+    const loggedHere = tierVerdict.presence === "absent" && tierVerdict.count >= 1 && failures.length === 0;
+    if (loggedHere) {
+      reasons.push({ field: "Region", detail: tierRegionDetail(ctx.regionName, tierVerdict, false) });
+    } else if (tierVerdict.presence === "absent") {
+      failures.push({
+        field: "Region",
+        soft: true,
+        detail: tierRegionDetail(ctx.regionName, tierVerdict, true),
+      });
     } else if (tierVerdict.presence === "present") {
       reasons.push({ field: "Region", detail: tierRegionDetail(ctx.regionName, tierVerdict, false) });
     }
@@ -980,12 +1010,18 @@ export function speciesMatchesExcludingTempPressure(
     }
   }
 
-  return { ok: true, reasons };
+  return presenceFactor !== undefined ? { ok: true, reasons, presenceFactor } : { ok: true, reasons };
 }
 
 /**
  * Strict match: temp/pressure are hard gates using estimated surface band vs species range.
  */
+/**
+ * A moon-grower on a planet round a star (owner, 2026-10-09): Concha labiata's star-orbiting share
+ * against renibus's in the same climate, 3.4 % / 22 % (a year of EDDN: 926 of its 27,415 bodies).
+ */
+const STAR_ORBIT_FACTOR = 0.15;
+
 export function speciesMatchesCriteria(
   entry: SpeciesEntry,
   scan: PlanetScan,
@@ -1052,7 +1088,13 @@ export function speciesMatchesCriteria(
        */
       const observedHere = observedAtTemperature(entry, scan.SurfaceTemperature);
       const edgeCheck = observedHere
-        ? sightingsBeyondEdge(entry, observedHere, scan.SurfaceTemperature!, c.surfaceTemperatureK?.min, c.surfaceTemperatureK?.max)
+        ? sightingsBeyondEdge(
+            entry,
+            observedHere,
+            scan.SurfaceTemperature!,
+            c.surfaceTemperatureK?.min,
+            gameTemperatureCeilingK(c.surfaceTemperatureK?.max),
+          )
         : null;
       // No fine histogram to ask: the display bin answers, as it always did.
       const beyond =
@@ -1117,6 +1159,7 @@ export function speciesMatchesCriteria(
     if (below || above) {
       failures.push({
         field: "SurfaceTemperature",
+        card: "soft-temp",
         soft: true,
         detail:
           `${tMeasured.toFixed(1)} K is ${above ? `above ${softBand.max}` : `below ${softBand.min}`} K, ` +
@@ -1131,11 +1174,31 @@ export function speciesMatchesCriteria(
   */
   const smaMax = c.softMaxSemiMajorAxisLs;
   const sma = scan.SemiMajorAxis;
-  if (smaMax !== undefined && typeof sma === "number" && Number.isFinite(sma) && sma > 0) {
+  let orbitFactor: number | undefined;
+  // The context reads the exploration record's Parents; a scan that carries its own is the fallback.
+  const roundAStar =
+    matchContext?.orbitsAStar ?? orbitsAStar((scan as unknown as Record<string, unknown>).Parents);
+  if (smaMax !== undefined && roundAStar) {
+    /*
+      A planet round a star, where a moon-grower is rarer but does grow (owner, 2026-10-09: 926 of
+      27,415 Concha labiata bodies in a year of EDDN, 3.4 %; renibus, which shares its climate, 22 %).
+      Kept in the list at that ratio of chance, so renibus still ranks first, instead of being
+      demoted: the demotion was a miss on every one of them.
+    */
+    orbitFactor = STAR_ORBIT_FACTOR;
+    extraOkReasons.push({
+      field: "Orbit",
+      card: "soft-orbit",
+      detail: `Orbits a star, not a planet: this species grows on close moons, and on a planet round a star about ${Math.round(
+        STAR_ORBIT_FACTOR * 100,
+      )} % as often — kept at that chance.`,
+    });
+  } else if (smaMax !== undefined && typeof sma === "number" && Number.isFinite(sma) && sma > 0) {
     const ls = sma / LIGHT_SECOND_METERS;
     if (ls > smaMax) {
       failures.push({
         field: "Orbit",
+        card: "soft-orbit",
         soft: true,
         detail:
           `Orbits its parent at ${ls >= 100 ? Math.round(ls).toLocaleString() : ls.toFixed(1)} ls; this species is rarely ` +
@@ -1145,15 +1208,21 @@ export function speciesMatchesCriteria(
   }
 
   // Measured absence of volcanism (SpeciesCriterion.softNoVolcanism). Abstains without a volcanism field.
-  if (c.softNoVolcanism && scan.Volcanism !== undefined && scan.Volcanism !== null && presenceReportsAnyVolcanism(scan)) {
+  if (
+    c.softNoVolcanism &&
+    scan.Volcanism !== undefined &&
+    scan.Volcanism !== null &&
+    presenceReportsAnyVolcanism(scan)
+  ) {
     failures.push({
       field: "Volcanism",
+      card: "soft-volcanism",
       soft: true,
       detail: `${String(scan.Volcanism).trim()} — this species is almost never recorded on a volcanic body. ${DEMOTED_NOTE}`,
     });
   }
 
-  const linkedMax = c.whenAtmosphereLinkedMaxTempK;
+  const linkedMax = gameTemperatureCeilingK(c.whenAtmosphereLinkedMaxTempK);
   const linkedMin = c.whenAtmosphereLinkedMinTempK;
   const linkedAtmo = c.whenAtmosphereLinkedAtmosphereAnyOf;
   if (linkedMax !== undefined || linkedMin !== undefined) {
@@ -1176,6 +1245,7 @@ export function speciesMatchesCriteria(
       if (!planetTempBand) {
         failures.push({
           field: "SurfaceTemperature",
+          card: "linked-temp-cap",
           detail:
             "Atmosphere-linked temperature cap needs SurfaceTemperature (or a mappable PlanetClass) to estimate the surface band.",
         });
@@ -1203,12 +1273,15 @@ export function speciesMatchesCriteria(
         const observedLinked =
           observedLinkedRaw &&
           linkedCheck &&
-          (!linkedCheck.straddles || linkedCheck.near === null || linkedCheck.near >= MIN_TEMPERATURE_OBSERVATIONS)
+          (!linkedCheck.straddles ||
+            linkedCheck.near === null ||
+            linkedCheck.near >= MIN_TEMPERATURE_OBSERVATIONS)
             ? observedLinkedRaw
             : null;
         if (observedLinkedRaw && !observedLinked) {
           failures.push({
             field: "SurfaceTemperature",
+            card: "linked-temp-cap",
             soft: true,
             detail:
               `${(scan.SurfaceTemperature ?? 0).toFixed(0)} K is outside the codex band for this atmosphere, and only ` +
@@ -1217,12 +1290,14 @@ export function speciesMatchesCriteria(
         } else if (observedLinked) {
           extraOkReasons.push({
             field: "SurfaceTemperature",
+            card: "linked-temp-cap",
             detail: `${(scan.SurfaceTemperature ?? 0).toFixed(0)} K is outside the codex band for this atmosphere, but ${observedLinked.observations} of ${observedLinked.total} observed bodies for this species sit at this temperature.`,
           });
         } else if (linkedMax !== undefined && planetTempBand.maxK > linkedMax) {
           const near = rangeFit(planetTempBand.maxK, undefined, linkedMax) === "near";
           failures.push({
             field: "SurfaceTemperature",
+            card: "linked-temp-cap",
             ...(near ? { soft: true } : {}),
             detail: `With matching atmosphere, codex caps the mean band at ≤ ${linkedMax} K (estimated band max ${planetTempBand.maxK.toFixed(0)} K).${near ? ` Within ${NUMERIC_GATE_TOLERANCE * 100}%. ${DEMOTED_NOTE}` : ""}`,
           });
@@ -1238,6 +1313,7 @@ export function speciesMatchesCriteria(
           const near = rangeFit(planetTempBand.minK, linkedMin, undefined) === "near";
           failures.push({
             field: "SurfaceTemperature",
+            card: "linked-temp-cap",
             ...(near ? { soft: true } : {}),
             detail: `With matching atmosphere, codex floors the mean band at ≥ ${linkedMin} K (estimated band min ${planetTempBand.minK.toFixed(0)} K).${near ? ` Within ${NUMERIC_GATE_TOLERANCE * 100}%. ${DEMOTED_NOTE}` : ""}`,
           });
@@ -1246,6 +1322,7 @@ export function speciesMatchesCriteria(
         const atNote = linkedAtmo?.length ? ` (${linkedAtmo.join(" / ")})` : "";
         extraOkReasons.push({
           field: "SurfaceTemperature",
+          card: "linked-temp-cap",
           detail:
             linkedMin !== undefined && linkedMax !== undefined
               ? `Atmosphere-linked band ${linkedMin}–${linkedMax} K satisfied (estimated ${planetTempBand.minK.toFixed(0)}–${planetTempBand.maxK.toFixed(0)} K)${atNote}`
@@ -1274,6 +1351,7 @@ export function speciesMatchesCriteria(
     if (rawP === undefined || rawP === null) {
       failures.push({
         field: "SurfacePressure",
+        card: "surface-pressure",
         detail: "This species defines a pressure range — need SurfacePressure from the detailed scan.",
       });
     } else {
@@ -1283,11 +1361,36 @@ export function speciesMatchesCriteria(
       if (fit !== "in") {
         failures.push({
           field: "SurfacePressure",
+          card: "surface-pressure",
           soft: true,
           detail: `${shown} atm outside ${c.surfacePressure.min ?? "−∞"}–${c.surfacePressure.max ?? "∞"} atm${fit === "near" ? `, by under ${NUMERIC_GATE_TOLERANCE * 100}%` : ""}. ${DEMOTED_NOTE}`,
         });
       } else {
-        extraOkReasons.push({ field: "SurfacePressure", detail: `${shown} atm` });
+        extraOkReasons.push({ field: "SurfacePressure", card: "surface-pressure", detail: `${shown} atm` });
+      }
+    }
+  }
+
+  // A ceiling for one atmosphere only (Crystalline Shards on thin carbon dioxide; 2026-10-10).
+  if (c.maxPressureByAtmosphere && rawP !== undefined && rawP !== null) {
+    const here = atmosphereTypeKeyOf(scan);
+    const cap = Object.entries(c.maxPressureByAtmosphere).find(([k]) => atmosphereTypeKey(k) === here)?.[1];
+    if (cap !== undefined) {
+      const p = journalPressureToAtm(rawP);
+      const shown = p < 0.01 ? p.toFixed(4) : p.toFixed(3);
+      if (p > cap) {
+        failures.push({
+          field: "SurfacePressure",
+          card: "pressure-by-atmosphere",
+          soft: true,
+          detail: `${shown} atm on ${scan.AtmosphereType}, over the ${cap} atm it has been found at on this atmosphere. ${DEMOTED_NOTE}`,
+        });
+      } else {
+        extraOkReasons.push({
+          field: "SurfacePressure",
+          card: "pressure-by-atmosphere",
+          detail: `${shown} atm (up to ${cap} on ${scan.AtmosphereType})`,
+        });
       }
     }
   }
@@ -1309,11 +1412,28 @@ export function speciesMatchesCriteria(
     Skipped entirely when the species has no envelope: under twenty bodies is a handful of anecdotes,
     and demoting a row against three observations would assert more than we know.
   */
+  let envelopeFactor: number | undefined;
   const envelope = entry.observedTemperatureK;
   const tHere = scan.SurfaceTemperature;
   // See OBSERVED_TEMP_TOLERANCE_K: an envelope edge is a recorded body, not a wall.
   if (envelope && typeof tHere === "number" && Number.isFinite(tHere) && failures.length === 0) {
-    if (tHere < envelope.min - OBSERVED_TEMP_TOLERANCE_K || tHere > envelope.max + OBSERVED_TEMP_TOLERANCE_K) {
+    const outside =
+      tHere < envelope.min - OBSERVED_TEMP_TOLERANCE_K || tHere > envelope.max + OBSERVED_TEMP_TOLERANCE_K;
+    const factor = outside ? observedEnvelopeFactor(entry.id) : undefined;
+    if (outside && factor !== undefined) {
+      // Kept, at how much less likely the corpus says it is out here than its siblings are.
+      envelopeFactor = factor;
+      extraOkReasons.push({
+        field: "ObservedTemperature",
+        soft: factor < 1,
+        detail:
+          `${tHere.toFixed(1)} K is outside the ${envelope.min.toFixed(0)}–${envelope.max.toFixed(0)} K ` +
+          `range of its ${envelope.count} profile bodies` +
+          (factor < 1
+            ? `; kept at ×${factor} chance, as rare out here as the corpus has it.`
+            : `; the corpus finds it out here as often as its siblings.`),
+      });
+    } else if (outside) {
       failures.push({
         // Its own field name, not "SurfaceTemperature": the signal-count rescue has to be able to
         // tell this from a codex-gate near miss, and it reads better in the tooltip besides.
@@ -1336,7 +1456,12 @@ export function speciesMatchesCriteria(
     };
   }
 
-  return { ok: true, reasons: [...base.reasons, ...extraOkReasons] };
+  const ok = { ok: true, reasons: [...base.reasons, ...extraOkReasons] };
+  const pf =
+    base.presenceFactor !== undefined || envelopeFactor !== undefined || orbitFactor !== undefined
+      ? (base.presenceFactor ?? 1) * (envelopeFactor ?? 1) * (orbitFactor ?? 1)
+      : undefined;
+  return pf !== undefined ? { ...ok, presenceFactor: pf } : ok;
 }
 
 /**
@@ -1416,6 +1541,14 @@ export function matchDatabaseToScan(
   }
   const genusFilterActive = !!(genusHints && genusHints.length);
   const dssGenusNarrowing = genusFilterActive;
+  /*
+    DSS-only rows (the Thargoid entries, owner 2026-10-04): never predicted from the body. Only a DSS
+    naming their genus lists them, then without any test of the body; a logged one comes back below
+    through the organic locks like any find.
+  */
+  narrowed = narrowed.filter(
+    (e) => !e.dssOnly || (genusFilterActive && filterByGenusHints([e], genusHints).length > 0),
+  );
 
   const est = estimatedTemperatureRangeForScan(scan);
   const estimatedSurfaceTempK: EstimatedSurfaceTempBand | null = est
@@ -1438,9 +1571,17 @@ export function matchDatabaseToScan(
    */
   const unlikely: Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">[] = [];
   for (const entry of narrowed) {
+    if (entry.dssOnly) {
+      strict.push({ entry, reasons: [{ field: "Genus", detail: "The DSS named this genus on the body." }] });
+      continue;
+    }
     const r = speciesMatchesCriteria(entry, scan, planetTempBand, est, matchContext);
     if (r.ok) {
-      strict.push({ entry, reasons: r.reasons });
+      strict.push(
+        r.presenceFactor !== undefined
+          ? { entry, reasons: r.reasons, presenceFactor: r.presenceFactor }
+          : { entry, reasons: r.reasons },
+      );
     } else if (r.softOnly) {
       unlikely.push({
         entry,
@@ -1451,25 +1592,17 @@ export function matchDatabaseToScan(
     }
   }
 
-  demoteFailedSpatialGates(strict, unlikely, matchContext, options?.spatialCatalogue ?? null);
-  demoteFailedHostStarGates(strict, unlikely, matchContext);
-  demoteFailedSystemBodyGates(strict, unlikely, matchContext);
-  demoteOutsideStarlight(strict, unlikely, matchContext);
-  demoteRegionallyRareSiblings(strict, unlikely, matchContext);
-  demoteDeltahedronixOnOneSignalIcy(
-    strict,
-    unlikely,
-    scan.PlanetClass,
-    options?.biologicalSignals ?? null,
-    options?.signalCountAssumed === true,
-  );
-
-  restoreDemotionsBelowSignalCount(
-    strict,
-    unlikely,
-    options?.biologicalSignals ?? null,
-    genusFilterActive ? new Set(narrowed.map((e) => e.genusDataDir)) : null,
-  );
+  // The same passes, in the same order, as the galaxy body scan (demotionPasses.ts, B3).
+  runDemotionPasses(strict, unlikely, {
+    planetClass: scan.PlanetClass,
+    matchContext,
+    spatialCatalogue: options?.spatialCatalogue ?? null,
+    biologicalSignals: options?.biologicalSignals ?? null,
+    signalCountAssumed: options?.signalCountAssumed === true,
+    dssNamed: (e) => genusFilterActive && filterByGenusHints([e], genusHints).length > 0,
+    restoreGenera: genusFilterActive ? new Set(narrowed.map((e) => e.genusDataDir)) : null,
+    restore: true,
+  });
 
   if (strict.length > 0 || unlikely.length > 0) {
     const { matches, injected } = injectOrganicLockConfirmedSpecies(

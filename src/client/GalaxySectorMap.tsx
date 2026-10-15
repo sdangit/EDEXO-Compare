@@ -40,6 +40,8 @@ import { EMPTY_HITS, strongestKind, PROJECTIONS } from "./galaxySectorShared";
 import type { Kind, CommanderPosition, CommanderCell } from "./galaxySectorShared";
 import { SectorPlot } from "./GalaxySectorPlot";
 import { SectorReadout, SectorSystems } from "./GalaxySectorReadouts";
+import { fmtCrExact, fmtLy } from "@shared/format";
+import { Tooltip } from "./ui/Tooltip";
 export type { CommanderPosition } from "./galaxySectorShared";
 
 export function GalaxySectorMap({
@@ -367,13 +369,11 @@ export function GalaxySectorMap({
               ? ""
               : nextTarget.distanceLy < 1
                 ? "you are here"
-                : nextTarget.distanceLy >= 10000
-                  ? `${(nextTarget.distanceLy / 1000).toFixed(1)} kly away`
-                  : `${Math.round(nextTarget.distanceLy).toLocaleString("en-US")} ly away`}
+                : `${fmtLy(nextTarget.distanceLy)} away`}
           </span>
           <span className="dim">
             {nextTarget.bodies} unfinished {nextTarget.bodies === 1 ? "body" : "bodies"} ·{" "}
-            {Math.round(nextTarget.floorCr).toLocaleString("en-US")} CR floor
+            {fmtCrExact(nextTarget.floorCr)} floor
           </span>
         </div>
       ) : null}
@@ -512,20 +512,18 @@ export function GalaxySectorMap({
           than a disc. They are not a different kind of thing, they are the same thing with one fact
           missing, so they sit beside it in the legend rather than somewhere else.
         */}
-        <li
-          className="galaxy-map__legend--layer"
-          title="The same, where the journal never reported footfall. The biology is recorded; whether the 5x first-footfall bonus is still intact is not, so the ring is left open."
-        >
-          <span className="galaxy-map__swatch galaxy-map__swatch--target-unverified" aria-hidden="true" />…
-          with footfall unconfirmed
+        <li className="galaxy-map__legend--layer">
+          <Tooltip text="The same, where the journal never reported footfall. The biology is recorded; whether the 5x first-footfall bonus is still intact is not, so the ring is left open.">
+            <span className="galaxy-map__swatch galaxy-map__swatch--target-unverified" aria-hidden="true" />…
+            with footfall unconfirmed
+          </Tooltip>
         </li>
         {searchHitCount > 0 ? (
-          <li
-            className="galaxy-map__legend--layer"
-            title="Where the search found biology, sampled across the galaxy: the richest system in each sector that matched, not the ones nearest you. Click one to open its sector."
-          >
-            <span className="galaxy-map__swatch galaxy-map__swatch--hit" aria-hidden="true" />
-            Search results — {searchHitCount} sector{searchHitCount === 1 ? "" : "s"} sampled
+          <li className="galaxy-map__legend--layer">
+            <Tooltip text="Where the search found biology, sampled across the galaxy: the richest system in each sector that matched, not the ones nearest you. Click one to open its sector.">
+              <span className="galaxy-map__swatch galaxy-map__swatch--hit" aria-hidden="true" />
+              Search results — {searchHitCount} sector{searchHitCount === 1 ? "" : "s"} sampled
+            </Tooltip>
           </li>
         ) : null}
       </ul>

@@ -42,6 +42,18 @@ export interface UpdateDownloadDTO {
   error: string | null;
 }
 
+/** GET /api/app/whats-new — release notes since the version last seen (server/whatsNew.ts). */
+export interface WhatsNewDTO {
+  /** True when this start has notes the commander has not closed yet. */
+  pending: boolean;
+  current: string;
+  /** Notes are for the releases after this version; null for this version's only. */
+  from: string | null;
+  /** Newest first; empty when GitHub could not be asked (`error`) or lists none. */
+  releases: { version: string; publishedAt: string | null; pageUrl: string; notes: string }[];
+  error: string | null;
+}
+
 export interface FeederStatusDTO {
   /** False when there is no corpus on this machine; the panel hides itself. */
   available: boolean;
@@ -222,6 +234,23 @@ export interface HudPrefsDTO {
   compact?: boolean;
   /** Only when relevant: HUD sections with nothing to show step aside (guild tester, 2026-09-30). */
   relevant?: boolean;
+  /** HUD type (owner, 2026-10-04): Original (default), Title Background, Elite Style. */
+  hudType?: "original" | "title" | "elite";
+  /** "HUD Overlay by EDEXO-Compare" above or below each HUD (owner, 2026-10-09); off by default. */
+  credit?: "off" | "top" | "bottom";
+  /** "Next boxel" line under the Next jump HUD (plan 2.7). */
+  nextBoxel?: boolean;
+  /** Elite Style's tilt, degrees, -35..35 (positive: the right edge goes into the screen). */
+  tilt?: number;
+  /** Elite Style's angle as a turn (3D, "swinging door") or a slant (flat, same width). */
+  tiltMode?: "turn" | "slant";
+  /** Elite Style's slant, degrees, -15..15 (positive: rising to the right). */
+  slant?: number;
+  /**
+   * The HUD sections open in the app, in the launcher's stack order (owner, 2026-10-15: the phone shows what the app
+   * has enabled, in its order). Absent when the launcher cannot tell (not in Electron).
+   */
+  sections?: string[];
 }
 
 /** The session log: what happened since the app started, for the modal and the Markdown copy. */

@@ -9,6 +9,7 @@ import { isLoopbackAddress, localOnly } from "../lanAuth.js";
 import { isEdsmCatchUpScope } from "../edsmCatchUp.js";
 
 import type { HttpServerOptions, RouteContext } from "../httpServer.js";
+import { setUiMirror, uiMirror } from "../uiMirror.js";
 
 export function registerSettingsRoutes(
   app: express.Express,
@@ -248,7 +249,8 @@ export function registerSettingsRoutes(
 
   app.post("/api/notices/unread", (req, res) => {
     const b = (req.body ?? {}) as { ids?: unknown };
-    if (typeof opts.markNoticesUnread !== "function") return void res.status(501).json({ ok: false, error: "Not available" });
+    if (typeof opts.markNoticesUnread !== "function")
+      return void res.status(501).json({ ok: false, error: "Not available" });
     if (!Array.isArray(b.ids) || !b.ids.every((x) => typeof x === "string")) {
       res.status(400).json({ ok: false, error: 'JSON body must be { "ids": string[] }.' });
       return;
@@ -256,8 +258,16 @@ export function registerSettingsRoutes(
     res.json({ ok: true, changed: opts.markNoticesUnread(b.ids as string[]) });
   });
 
+  app.post("/api/notices/test", (_req, res) => {
+    if (typeof opts.sendTestNotice !== "function")
+      return void res.status(501).json({ ok: false, error: "Not available" });
+    opts.sendTestNotice();
+    res.json({ ok: true });
+  });
+
   app.post("/api/notices/clear-read", (_req, res) => {
-    if (typeof opts.clearReadNotices !== "function") return void res.status(501).json({ ok: false, error: "Not available" });
+    if (typeof opts.clearReadNotices !== "function")
+      return void res.status(501).json({ ok: false, error: "Not available" });
     res.json({ ok: true, removed: opts.clearReadNotices() });
   });
 
@@ -275,35 +285,41 @@ export function registerSettingsRoutes(
     res.json({ ok: true, radiusM: opts.setRadarRadiusM(raw) });
   });
 
-  app.post("/api/settings/include-bacterium", (req, res) => {
-    if (typeof opts.setIncludeBacterium !== "function") {
-      res.status(501).json({ ok: false, error: "Not available" });
-      return;
-    }
-    const value = req.body?.value;
-    if (typeof value !== "boolean") {
-      res.status(400).json({ ok: false, error: 'JSON body must include boolean "value".' });
-      return;
-    }
-    opts.setIncludeBacterium(value);
-    opts.scheduleBroadcast?.();
-    res.json({ ok: true });
-  });
+  /*
+    A switch the launcher or a window flips: 501 when this build has no such setting, 400 unless the body
+    is {"value": true|false}, then set it and push. Six handlers were this, line for line (code review C7).
+    The setter is read per request, as each handler did.
+  */
+  const boolSetting = (route: string, setter: () => ((value: boolean) => void) | undefined): void => {
+    app.post(route, (req, res) => {
+      const set = setter();
+      if (typeof set !== "function") {
+        res.status(501).json({ ok: false, error: "Not available" });
+        return;
+      }
+      const value = req.body?.value;
+      if (typeof value !== "boolean") {
+        res.status(400).json({ ok: false, error: 'JSON body must include boolean "value".' });
+        return;
+      }
+      set(value);
+      opts.scheduleBroadcast?.();
+      res.json({ ok: true });
+    });
+  };
 
-  app.post("/api/settings/include-exploration-scan-data", (req, res) => {
-    if (typeof opts.setIncludeExplorationScanData !== "function") {
-      res.status(501).json({ ok: false, error: "Not available" });
-      return;
-    }
-    const value = req.body?.value;
-    if (typeof value !== "boolean") {
-      res.status(400).json({ ok: false, error: 'JSON body must include boolean "value".' });
-      return;
-    }
-    opts.setIncludeExplorationScanData(value);
-    opts.scheduleBroadcast?.();
-    res.json({ ok: true });
-  });
+  boolSetting("/api/settings/include-bacterium", () => opts.setIncludeBacterium);
+
+  boolSetting("/api/settings/include-exploration-scan-data", () => opts.setIncludeExplorationScanData);
+
+  /** The Data value window's "+30% Pranav Antal bonus" (owner, 2026-10-03). */
+  boolSetting("/api/settings/pranav-antal-bonus", () => opts.setPranavAntalBonus);
+
+  /** The Data value window's "Selling at a fleet carrier (−25 %)" (owner, 2026-10-03). */
+  boolSetting("/api/settings/fleet-carrier-sale", () => opts.setSellAtFleetCarrier);
+
+  /** ...and "My own carrier (−15 %)" under it (owner, 2026-10-04). */
+  boolSetting("/api/settings/fleet-carrier-own", () => opts.setFleetCarrierIsOwn);
 
   app.post("/api/settings/photo-stamp", (req, res) => {
     if (typeof opts.setPhotoStamp !== "function") {
@@ -325,20 +341,7 @@ export function registerSettingsRoutes(
     res.json({ ok: true });
   });
 
-  app.post("/api/settings/foot-travel-odometer", (req, res) => {
-    if (typeof opts.setFootTravelOdometer !== "function") {
-      res.status(501).json({ ok: false, error: "Not available" });
-      return;
-    }
-    const value = req.body?.value;
-    if (typeof value !== "boolean") {
-      res.status(400).json({ ok: false, error: 'JSON body must include boolean "value".' });
-      return;
-    }
-    opts.setFootTravelOdometer(value);
-    opts.scheduleBroadcast?.();
-    res.json({ ok: true });
-  });
+  boolSetting("/api/settings/foot-travel-odometer", () => opts.setFootTravelOdometer);
 
   app.get("/api/system/spansh-search", async (req, res) => {
     if (typeof opts.searchSpanshSystems !== "function") {
@@ -651,6 +654,24 @@ export function registerSettingsRoutes(
     res.json({ ok: true });
   });
 
+  /*
+    The streamer view's mirror of the app's own settings (uiMirror.ts). Only the app on this PC may
+    set it: a phone on the LAN has settings of its own that are not the streamer's.
+  */
+  app.get("/api/ui/mirror", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(uiMirror());
+  });
+  app.post("/api/ui/mirror", (req, res) => {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res
+        .status(403)
+        .json({ ok: false, error: "Only the app on the PC running it sets the streamer view's settings." });
+      return;
+    }
+    res.json({ ok: true, rev: setUiMirror(req.body?.values).rev });
+  });
+
   app.post("/api/ui/open-external", (req, res) => {
     if (typeof opts.openAppView !== "function") {
       res.status(501).json({ ok: false, error: "Not available" });
@@ -664,8 +685,8 @@ export function registerSettingsRoutes(
       return;
     }
     const view = req.body?.view;
-    if (view !== "app" && view !== "phone") {
-      res.status(400).json({ ok: false, error: 'Send JSON { "view": "app" | "phone" }.' });
+    if (view !== "app" && view !== "phone" && view !== "stream") {
+      res.status(400).json({ ok: false, error: 'Send JSON { "view": "app" | "phone" | "stream" }.' });
       return;
     }
     res.json(opts.openAppView(view));

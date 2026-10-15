@@ -45,6 +45,7 @@ type Huds = {
   idlePaths: () => string[];
   restore: (icon: unknown) => Promise<void>;
   destroyAll: () => void;
+  dispose: () => void;
   pushPrefs: (p: unknown) => void;
   resizeFromPage: (win: unknown, o: unknown) => { ok: boolean };
   setLayoutPathResolver: (fn: () => string) => void;
@@ -91,8 +92,15 @@ class FakeWindow {
   once(ev: string, fn: () => void) {
     this.on(ev, fn);
   }
+  /** A load waits while its URL holds a gate (`FakeWindow.gates`), so a test can order two loads. */
+  static gates = new Map<string, Promise<void>>();
+  private loadSeq = 0;
   async loadURL(url: string) {
     if (url.includes("/missing")) throw new Error("ERR_FAILED (-2)");
+    // As Chromium does: a newer load aborts the one still in flight.
+    const seq = ++this.loadSeq;
+    for (const [part, gate] of FakeWindow.gates) if (url.includes(part)) await gate;
+    if (seq !== this.loadSeq) throw new Error("ERR_ABORTED (-3)");
     this.url = url;
   }
   isDestroyed() {
@@ -120,10 +128,23 @@ class FakeWindow {
    * at a size scaled by the ratio of the two (a commander's report, 2026-10-02). 1 = no distortion.
    */
   static secondScreenSizeFactor = 1;
+  /**
+   * The other way Windows does it (2026-10-03, the tall HUD at 125 %): the size lands as asked, and the
+   * window grows by the ratio a moment later, once, when it has crossed onto the other monitor.
+   */
+  static lateDpiGrowFactor = 1;
   setBounds(b: Partial<FakeWindow["bounds"]>) {
+    const wasSecond = this.bounds.x >= SECOND.x;
     this.bounds = { ...this.bounds, ...b };
     if (b.height != null && this.bounds.x >= SECOND.x) {
       this.bounds.height = Math.round(b.height * FakeWindow.secondScreenSizeFactor);
+    }
+    if (FakeWindow.lateDpiGrowFactor !== 1 && !wasSecond && this.bounds.x >= SECOND.x) {
+      const f = FakeWindow.lateDpiGrowFactor;
+      setTimeout(() => {
+        this.bounds.height = Math.round(this.bounds.height * f);
+        this.bounds.width = Math.round(this.bounds.width * f);
+      }, 20);
     }
   }
   hide() {
@@ -185,6 +206,7 @@ beforeEach(() => {
   changes = 0;
   FakeWindow.all = [];
   FakeWindow.secondScreenSizeFactor = 1;
+  FakeWindow.gates = new Map();
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -212,6 +234,30 @@ describe("the stack", () => {
     expect(a!.bounds).toMatchObject({ x: 1920 - 14 - 404, y: 14, width: 404 });
     expect(b!.bounds).toMatchObject({ x: 1920 - 14 - 404, y: 14 + 120 + 6, width: 404 });
     expect(changes).toBeGreaterThan(0);
+  });
+
+  /*
+    Owner, 2026-10-04: on a 125 % screen every panel is a quarter taller, the stack ran past the bottom
+    and the windows there were pushed up over the ones above. Past the screen's height it goes on in a
+    second column, inwards.
+  */
+  it("a stack taller than the screen goes on in a second column instead of overlapping", async () => {
+    const huds = make();
+    await huds.request("/fss-scan-overlay.html", 404, 500, null, "open");
+    await huds.request("/distance-overlay.html", 404, 500, null, "open");
+    await huds.request("/hud-overlay.html", 404, 500, null, "open");
+    const [a, b, c] = live();
+    const right = 1920 - 14 - 404;
+    expect(a!.bounds).toMatchObject({ x: right, y: 14 });
+    expect(b!.bounds).toMatchObject({ x: right, y: 14 + 500 + 6 });
+    expect(c!.bounds).toMatchObject({ x: right - 404 - 6, y: 14 });
+    huds.setLayout({ corner: "bl" });
+    expect(a!.bounds).toMatchObject({ x: 14, y: 1080 - 14 - 500 });
+    expect(c!.bounds).toMatchObject({ x: 14 + 404 + 6, y: 1080 - 14 - 500 });
+    huds.setLayout({ freeOn: true, free: { x: 100, y: 300 } });
+    // Free: each column as high as it fits, the second to the right of the first.
+    expect(a!.bounds).toMatchObject({ x: 100, y: 1080 - 1006 });
+    expect(c!.bounds).toMatchObject({ x: 100 + 410, y: 300 });
   });
 
   it("follows the chosen corner and order, and keeps the column on screen", async () => {
@@ -505,6 +551,22 @@ describe("free move (owner, 2026-10-02: the HUD anywhere, on any screen)", () =>
     expect(heights.at(-1)).toBeLessThan(SECOND.height);
   });
 
+  it("dragged onto a screen that resizes it a moment later, the HUD goes back to its own size", async () => {
+    FakeWindow.lateDpiGrowFactor = 1.25;
+    try {
+      const huds = make();
+      await huds.request("/hud-overlay.html", 404, 330, null, "open");
+      const [w] = live();
+      huds.resizeFromPage(w, { height: 500 });
+      huds.setLayout({ freeOn: true, free: { x: 2400, y: 100 } });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(w!.bounds.height).toBe(500);
+      expect(w!.bounds.width).toBe(404);
+    } finally {
+      FakeWindow.lateDpiGrowFactor = 1;
+    }
+  });
+
   it("on that screen, separate windows do not pile on top of each other", async () => {
     FakeWindow.secondScreenSizeFactor = 1.25;
     const huds = make();
@@ -702,6 +764,42 @@ describe("what the pages report", () => {
     huds.toggleVisibility(true);
   });
 
+  it("placing makes every HUD window again, so a window made before placing never holds the drag (owner, 2026-10-05)", async () => {
+    const huds = make();
+    huds.setLayout({ freeOn: true });
+    await huds.request("/hud-overlay.html?s=fss,jump", 404, 300, null, "open");
+    const [old] = live() as [FakeWindow];
+    huds.setMoveMode(true);
+    for (let i = 0; i < 20 && !old.destroyed; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(old.destroyed).toBe(true);
+    const [fresh] = live() as [FakeWindow];
+    expect(fresh).not.toBe(old);
+    expect(fresh.sent).toContainEqual(["edexo:hud-move-mode", { on: true }]);
+    expect(huds.dragFromPage(fresh as never, "start")).toEqual({ ok: true });
+    expect(huds.dragFromPage(old as never, "start")).toEqual({ ok: false });
+    huds.setMoveMode(false);
+  });
+
+  it("placing shows an idle HUD too, so there is always something to drag (owner, 2026-10-05)", async () => {
+    const huds = make();
+    huds.setLayout({ freeOn: true });
+    await huds.request("/hud-overlay.html?s=fss,jump,distance", 404, 300, null, "open");
+    const [win] = live() as [FakeWindow];
+    huds.relayout();
+    huds.resizeFromPage(win, { idle: true });
+    expect(win.visible).toBe(false);
+    huds.setMoveMode(true);
+    expect(win.visible).toBe(true);
+    expect(huds.dragFromPage(win as never, "start")).toEqual({ ok: true });
+    huds.dragFromPage(win as never, "end");
+    // A page that goes idle while placing stays up; "Done" puts it away again.
+    huds.resizeFromPage(win, { idle: false });
+    huds.resizeFromPage(win, { idle: true });
+    expect(win.visible).toBe(true);
+    huds.setMoveMode(false);
+    expect(win.visible).toBe(false);
+  });
+
   it("passes the launcher's HUD settings to every open overlay", async () => {
     const huds = make();
     await huds.request("/fss-scan-overlay.html", 404, 120, null, "open");
@@ -721,5 +819,46 @@ describe("the foreground check (electron/foregroundWatch.cjs)", () => {
     expect(fg.isGameOrOwn("", own)).toBe(true);
     expect(fg.isGameOrOwn("Discord", own)).toBe(false);
     expect(fg.isGameOrOwn("chrome", own)).toBe(false);
+  });
+});
+
+/** A gate a test opens by hand. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open = () => {};
+  const wait = new Promise<void>((r) => (open = r));
+  return { wait, open };
+}
+
+describe("loads that finish late (review O-18)", () => {
+  it("a HUD whose page loads after quitting began is closed, not left behind", async () => {
+    const huds = make();
+    const g = gate();
+    FakeWindow.gates.set("/distance-overlay.html", g.wait);
+    const asked = huds.request("/distance-overlay.html", 404, 330, null, "open");
+    huds.dispose();
+    g.open();
+    const r = await asked;
+    expect(r.opened).toBe(false);
+    expect(live()).toHaveLength(0);
+    expect(huds.count()).toBe(0);
+    // And nothing new opens after it.
+    await huds.request("/fss-scan-overlay.html", 404, 330, null, "open");
+    expect(live()).toHaveLength(0);
+  });
+
+  it("two quick section changes end on the second, whichever load finishes first", async () => {
+    const huds = make();
+    await huds.request("/hud-overlay.html?s=fss", 404, 330, null, "open");
+    const slow = gate();
+    FakeWindow.gates.set("s=distance", slow.wait);
+    const first = huds.request("/hud-overlay.html?s=distance", 404, 330, null, "set");
+    const second = huds.request("/hud-overlay.html?s=nsp", 404, 330, null, "set");
+    await second;
+    slow.open();
+    await first;
+    const w = live();
+    expect(w).toHaveLength(1);
+    expect(w[0]!.url).toContain("s=nsp");
+    expect(huds.paths()).toEqual(["/hud-overlay.html?s=nsp"]);
   });
 });

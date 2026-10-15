@@ -5,6 +5,12 @@ import type { ObservedFlag } from "../shared/observedFlag.js";
 import type { BodyExoState, ExplorationScanRecord, JournalLine, SystemLife } from "../shared/types.js";
 import type { SurfaceMark } from "./surfaceMarksFile.js";
 
+import type { FsdFuelState } from "../shared/fsdFuel.js";
+import type { FsdWearState } from "../shared/fsdWear.js";
+import type { OwnAssetsState } from "../shared/ownAssets.js";
+import type { JumponiumState } from "../shared/jumponium.js";
+import type { JumpRangeState } from "../shared/jumpRange.js";
+
 export type PendingOrganicSample = {
   fullKey: string;
   bodyKey: string;
@@ -24,6 +30,9 @@ export type SoldTally = { credits: number; items: number; sales: number; lastAt:
  * so a stale cache does not fail: it restores the old shape, the new field comes back empty, and the
  * feature that reads it stays dark with nothing logged anywhere.
  *
+ * 27 — no new field. Exobiology is shared only between twin moons on one barycentre, no longer
+ *     between every moon of a planet (owner, 2026-10-04). A 26 cache holds genus hints, signal
+ *     counts and `fromSibling` locks merged across moons that do not share, and keeps them.
  * 13 — `systemLife`: bodies in a system with signs of life (population, security or government, a
  *     controlling faction) or on the developer-populated list count as footfalled (no ×5), unless
  *     this commander discovered the system. An old cache has the scans' `WasFootfalled: false` for
@@ -88,8 +97,25 @@ export type SoldTally = { credits: number; items: number; sales: number; lastAt:
   26: scan `fssResolved` — a body known only from an arrival AutoScan is shown as "FSS required";
       `codexRegionBySystem`, `organicRunStartedAt`, `fsdTarget`, `lastJumpTarget` — a warm boot
       left them empty where a cold one had them (plan 2.4, O-19).
+  28: `systemVisitedAt`, `systemStarClass` — the NavRoute finder's Previous list (when, which star).
+  29: body `geologicalSignals` and `geologyLogged` — the Planetary body card's Volcanism field.
+  30: `targetedSystems` — every FSDTarget (address, name, star class), for the Boxels screen.
+  31: `greenCodexBodies` keyed by the gas giant scanned with the codex entry, not the codex line's
+      `BodyID` (the body the ship was at; shared/greenCodexMatch.ts).
+  32: `jumpRange` — the full jump range as flown, boosts and economical-route hops left out
+      (shared/jumpRange.ts); `fsdFuel` — fuel per jump fitted on the commander's jumps
+      (shared/fsdFuel.ts).
+  33: `fsdWear` — the FSD's health from Loadout and its wear per neutron supercharge (shared/fsdWear.ts, plan 8.4).
+  34: `fsdWear` per ship (`{ current, ships }`): wear learned per ShipID, the drive's supercharge factor (owner,
+      2026-10-13: the Caspian takes less damage).
+  35: `ownAssets` — the commander's own carrier (CarrierLocation, CarrierJumpRequest) and colonised systems
+      (ColonisationSystemClaim), for the galaxy map's badges (shared/ownAssets.ts).
+  36: `jumponium` — raw materials aboard (Materials at login, then the material events), FSD injections made
+      and their recipes as used (shared/jumponium.ts).
+  37: `jumponium` grows the Laboratory: AFM refills made and learned ("afm:<tier>") and the AFMUs fitted from
+      `Loadout` (a full re-read finds them in the journals).
 */
-export const JOURNAL_MERGE_CACHE_FORMAT = 26;
+export const JOURNAL_MERGE_CACHE_FORMAT = 37;
 
 /** Serializable journal-derived slice of {@link GameStateStore} (not user prefs). */
 export type JournalMergeCachePayload = {
@@ -101,6 +127,11 @@ export type JournalMergeCachePayload = {
   currentSystemAddress: number | null;
   viewingSystemAddress: number | null;
   visitedSystems: [number, string][];
+  /** Format 28: last arrival per system, and the star class its jump named. */
+  systemVisitedAt?: [number, string][];
+  systemStarClass?: [number, string][];
+  /** Format 30: systems targeted in the galaxy map: address, name, star class. */
+  targetedSystems?: [number, string, string][];
   bodies: [string, BodyExoState][];
   explorationScans: [string, ExplorationScanRecord][];
   /**
@@ -192,4 +223,12 @@ export type JournalMergeCachePayload = {
   loadoutFuelReserveCapacityT?: number | null;
   lastFsdJumpFuelUsedT?: number | null;
   lastFsdJumpDistLy?: number | null;
+  jumpRange?: JumpRangeState;
+  fsdFuel?: FsdFuelState;
+  /** The FSD's health and wear per supercharge (shared/fsdWear.ts, plan 8.4). */
+  fsdWear?: FsdWearState;
+  /** The commander's own fleet carrier and colonised systems (shared/ownAssets.ts). */
+  ownAssets?: OwnAssetsState;
+  /** Raw materials aboard and FSD injections made (shared/jumponium.ts). */
+  jumponium?: JumponiumState;
 };

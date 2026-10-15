@@ -18,7 +18,14 @@ on this body" is a question data can answer, and its route exports are the corpu
 this app is measured against — 47,983 confirmed sightings across 13,789 bodies at the time of
 writing. Every calibration figure quoted in the README traces back to a Spansh export. The list of
 systems Frontier populated, which the app ships to tell the Bubble from player colonies, comes from
-Spansh's system search (`is_colonised`); `scripts/build-developer-systems.mjs` rebuilds it.
+Spansh's system search (`is_colonised`); `scripts/build-developer-systems.mjs` rebuilds it. The galaxy
+map's star and body filters read `data/galaxy/system-traits.bin.gz`, each system's star classes and
+planet types from Spansh's galaxy dump (`scripts/build-system-traits.ts`; downloaded with the galaxy
+index from the `galaxy-index` release). Since 1.2.16 the galaxy map's stations (`stations.bin`, from Spansh's
+`galaxy_stations.json.gz`: names, types, pads, services) and the neutron route planner's neutron stars
+(`neutrons.bin`, from Spansh's galaxy dump, each with its nearest scoopable star) and the jumponium bodies
+(`jumponium.bin`: the top 1 % of landable bodies for each FSD injection material, from the materials in Spansh's
+galaxy dump) are built from Spansh's dumps too and downloaded from the same release.
 
 ### EDSM — [edsm.net](https://edsm.net)
 
@@ -51,7 +58,8 @@ licence ([`data/LICENSE-DATA.txt`](data/LICENSE-DATA.txt)). The EDAstro-derived 
 - `src/shared/nspModelData.ts` — region and star-type averages for the phenomena prediction;
 - `data/galaxy/bio-index.bin` — the galaxy map's index of systems with recorded biology: the species
   EDAstro's `codex-data.csv` has in each system, joined with the systems Spansh's galaxy dump shows
-  with biological signals (built for the release builds; not in this repository);
+  with biological signals (a separate download from the app's `galaxy-index` release; not in this
+  repository);
 - `data/exomastery/genus-body-split.json` — per Sinuous Tubers and Brain Tree species, counts of
   planet type, volcanism, temperature band and atmosphere on the Spansh galaxy dump's bodies where
   EDSM's and EDAstro's codex log exactly one species of the genus in the system;
@@ -69,6 +77,17 @@ Species sightings that commanders' tools send to EDDN (organic scans and codex e
 the owner's own listener and added to the corpus the species profiles are built from (2026-10-01:
 4,743 sightings across 89 species). EDDN is a live stream for players to share game data with tools;
 it carries no licence of its own. Thanks to every commander and tool author who uploads.
+
+### EDDN archive — [EDGalaxyData](https://edgalaxydata.space/EDDN/), by CMDR Bravada Cadelanne
+
+A day-by-day archive of the messages EDDN relays, kept since 2017 and free to download — EDGalaxyData,
+run by CMDR Bravada Cadelanne ([EDCodex entry](https://edcodex.info/?m=tools&entry=491)). No licence or
+terms are stated for it. This project uses it for research: a year of scans, codex entries, FSS body
+signals and organic scans (2025-10 to 2026-10) to check the green gas giant catalogue and the species
+predictions against other commanders' finds, with each body's conditions. Anything derived from it
+that this project ships is part of the project's data and is under the data licence (CC BY-NC-SA 3.0,
+[`data/LICENSE-DATA.txt`](data/LICENSE-DATA.txt)), unless CMDR Bravada Cadelanne states other terms,
+in which case theirs apply. Thank you for keeping it running.
 
 ### Canonn Research Group — [canonn.science](https://canonn.science)
 
@@ -97,9 +116,9 @@ longer be reached, so naming some and not others would be worse than naming none
 
 ## Species photographs
 
-`data/species/<genus>/<genus>_photos/` holds 185 images of Elite Dangerous exobiology (each also
-present as a cropped card and thumbnail, so 555 files). **138 of them were contributed by commanders
-of the Bahuckel clan and by the Stellar Exobiologists Guild**; the remaining 47 are sourced from the ED-DSN community, are **not covered by
+`data/species/<genus>/<genus>_photos/` holds 180 images of Elite Dangerous exobiology (each also
+present as a cropped card and thumbnail, so 540 files). **150 of them were contributed by commanders
+of the Bahuckel clan and by the Stellar Exobiologists Guild**; the remaining 30 are sourced from the ED-DSN community, are **not covered by
 this project's MIT licence** and are not this project's to sublicense.
 
 ### Telling them apart, in the app and on disk
@@ -122,8 +141,8 @@ commander against each file:
 
 | commander                                     | images |
 | --------------------------------------------- | ------ |
-| Bahuckel — CMDR FALrenica (the project owner) | 125    |
-| Bahuckel — CMDR PhoEniXDFA                    | 5      |
+| Bahuckel — CMDR FALrenica (the project owner) | 139    |
+| Bahuckel — CMDR PhoEniXDFA                    | 6      |
 | Stellar Exobiologists Guild                   | 5      |
 
 Each contributor took the photographs themselves and gave them to this project knowingly. That is
@@ -132,7 +151,7 @@ credited to the wrong person is the one mistake this area of the project cannot 
 
 These replace the ED-DSN images, which are there mainly as placeholders. Anything not listed in the
 manifest is ED-DSN's and carries the standing credit below. **Once a species has a contributed
-photograph, ED-DSN's of that same species is removed from the tree** — 49 were retired this way — so
+photograph, ED-DSN's of that same species is removed from the tree** — 66 were retired this way — so
 the borrowed images shrink as contributed ones arrive. They are also **variant** photographs — the
 exact colour a body grows — which is what lets a card show the plant you are about to walk up to
 rather than one of its siblings.
@@ -176,7 +195,20 @@ Frontier Developments.
 [EliteDangerousRegionMap](https://github.com/klightspeed/EliteDangerousRegionMap) by Ben Peddell,
 redistributed under its MIT licence — full text in `data/exomastery/region-map.LICENSE.txt`.
 
+## The EDEXO browser's blocking
+
+The desktop app ships `resources/edexo/browser-adblock.cjs`, a bundle of Ghostery's
+[adblocker](https://github.com/ghostery/adblocker) (`@ghostery/adblocker`, `-content`,
+`-extended-selectors`, `@ghostery/url-parser`) and its `@remusao/*` helpers, all **MPL-2.0**, unmodified;
+their source is at that link and on npm, and the MPL-2.0 text is at
+[mozilla.org/MPL/2.0](https://www.mozilla.org/MPL/2.0/). It also contains `tldts-experimental` (MIT).
+
+The filter lists are not shipped: the browser downloads them from their publishers when it is first
+opened — [EasyList and EasyPrivacy](https://easylist.to) (GPL-3.0 / CC BY-SA 3.0),
+[uBlock Origin's lists](https://github.com/uBlockOrigin/uAssets) (GPL-3.0), and uBlock Origin's scriptlet
+library as Ghostery packages it (GPL-3.0). This project is not affiliated with any of them.
+
 ## Runtime dependencies
 
-`express` (MIT) and `ws` (MIT). Everything else in `package.json` is a development dependency and is
-not redistributed with the application.
+`express` (MIT) and `ws` (MIT), and the browser's blocking bundle above. Everything else in
+`package.json` is a development dependency and is not redistributed with the application.

@@ -382,6 +382,9 @@ body::before {
 
 .exo-data-alerts-trigger__badge {
   position: absolute;
+  /* A sibling of the button, over its corner: clicks go through to the button. */
+  pointer-events: none;
+  z-index: 1;
   top: -0.38rem;
   right: -0.42rem;
   min-width: 1.05rem;
@@ -430,7 +433,7 @@ body::before {
   position: absolute;
   right: 0;
   top: calc(100% + 6px);
-  z-index: 500;
+  z-index: var(--z-popover);
   min-width: min(380px, calc(100vw - 24px));
   max-width: 440px;
   max-height: min(72vh, 560px);
@@ -636,12 +639,9 @@ button.data-value-pill.data-value-pill--clickable:active {
   color: #f5b83d;
   filter: drop-shadow(0 0 4px rgba(245, 184, 61, 0.55));
 }
-.exo-data-alerts-trigger--notice .exo-data-alerts-trigger__badge {
+.exo-data-alerts-trigger__badge--notice {
   background: #b7791f;
   box-shadow: 0 0 8px rgba(245, 184, 61, 0.55);
-}
-.notices-group {
-  margin-bottom: 0.6rem;
 }
 .notices-group__head {
   display: flex;
@@ -656,10 +656,6 @@ button.data-value-pill.data-value-pill--clickable:active {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: #f5b83d;
-}
-.notices-group__title--codex {
-  color: var(--muted);
-  margin: 0.2rem 0 0.35rem;
 }
 /* The bell's read notices (2026-09-30): kept, dimmed, under their own heading. */
 .notices-group__head--read {

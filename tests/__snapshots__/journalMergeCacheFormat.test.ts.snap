@@ -2,7 +2,7 @@
 
 exports[`the format constant > covers every key the store serializes 1`] = `
 {
-  "format": 26,
+  "format": 37,
   "keys": [
     "achievementDone",
     "archivedDssMappedBodyKeys",
@@ -28,12 +28,16 @@ exports[`the format constant > covers every key the store serializes 1`] = `
     "firstFootfallBodies",
     "footJournalContextBuffer",
     "format",
+    "fsdFuel",
     "fsdTarget",
+    "fsdWear",
     "fssAllBodiesCompleteSystems",
     "fssAllBodiesFoundCountBySystem",
     "fssBodySignalsBodyKeys",
     "fssDiscoveryScanBySystem",
     "greenCodexBodies",
+    "jumpRange",
+    "jumponium",
     "k10Systems",
     "landingMinutesSamples",
     "lastEventIso",
@@ -50,6 +54,7 @@ exports[`the format constant > covers every key the store serializes 1`] = `
     "organicAnalyseByKey",
     "organicRunStartedAt",
     "overlayTouchdownBodyKey",
+    "ownAssets",
     "pendingOrganicSales",
     "remainingJumpsInRoute",
     "samplingMinutesSamples",
@@ -60,6 +65,9 @@ exports[`the format constant > covers every key the store serializes 1`] = `
     "surfaceShipMark",
     "systemLife",
     "systemPositions",
+    "systemStarClass",
+    "systemVisitedAt",
+    "targetedSystems",
     "viewingSystemAddress",
     "visitedSystems",
   ],

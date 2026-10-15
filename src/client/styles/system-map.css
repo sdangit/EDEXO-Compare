@@ -151,7 +151,7 @@
 
 .system-map-popup {
   position: fixed;
-  z-index: 5200;
+  z-index: var(--z-map-popup);
   max-width: min(28rem, 94vw);
   /* As tall as the window allows before it scrolls (guild tester, 2026-09-30: it scrolled inside
      ~512 px on a screen with room to spare). The placement keeps it on screen. */
@@ -399,19 +399,6 @@ button.body-detail-kv-value.body-detail-kv-interactive:hover {
 .body-detail-kv-list--tight {
   margin-top: 0.45rem;
   gap: 0.28rem;
-}
-
-.exo-payout-range-panel {
-  border: 1px solid rgba(79, 208, 255, 0.58) !important;
-  background: rgba(79, 208, 255, 0.07) !important;
-  box-shadow:
-    0 0 22px rgba(79, 208, 255, 0.28),
-    inset 0 0 20px rgba(79, 208, 255, 0.06) !important;
-}
-
-.exo-payout-range-panel.exo-payout-range-panel--clickable {
-  border-radius: 14px !important;
-  overflow: hidden;
 }
 
 .exo-payout-range-panel h3 {
@@ -989,7 +976,11 @@ button.body-detail-kv-value.body-detail-kv-interactive:hover {
   margin: 0.25rem 0;
 }
 
-@media (max-width: 900px) {
+/* By the map panel's width since 1.2.17 (plan 3.5), so a narrow tab window stacks the side panel too. */
+.system-map-panel {
+  container: sysmap / inline-size;
+}
+@container sysmap (max-width: 900px) {
   .system-map-body {
     flex-direction: column;
   }
@@ -1035,7 +1026,7 @@ button.body-detail-kv-value.body-detail-kv-interactive:hover {
 }
 
 .system-map-legend-badge--x5 {
-  background: #ff8a1f;
+  background: var(--ok);
 }
 
 /* A record this body broke, in gold under its name (popup and the map's side panel). */
@@ -1062,6 +1053,63 @@ button.body-detail-kv-value.body-detail-kv-interactive:hover {
   font-weight: 700;
   font-size: var(--fs-sm);
   line-height: 1.35;
+}
+/* GGG ladder drawer (GggLadderDrawer.tsx, 2026-10-09): the giant on Arcanic's cloud ladder. */
+.ggg-ladder {
+  --ggg: 111, 227, 138;
+  border: 1px solid rgba(var(--ggg), 0.28);
+  padding: 0.3rem 0.6rem;
+  font-size: var(--fs-sm);
+}
+.ggg-ladder__summary {
+  cursor: pointer;
+  color: rgb(var(--ggg));
+  font-weight: 700;
+}
+.ggg-ladder__sub {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  color: var(--text-muted, #9aa4b2);
+  font-size: var(--fs-xs);
+}
+.ggg-ladder__scale {
+  display: block;
+  margin: 0.35rem 0 0.2rem;
+}
+.ggg-ladder__rungs {
+  margin: 0.2rem 0;
+  padding-left: 1.3rem;
+  font-variant-numeric: tabular-nums;
+}
+.ggg-ladder__rungs li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.ggg-ladder__off {
+  color: var(--text-muted, #9aa4b2);
+  font-size: var(--fs-xs);
+}
+.ggg-ladder__rung--hit,
+.ggg-ladder__rung--hit .ggg-ladder__off {
+  color: rgb(var(--ggg));
+  font-weight: 700;
+}
+.ggg-ladder__note,
+.ggg-ladder__credit {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted, #9aa4b2);
+  font-size: var(--fs-xs);
+}
+.ggg-ladder__credit a {
+  color: rgb(var(--ggg));
+}
+.ggg-ladder__verdict {
+  margin: 0.35rem 0 0;
+  font-weight: 600;
+}
+.ggg-ladder__verdict--green {
+  color: rgb(var(--ggg));
 }
 /* Green gas giants (shared/greenGasGiant.ts, 2026-09-30). The one fixed colour: it is the planet's. */
 .body-ggg {

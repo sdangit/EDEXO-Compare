@@ -23,7 +23,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { hostStarBodyIdsForExobiology } from "../src/server/orbitUtils.js";
-import { matchDatabaseToScan } from "../src/server/matchSpecies.js";
+import { demoteFailedHostStarGates, matchDatabaseToScan } from "../src/server/matchSpecies.js";
+import { restoreDemotionsBelowSignalCount } from "../src/server/demotionPasses.js";
 import { loadSpatialCatalogue } from "../src/server/spatialCatalogue.js";
 import { loadSpeciesDatabaseFromTree } from "../src/server/speciesTreeLoader.js";
 import {
@@ -33,7 +34,14 @@ import {
   hostStarClassKeys,
   hostStarGateForSpeciesId,
 } from "../src/shared/hostStarGates.js";
-import type { ExplorationScanRecord, PlanetScan } from "../src/shared/types.js";
+import type {
+  ExplorationScanRecord,
+  MatchReason,
+  PlanetScan,
+  SpeciesEntry,
+  SpeciesMatch,
+  SpeciesMatchContext,
+} from "../src/shared/types.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const db = loadSpeciesDatabaseFromTree(root);
@@ -109,6 +117,23 @@ describe("the Anemone colours", () => {
     expect(evaluateHostStarGate("anemone_luteolum", ["B"], null, null)).toBeNull();
   });
 
+  it("passes on any star in the system that fits, not only the main one", () => {
+    // HIP 34326 D 2: a confirmed Blatteum Bioluminescent body round a B dwarf in a system whose main
+    // star is a neutron star (2026-10-05).
+    const stars = [{ type: "N" }, { type: "B", luminosity: "Va" }];
+    expect(
+      evaluateHostStarGate("anemone_blatteum_bioluminescent", ["N"], "N", { type: "N" }, stars)!.passes,
+    ).toBe(true);
+    expect(evaluateHostStarGate("anemone_blatteum_bioluminescent", ["N"], "N", { type: "N" })!.passes).toBe(
+      false,
+    );
+    // A B giant elsewhere in the system does not make a dwarf species.
+    const giant = [{ type: "N" }, { type: "B", luminosity: "III" }];
+    expect(
+      evaluateHostStarGate("anemone_blatteum_bioluminescent", ["N"], "N", { type: "N" }, giant)!.passes,
+    ).toBe(false);
+  });
+
   it("names the luminosity when it decided", () => {
     const v = evaluateHostStarGate("anemone_luteolum", ["T"], "B", { type: "B", luminosity: "IIIab" })!;
     expect(describeHostStarVerdict(v)).toMatch(/^Main star B-class IIIab .* B-class IV, V/);
@@ -141,6 +166,12 @@ describe("evaluating the gate", () => {
     expect(evaluateHostStarGate(PLUMA, ["M"], "M")!.passes).toBe(false);
     // No main star known: abstain rather than fall back to the host.
     expect(evaluateHostStarGate(PLUMA, ["M"])).toBeNull();
+  });
+
+  // HIP 118062 B 6 g (EDDN ScanOrganic set, 2026-10-03): main star G, the body round the DBV dwarf B.
+  it("passes on the body's own host too, when that is a white dwarf in a G system", () => {
+    expect(evaluateHostStarGate(PLUMA, ["D"], "G")!.passes).toBe(true);
+    expect(evaluateHostStarGate(PLUMA, ["K"], "G")!.passes).toBe(false);
   });
 
   it("returns null when there is nothing to judge, never a failure", () => {
@@ -260,7 +291,7 @@ describe("the body that reported the bug", () => {
 
   const find = (r: ReturnType<typeof run>, id: string) => r.matches.find((m) => m.entry.id === id)!;
 
-  it("demotes both Electricae, each for its own measured reason", () => {
+  it("demotes pluma for its star, and keeps radialem 175 ly from a nebula at a tenth (owner, 2026-10-14)", () => {
     // The journal reports Biological: 2 on this body, and two other genera survive, so nothing is
     // restored to satisfy the count.
     const r = run(2);
@@ -269,25 +300,20 @@ describe("the body that reported the bug", () => {
     expect(pluma.unlikelyReasons!.at(-1)!.field).toBe("StarType");
     expect(pluma.unlikelyReasons!.at(-1)!.detail).toMatch(/neutron star/);
 
+    // 175 ly from R CrA, past the 150 ly rule, and 85 ly from the nearest radialem cluster (rule
+    // 50 ly), but inside the 150-200 ly band: kept at a tenth of its chance, the reason on the row
+    // (no band 2026-10-08 to 10-14; a band with no outer edge kept it at 0.22 from 10-04 to 10-08).
     const radialem = find(r, RADIALEM);
-    expect(radialem.unlikely).toBe(true);
-    expect(radialem.unlikelyReasons!.at(-1)!.field).toBe("Nebula");
+    expect(radialem.unlikely).toBeFalsy();
+    expect(radialem.presenceFactor).toBeCloseTo(0.1, 5);
+    expect(radialem.reasons.some((x) => x.field === "Nebula" && /inside 200 ly/.test(x.detail))).toBe(true);
   });
 
-  it("leaves the genus out of the shown list entirely", () => {
+  it("keeps the panel's other candidates", () => {
     const shown = run(2).matches.filter((m) => !m.unlikely);
-    expect(shown.some((m) => m.entry.genusDataDir === "electricae")).toBe(false);
-    // …without emptying the panel: the body has real candidates.
-    expect(shown.length).toBeGreaterThan(0);
-  });
-
-  /**
-   * The escape hatch stays open. `FSSBodySignals` saying three genera are present is a harder fact
-   * than any catalogue, so a star-demoted row comes back rather than leaving the count unsatisfiable
-   * — the same rule that already governed the observation-based star demotion.
-   */
-  it("gives the species back when the game says more genera are present than survive", () => {
-    expect(find(run(3), PLUMA).unlikely).toBeFalsy();
+    // Pluma demoted on its star; radialem kept in the band; the other genera stay.
+    expect(shown.filter((m) => m.entry.genusDataDir === "electricae").map((m) => m.entry.id)).toEqual([RADIALEM]);
+    expect(shown.length).toBeGreaterThan(1);
   });
 
   it("does not demote when no star has been scanned", () => {
@@ -307,8 +333,10 @@ describe("Stratum tectonicas and the star it orbits (owner, 2026-10-02)", () => 
   const TECTONICAS = "stratum_stratum_tectonicas";
 
   it("is demoted under a G, A or neutron host, and only the host counts", () => {
-    for (const host of ["G", "A", "N"]) expect(evaluateHostStarGate(TECTONICAS, [host], "K")!.passes).toBe(false);
-    for (const host of ["K", "M", "F", "L", "T"]) expect(evaluateHostStarGate(TECTONICAS, [host], "G")!.passes).toBe(true);
+    for (const host of ["G", "A", "N"])
+      expect(evaluateHostStarGate(TECTONICAS, [host], "K")!.passes).toBe(false);
+    for (const host of ["K", "M", "F", "L", "T"])
+      expect(evaluateHostStarGate(TECTONICAS, [host], "G")!.passes).toBe(true);
   });
 
   it("keeps a pair with one allowed star", () => {
@@ -339,5 +367,54 @@ describe("a gate measured on the main star", () => {
   it("says so in its own words", () => {
     const v = evaluateHostStarGate(ARANEAMUS, ["K"], "K")!;
     expect(describeHostStarVerdict(v)).toMatch(/^Main star K-class/);
+  });
+});
+
+/**
+ * BD-12 1172 11 a (EDDN ScanOrganic set, 2026-10-03): thin sulphur dioxide demoted every Anemone on
+ * its atmosphere; the DSS named Anemone, and the restore took Luteolum (main star B) on list order.
+ * The main star is an O — Prasinum Bioluminescent's, and what players logged there.
+ */
+describe("a DSS-named genus restores the row the star allows", () => {
+  type Row = Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">;
+  const atm: MatchReason = { field: "AtmosphereType", detail: "Codex lists (no atmosphere)", soft: true };
+  const row = (id: string): Row =>
+    ({
+      entry: { id, displayName: id, genusDataDir: "anemone" } as SpeciesEntry,
+      reasons: [atm],
+      unlikely: true,
+      unlikelyReasons: [atm],
+    }) as Row;
+  it("takes Prasinum Bioluminescent under an O main star, not Luteolum", () => {
+    const strict: Row[] = [];
+    const unlikely = [row("anemone_luteolum"), row("anemone_prasinum_bioluminescent")];
+    const ctx = {
+      hostStarClasses: ["T"],
+      systemMainStarClass: "O",
+      systemMainStarType: "O",
+      systemMainStarLuminosity: "V",
+    };
+    demoteFailedHostStarGates(strict, unlikely, ctx as SpeciesMatchContext);
+    expect(unlikely[0]!.unlikelyReasons!.map((r) => r.field)).toEqual(["AtmosphereType", "StarType"]);
+    restoreDemotionsBelowSignalCount(strict, unlikely, 2, new Set(["anemone"]));
+    expect(strict.map((m) => m.entry.id)).toEqual(["anemone_prasinum_bioluminescent"]);
+  });
+});
+
+// Amphora on a companion in an A-star system (2026-10-03, known-spawn bodies Flyauduae TE-Q d5-4 B 1 etc.).
+describe("Amphora's star", () => {
+  it("is read on the main star, or the body's own host", () => {
+    expect(evaluateHostStarGate("amphora_amphora_plant", ["M"], "A")!.passes).toBe(true);
+    expect(evaluateHostStarGate("amphora_amphora_plant", ["B"], "K")!.passes).toBe(true);
+    expect(evaluateHostStarGate("amphora_amphora_plant", ["K"], "K")!.passes).toBe(false);
+  });
+
+  // 2026-10-14: 7 of the 719 DSS-confirmed Amphora bodies sit under an F or neutron primary with an A
+  // star elsewhere in the system.
+  it("passes on any A or B star in the system", () => {
+    const main = { type: "F", luminosity: "V" };
+    const a = { type: "A", luminosity: "Va" };
+    expect(evaluateHostStarGate("amphora_amphora_plant", ["K"], "F", main, [main, a])!.passes).toBe(true);
+    expect(evaluateHostStarGate("amphora_amphora_plant", ["K"], "F", main, [main])!.passes).toBe(false);
   });
 });

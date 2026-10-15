@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Popover } from "./Popover";
 
 /**
  * Styled tooltip and info popover, replacing native `title` attributes.
@@ -9,7 +10,7 @@ import { createPortal } from "react-dom";
  * truncated by the OS, vanish on the smallest pointer move, and never appear for keyboard or touch
  * users — so the longest and most useful text in the app was also the least reachable.
  *
- *   <Tooltip text="…">          hover/focus, 80 ms, for short labels
+ *   <Tooltip text="…">          hover/focus/tap, 80 ms, for labels and a sentence or two
  *   <InfoPopover title="…">     click an ⓘ, stays open, for long-form help
  */
 
@@ -35,7 +36,7 @@ export function Tooltip({
   children,
   className,
 }: {
-  text: string;
+  text: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
@@ -73,11 +74,17 @@ export function Tooltip({
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") hide();
     };
+    // A tap elsewhere closes one a tap opened (a finger never "leaves").
+    const onPointerDown = (ev: PointerEvent) => {
+      if (!wrapRef.current?.contains(ev.target as Node)) hide();
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("scroll", hide, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("scroll", hide, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
     };
   }, [open, hide]);
 
@@ -85,8 +92,17 @@ export function Tooltip({
     <span
       ref={wrapRef}
       className={className ? `tip-anchor ${className}` : "tip-anchor"}
-      onPointerEnter={show}
-      onPointerLeave={hide}
+      // Touch (plan 3.4b): a tap shows the text and it stays until the next tap elsewhere; the
+      // pointer enter/leave a tap fires around itself would only flash it.
+      onPointerEnter={(ev) => {
+        if (ev.pointerType !== "touch") show();
+      }}
+      onPointerLeave={(ev) => {
+        if (ev.pointerType !== "touch") hide();
+      }}
+      onPointerDown={(ev) => {
+        if (ev.pointerType === "touch") setOpen(true);
+      }}
       onFocusCapture={show}
       onBlurCapture={hide}
       aria-describedby={open ? id : undefined}
@@ -112,7 +128,9 @@ export function Tooltip({
 
 /**
  * Long-form help behind an explicit ⓘ button: discoverable, dismissable, readable, and reachable
- * by keyboard — none of which a `title` attribute manages.
+ * by keyboard — none of which a `title` attribute manages. Opened, placed and closed by ui/Popover
+ * (plan 3.3, 2026-10-12): above the ⓘ and centred, below when there is no room; focus goes in and back
+ * to the ⓘ; Escape, a click outside or focus leaving closes it (inside a dialog, before the dialog).
  */
 export function InfoPopover({
   title,
@@ -125,79 +143,48 @@ export function InfoPopover({
   label?: string;
   className?: string;
 }) {
-  const id = useId();
-  const wrapRef = useRef<HTMLSpanElement | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<Placement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const anchor = wrapRef.current?.getBoundingClientRect();
-    const panel = panelRef.current?.getBoundingClientRect();
-    if (anchor && panel) setPos(anchorPlacement(anchor, panel));
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") setOpen(false);
-    };
-    const onPointerDown = (ev: PointerEvent) => {
-      const t = ev.target as Node;
-      if (!panelRef.current?.contains(t) && !wrapRef.current?.contains(t)) setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("pointerdown", onPointerDown, true);
-    };
-  }, [open]);
-
   return (
-    <span ref={wrapRef} className={className ? `info-anchor ${className}` : "info-anchor"}>
-      <button
-        type="button"
-        className={open ? "info-affordance info-affordance--on" : "info-affordance"}
-        aria-expanded={open}
-        aria-controls={open ? id : undefined}
-        aria-label={label}
-        onClick={(ev) => {
-          ev.stopPropagation();
-          setOpen((v) => !v);
-        }}
+    <span className={className ? `info-anchor ${className}` : "info-anchor"}>
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        label={title}
+        className="info-panel"
+        portal
+        side="top"
+        align="center"
+        contained
+        trigger={
+          <button
+            type="button"
+            className={open ? "info-affordance info-affordance--on" : "info-affordance"}
+            aria-label={label}
+            // Inside a clickable row or card: the click opens the help, not the row.
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            {/* Drawn, not the ⓘ character: Linux's default fonts do not carry it and showed an empty box. */}
+            <svg className="info-affordance-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <circle cx="8" cy="8" r="6.9" fill="none" stroke="currentColor" strokeWidth="1.3" />
+              <circle cx="8" cy="4.9" r="1" fill="currentColor" />
+              <rect x="7.25" y="6.8" width="1.5" height="5" rx="0.6" fill="currentColor" />
+            </svg>
+          </button>
+        }
       >
-        {/* Drawn, not the ⓘ character: Linux's default fonts do not carry it and showed an empty box. */}
-        <svg className="info-affordance-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <circle cx="8" cy="8" r="6.9" fill="none" stroke="currentColor" strokeWidth="1.3" />
-          <circle cx="8" cy="4.9" r="1" fill="currentColor" />
-          <rect x="7.25" y="6.8" width="1.5" height="5" rx="0.6" fill="currentColor" />
-        </svg>
-      </button>
-      {open
-        ? createPortal(
-            <div
-              ref={panelRef}
-              id={id}
-              role="dialog"
-              aria-label={title}
-              className="info-panel"
-              style={pos ? { left: pos.left, top: pos.top } : { left: -9999, top: -9999 }}
-              onClick={(ev) => ev.stopPropagation()}
-            >
-              <div className="info-panel-head">
-                <h4 className="info-panel-title">{title}</h4>
-                <button
-                  type="button"
-                  className="info-panel-close"
-                  onClick={() => setOpen(false)}
-                  aria-label="Close"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="info-panel-body">{children}</div>
-            </div>,
-            document.body,
-          )
-        : null}
+        <div className="info-panel-head">
+          <h4 className="info-panel-title">{title}</h4>
+          <button
+            type="button"
+            className="info-panel-close"
+            onClick={() => setOpen(false)}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div className="info-panel-body">{children}</div>
+      </Popover>
     </span>
   );
 }

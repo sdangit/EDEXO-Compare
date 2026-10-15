@@ -50,6 +50,11 @@
   opacity: 0.85;
   margin: 0 0.15rem;
 }
+/* Light-seconds keep the game's spelling (review V5). */
+.glance-item small.glance-unit-ls {
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
 .glance-price {
   font-size: var(--fs-lg);
   font-weight: 700;
@@ -127,6 +132,13 @@
     linear-gradient(currentColor, currentColor) 0 0 / 100% 2px no-repeat,
     linear-gradient(currentColor, currentColor) 0 50% / 70% 2px no-repeat,
     linear-gradient(currentColor, currentColor) 0 100% / 100% 2px no-repeat;
+}
+/* In the dropdown, a group rule (plan V1, 2026-10-04). */
+.appbar-menu-sep {
+  display: block;
+  height: 1px;
+  margin: 0;
+  background: var(--accent-dim);
 }
 .appbar-menu {
   display: none;
@@ -441,6 +453,14 @@
 .tab-n {
   font-weight: 800;
   color: #7ac8ff;
+}
+/* Over 2.7 g: no disembarking (F-5.3). The mark and a red edge, so it is not colour alone. */
+.tab-heavy {
+  font-weight: 800;
+  color: var(--danger, #ff6a55);
+}
+.tab.tab--heavy {
+  box-shadow: inset 0 -2px 0 var(--danger, #ff6a55);
 }
 .tab--notable .tab-label {
   color: var(--text-dim);

@@ -17,6 +17,7 @@ import {
 } from "./systemMapLayout";
 import {
   MAP_BG,
+  GGG_GREEN,
   MAP_BLUE,
   STAR_COLOURS,
   SystemMapDefs,
@@ -27,6 +28,7 @@ import {
 import { CopySystemButton } from "./CopySystemButton";
 import { EDEXO_SYSMAP_SIDE_LS, readLsBool, writeLsBool } from "./lsPrefs";
 import { IDENTITY, useMapViewport, type MapViewport } from "./useMapViewport";
+import { fmtCrExact } from "@shared/format";
 
 function notableBodyIsTerraformable(n: NotableBodyInfo): boolean {
   return n.tag.toLowerCase().includes("terraformable");
@@ -66,8 +68,15 @@ function SystemMapLegend({ plusMinCr, plusPlusMinCr }: { plusMinCr: number; plus
     ["Neutron", "N"],
     ["Black hole", "H"],
   ];
+  // Foldable, remembered (owner, 2026-10-04, plan 3.7): once learnt, the map gets the room back.
+  const [open, setOpen] = usePersistedState("systemMap.legendOpen", true, isBool);
   return (
-    <div className="system-map-legend">
+    <details
+      className="system-map-legend"
+      open={open}
+      onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="system-map-legend-summary small-caps dim">Legend</summary>
       <div className="system-map-legend-row">
         <span className="dim small-caps">Stars</span>
         {stars.map(([label, k]) => (
@@ -123,6 +132,17 @@ function SystemMapLegend({ plusMinCr, plusPlusMinCr }: { plusMinCr: number; plus
           <span className="system-map-legend-badge">3</span> biological signals
         </span>
         <span className="system-map-legend-item">
+          <Swatch>
+            <circle r={4.5} fill="#2a3b4d" />
+            <circle r={7} fill="none" stroke={GGG_GREEN} strokeWidth={1.6} />
+          </Swatch>
+          <Swatch>
+            <circle r={4.5} fill="#2a3b4d" />
+            <circle r={7} fill="none" stroke={GGG_GREEN} strokeWidth={1.6} strokeDasharray="3 2" />
+          </Swatch>
+          green gas giant: confirmed or catalogued / a guess
+        </span>
+        <span className="system-map-legend-item">
           <span className="system-map-legend-badge system-map-legend-badge--x5">3 ×5</span> first footfall
           pays ×5
         </span>
@@ -139,7 +159,7 @@ function SystemMapLegend({ plusMinCr, plusPlusMinCr }: { plusMinCr: number; plus
           <b>*</b> terraformable
         </span>
         <span className="system-map-legend-item">
-          <b>+</b> / <b>++</b> exobiology ≥ {plusMinCr.toLocaleString()} / {plusPlusMinCr.toLocaleString()} CR
+          <b>+</b> / <b>++</b> exobiology ≥ {plusMinCr.toLocaleString("en-US")} / {fmtCrExact(plusPlusMinCr)}
           · <b>+</b> on a star: scoopable
         </span>
       </div>
@@ -147,7 +167,7 @@ function SystemMapLegend({ plusMinCr, plusPlusMinCr }: { plusMinCr: number; plus
         Scroll to zoom at the cursor · drag to pan · click a body for its data · arrow keys move between
         bodies · + / − zoom · 0 or double-click fits the map
       </div>
-    </div>
+    </details>
   );
 }
 
@@ -403,16 +423,16 @@ export const SystemMapModal = memoOnSnapSlice(SYSTEM_MAP_FIELDS, function System
         <div className="system-map-totals card-neon">
           <div>
             <div className="dim small-caps">System FSS Value:</div>
-            <div className="system-map-total-val">{map.approxSystemFssValue.toLocaleString()} CR</div>
+            <div className="system-map-total-val">{fmtCrExact(map.approxSystemFssValue)}</div>
           </div>
           <div>
             <div className="dim small-caps">System DSS Value:</div>
-            <div className="system-map-total-val">{map.approxSystemDssValue.toLocaleString()} CR</div>
+            <div className="system-map-total-val">{fmtCrExact(map.approxSystemDssValue)}</div>
           </div>
           <div>
             <div className="dim small-caps">Current value</div>
             <div className="system-map-total-val">
-              {map.journalExplorationSaleCreditsFocused.toLocaleString()} CR
+              {fmtCrExact(map.journalExplorationSaleCreditsFocused)}
             </div>
           </div>
         </div>

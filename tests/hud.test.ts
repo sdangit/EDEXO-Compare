@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
- * The HUD overlay logic (public/hud/) against fake snapshots.
+ * The HUD overlay logic (src/client/hud/, React since 1.2.17; public/hud/ before) against fake snapshots.
  *
- * public/hud/ holds the rendering of the overlay sections as plain browser modules, no build step.
+ * src/client/hud/ holds the rendering of the overlay sections: React components with the markup the plain modules
+ * built, so these tests carried over unchanged.
  * They are loaded into jsdom here (tests/helpers/loadHud.ts) and driven through `HUD.mount` / `HUD.render` with `noTimers`, so nothing
  * polls or opens sockets. These are the rules the owner asked for and the bugs he reported: the
  * unlikely tier hidden unless confirmed, scan progress after the species, the targeted body winning
@@ -415,6 +416,19 @@ describe("HUD next jump", () => {
     expect(document.querySelector('[data-f="status"]')?.textContent).toBe("Arrived");
   });
 
+  it("says which boxel system is on the clipboard, and when a boxel run is on (2026-10-06)", async () => {
+    const HUD = await loadHud();
+    HUD.mount(["jump"], { noTimers: true });
+    const line = () => document.querySelector<HTMLElement>('[data-f="copied"]')!;
+    HUD.render({ jumpTarget: null });
+    expect(line().hidden).toBe(true);
+    HUD.render({ jumpTarget: null, boxelCopied: { name: "Eol Prou AB-C d1-7", at: "", run: true } });
+    expect(line().hidden).toBe(false);
+    expect(line().textContent).toBe("Copied Eol Prou AB-C d1-7 · boxel run");
+    HUD.render({ jumpTarget: null, boxelCopied: { name: "Eol Prou AB-C d1-8", at: "", run: false } });
+    expect(line().textContent).toBe("Copied Eol Prou AB-C d1-8");
+  });
+
   it("draws the route strip with the refuel pump on the nearest scoop", async () => {
     const HUD = await loadHud();
     HUD.mount(["jump"], { noTimers: true });
@@ -441,6 +455,34 @@ describe("HUD next jump", () => {
       liveShipFuelRange: { navRoute: { ahead: [], refuelInHops: null, refuelLevel: "none" } },
     });
     expect((document.querySelector('[data-f="route"]') as HTMLElement).hidden).toBe(true);
+  });
+
+  it("puts a red pump that is not on a hop ahead first: here, or none in reach", async () => {
+    // Owner, 2026-10-12: at the end of the line it did not show where to refuel.
+    const HUD = await loadHud();
+    HUD.mount(["jump"], { noTimers: true });
+    const ahead = [
+      { starSystem: "B", starClass: "T", scoopable: false, refuel: "none" },
+      { starSystem: "C", starClass: "T", scoopable: false, refuel: "none" },
+    ];
+    const strip = () => document.querySelector('[data-f="route"]') as HTMLElement;
+    HUD.render({
+      jumpTarget: { starSystem: "B", starClass: "T", arrived: false, source: "route" },
+      liveShipFuelRange: { navRoute: { ahead, refuelInHops: 0, refuelLevel: "red" } },
+    });
+    let first = strip().firstElementChild as HTMLElement;
+    expect(first.className).toContain("hop--here");
+    expect(first.textContent).toBe("here");
+    expect(first.querySelector(".hop__fuel--red")).not.toBeNull();
+    expect(strip().querySelectorAll(".hop__fuel")).toHaveLength(1);
+    HUD.render({
+      jumpTarget: { starSystem: "B", starClass: "T", arrived: false, source: "route" },
+      liveShipFuelRange: { navRoute: { ahead, refuelInHops: null, refuelLevel: "red" } },
+    });
+    first = strip().firstElementChild as HTMLElement;
+    expect(first.className).toContain("hop--dry");
+    expect(first.textContent).toBe("!");
+    expect(strip().lastElementChild?.textContent).toBe("T");
   });
 
   it("colours each arrow by what EDSM knows: orange visited, blue unvisited, grey no answer", async () => {
@@ -617,7 +659,7 @@ describe("HUD placing frame", () => {
       frame.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
       frame.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
       (document.querySelector(".hud-move-done") as HTMLButtonElement).click();
-      expect(calls).toEqual(["start", "end", "done"]);
+      expect(calls).toEqual(["frame", "start", "end", "done"]);
       HUD.setMoveMode(false);
       expect(document.querySelector(".hud-move")).toBeNull();
     } finally {

@@ -40,9 +40,23 @@ describe("the observed-host-star term", () => {
   // lapida, the cases that exposed this, turned out to have been seen under K and Y all along: their
   // "never" came from samples the profile builder was not reading.)
   it("still has something to say about these species on their own", () => {
-    expect(hostStarVerdict(species("concha_concha_biconcavis"), "A").kind).toBe("never");
-    expect(hostStarVerdict(species("fonticulua_fonticulua_digitos"), "Y").kind).toBe("never");
+    // Classes no confirmed body has either (data/exomastery/host-star-seen.json, 2026-10-05: digitos
+    // has 34 confirmed bodies round Y dwarfs and biconcavis 4 round A stars, which the profiles missed).
+    expect(hostStarVerdict(species("concha_concha_biconcavis"), "D").kind).toBe("never");
+    expect(hostStarVerdict(species("fonticulua_fonticulua_digitos"), "B").kind).toBe("never");
+    expect(hostStarVerdict(species("fonticulua_fonticulua_digitos"), "Y").kind).toBe("observed");
     expect(hostStarVerdict(species("fonticulua_fonticulua_digitos"), "K").kind).toBe("observed");
+  });
+
+  it("reads a confirmed class as observed even where the host star barely matters", () => {
+    // Tussock divisa: 84 confirmed bodies round neutron stars, which its colour table does not list.
+    expect(hostStarVerdict(species("tussock_tussock_divisa"), "N").kind).toBe("observed");
+  });
+
+  it("believes a confirmed spawn over a thin profile", () => {
+    // Stratum frigus: 28 profile bodies, none round an M dwarf; 19 of the 362 confirmed spawns in the
+    // precision sample are, and the "never" demoted each one (2026-10-05).
+    expect(hostStarVerdict(species("stratum_stratum_frigus"), "M").kind).toBe("observed");
   });
 
   it("stays silent for a species whose colour comes from a crust material", () => {
@@ -54,11 +68,35 @@ describe("the observed-host-star term", () => {
   });
 
   it("still demotes when neither the host nor the main star has been seen", () => {
-    expect(neverSeen("fonticulua_fonticulua_digitos", "Y", "Y")).toBe(true);
+    expect(neverSeen("fonticulua_fonticulua_digitos", "B", "B")).toBe(true);
   });
 });
 
 describe("restoring a named genus — the atmosphere weighs most", () => {
+  it("puts back segmentatus on pure thin Neon: its own air, only the share outside its band", () => {
+    // Drojaea HS-F b1-0 B 1 a: a confirmed segmentatus body, 100 % neon. Methane-only digitos won on
+    // list order before (2026-10-05).
+    const neon = {
+      PlanetClass: "Icy body",
+      AtmosphereType: "Neon",
+      Atmosphere: "thin neon atmosphere",
+      atmosphereComposition: [{ Name: "Neon", Percent: 100 }],
+      SurfaceTemperature: 52.4,
+      SurfaceGravity: 2.66,
+      SurfacePressure: 100,
+      Landable: true,
+    } as unknown as PlanetScan;
+    const { matches } = matchDatabaseToScan(
+      db,
+      neon,
+      [{ Genus: "$Codex_Ent_Fonticulus_Genus_Name;", Genus_Localised: "Fonticulua" }],
+      null,
+      { matchContext: { parentStarType: "L", hostStarClasses: ["L"], systemMainStarClass: "L" } },
+    );
+    const shown = matches.filter((m) => m.entry.genusDataDir === "fonticulua" && !m.unlikely).map((m) => m.entry.id);
+    expect(shown).toEqual(["fonticulua_fonticulua_segmentatus"]);
+  });
+
   it("puts back labiata, not the ammonia-only aureolas, on a carbon-dioxide world round an M dwarf", () => {
     // Labiata's one objection is its M-host gate; aureolas' is the atmosphere its codex does not list.
     const { matches } = matchDatabaseToScan(

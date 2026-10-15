@@ -19,10 +19,26 @@ const BUDGET_MS = 350;
 
 const packCell = (cx: number, cy: number, cz: number) => ((cx + 512) * 1024 + (cy + 512)) * 1024 + (cz + 512);
 
+type SectorColumn = { name: string; cells: number[]; n: number; sx: number; sy: number; sz: number };
+
+/*
+  Built from every cell of the index, and the find box asks on each keystroke (code review D9, 2026-10-14).
+  Kept per index object, so it goes when the index is released after idle (galaxyMemory.ts).
+*/
+const sectorColumnsMemo = new WeakMap<TileIndex, Map<string, SectorColumn>>();
+
 /** Sector columns by name: every height of a sector merged, as the map's groups are. */
-function sectorColumns(t: TileIndex): Map<string, { name: string; cells: number[]; n: number; sx: number; sy: number; sz: number }> {
+function sectorColumns(t: TileIndex): Map<string, SectorColumn> {
+  const hit = sectorColumnsMemo.get(t);
+  if (hit) return hit;
+  const built = sectorColumnsUncached(t);
+  sectorColumnsMemo.set(t, built);
+  return built;
+}
+
+function sectorColumnsUncached(t: TileIndex): Map<string, SectorColumn> {
   const names = sectorNames(t);
-  const out = new Map<string, { name: string; cells: number[]; n: number; sx: number; sy: number; sz: number }>();
+  const out = new Map<string, SectorColumn>();
   t.cells.forEach((c, i) => {
     const name = names[i];
     if (!name) return;
@@ -53,7 +69,16 @@ export function sectorOrdinals(t: TileIndex, sectorName: string): number[] {
   return out;
 }
 
-export function galaxyFind(t: TileIndex, store: GameStateStore | null, query: string): GalaxyFindDTO {
+/**
+ * `imported`: the game's visited list (visitedCache.ts), his own as much as the journals' — the launcher says they
+ * count as visited in Find (review 1.2.16: they never came up as "yours").
+ */
+export function galaxyFind(
+  t: TileIndex,
+  store: GameStateStore | null,
+  query: string,
+  imported: readonly { addr: number; name: string; x: number; y: number; z: number }[] = [],
+): GalaxyFindDTO {
   const q = query.trim().toLowerCase();
   const empty: GalaxyFindDTO = { query, sectors: [], systems: [], partial: false };
   if (q.length < 2) return empty;
@@ -62,7 +87,11 @@ export function galaxyFind(t: TileIndex, store: GameStateStore | null, query: st
   // Sectors: starts-with before contains.
   const sectors = [...cols.values()]
     .filter((s) => s.name.toLowerCase().includes(q))
-    .sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) || b.n - a.n)
+    .sort(
+      (a, b) =>
+        Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) ||
+        b.n - a.n,
+    )
     .slice(0, MAX_SECTORS)
     .map((s) => ({ name: s.name, x: s.sx / s.n, y: s.sy / s.n, z: s.sz / s.n, systems: s.n }));
 
@@ -83,6 +112,10 @@ export function galaxyFind(t: TileIndex, store: GameStateStore | null, query: st
       if (p) push({ name, x: p.x, y: p.y, z: p.z, ordinal: null, addr: String(addr), mine: true });
     }
   }
+  for (const s of imported) {
+    if (s.name && s.name.toLowerCase().includes(q))
+      push({ name: s.name, x: s.x, y: s.y, z: s.z, ordinal: null, addr: String(s.addr), mine: true });
+  }
 
   // The index: inside the named sector when the query names one, else a bounded scan.
   const index = t.index;
@@ -99,7 +132,9 @@ export function galaxyFind(t: TileIndex, store: GameStateStore | null, query: st
     return true;
   };
   const deadline = performance.now() + BUDGET_MS;
-  const named = systemSector(query.trim())?.toLowerCase() ?? (cols.has(q) ? q : [...cols.keys()].find((k) => q.startsWith(`${k} `)));
+  const named =
+    systemSector(query.trim())?.toLowerCase() ??
+    (cols.has(q) ? q : [...cols.keys()].find((k) => q.startsWith(`${k} `)));
   let complete = true;
   if (named && cols.has(named)) {
     for (const ci of cols.get(named)!.cells) {

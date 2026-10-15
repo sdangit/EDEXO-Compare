@@ -6,6 +6,7 @@
  * `AB-C d1` in the Eol Prou sector. Boxel scanning is flying every system of one boxel, -0 upwards.
  * The mass code (the letter, a to h) says how big the boxel's cube is and, roughly, what its stars are.
  */
+import type { NotableKind } from "./notices.js";
 
 export interface BoxelName {
   sector: string;
@@ -49,21 +50,26 @@ export function boxelIndexOf(name: string, prefix: string): number | null {
   return /^\d+$/.test(rest) ? Number(rest) : null;
 }
 
-/** Cube size and a rule of thumb for what the mass code holds. */
+/**
+ * Cube size and what the mass code's main stars are, as measured on the Spansh dump (2026-10-05,
+ * shared/boxelRates.ts; the old rules of thumb had e, f and h wrong).
+ */
 export const MASS_CODES: Record<string, { cubeLy: number; hint: string }> = {
-  a: { cubeLy: 10, hint: "the lightest: brown dwarfs and small M dwarfs" },
-  b: { cubeLy: 20, hint: "mostly M red dwarfs" },
-  c: { cubeLy: 40, hint: "K and M stars, some white dwarfs" },
-  d: { cubeLy: 80, hint: "F, G and K stars: the common main sequence" },
-  e: { cubeLy: 160, hint: "A and F stars, and giants" },
-  f: { cubeLy: 320, hint: "B stars and bright giants" },
-  g: { cubeLy: 640, hint: "O stars and supergiants" },
-  h: { cubeLy: 1280, hint: "the heaviest: black holes and the largest stars" },
+  a: { cubeLy: 10, hint: "brown dwarfs (T, Y and L: 91 % of main stars)" },
+  b: { cubeLy: 20, hint: "M red dwarfs (95 %)" },
+  c: { cubeLy: 40, hint: "K stars (73 %), some G and M" },
+  d: { cubeLy: 80, hint: "F and A stars, some G, and neutron stars (13 %)" },
+  e: { cubeLy: 160, hint: "B stars (51 %) and neutron stars (27 %)" },
+  f: { cubeLy: 320, hint: "black holes (51 %) and B stars (31 %)" },
+  g: { cubeLy: 640, hint: "O stars (42 %) and black holes (40 %)" },
+  h: { cubeLy: 1280, hint: "black holes (44 %) and Wolf-Rayet stars (26 %)" },
 };
 
 export interface BoxelRowDTO {
   n: number;
   name: string;
+  /** Visited and the journals gave its address. */
+  systemAddress?: number;
   /** In the commander's journals. */
   visited: boolean;
   /** Visited: bodies he scanned there, of the FSS body count when known ("15/15"). */
@@ -120,6 +126,15 @@ export interface SavedBoxelDTO {
   skipped: number[];
   /** Systems past `end` that he has flown: the boxel goes further than the end he typed. */
   flownBeyond: number[];
+  /**
+   * Systems -0..end not flown that a route he plotted passes through (NavRoute.json, kept by the
+   * NavRoute finder): they exist, as far as the game's own plotter knows.
+   */
+  routed?: number;
+  /** He checked in the galaxy map that the next system does not exist: `end` is the boxel's last. */
+  endKnown?: boolean;
+  /** The system to search for in the galaxy map to find out whether the boxel goes on; null once known. */
+  probe?: string | null;
   /** Bodies he scanned across its flown systems, and the FSS totals of those systems when known. */
   bodiesScanned: number;
   bodiesTotal: number | null;
@@ -127,7 +142,112 @@ export interface SavedBoxelDTO {
   notable: number;
   /** The commander is in this boxel now. */
   current: boolean;
+  /** The boxel run (start / finish key): its next system is copied after every jump. */
+  run?: boolean;
   total: number;
   /** The lowest system number neither flown nor skipped; null when the boxel is done. */
   next: string | null;
+}
+
+/** A notable body kind there and how many (null: the galaxy index says "at least one"). */
+export interface BoxelNotableDTO {
+  kind: NotableKind;
+  n: number | null;
+}
+
+/**
+ * One row of the Boxels screen (owner, 2026-10-05: "like My discoveries", every ticked boxel in one
+ * table): a system of one saved boxel.
+ *
+ * Flown systems are read from the journals; the others from the galaxy index, which keeps every star
+ * class (no luminosity) but only the bodies that matter for biology — so it has no Class I–V and no
+ * Helium gas giants, and green / Helium gas giants come only from the journals (or a look-up).
+ */
+export interface BoxelTableRowDTO {
+  boxelId: string;
+  /** `AB-C d1` */
+  boxel: string;
+  sector: string;
+  n: number;
+  name: string;
+  flown: boolean;
+  /** Marked skipped in the saved boxel (not flown, counted as done). */
+  skipped: boolean;
+  /** When he last arrived there (journals). */
+  visitedAt: string | null;
+  /** Its address: from the journals when flown, else Spansh's id64 from a look-up; null when unknown. */
+  systemAddress: number | null;
+  /**
+   * Where the facts come from: your journals, the galaxy index, a Spansh look-up, a route you plotted
+   * (its main star class only), or nothing yet.
+   */
+  from: "journal" | "index" | "lookup" | "route" | null;
+  /** Not flown, but a route he plotted passes through it (or he targeted it in the galaxy map). */
+  onRoute?: boolean;
+  /**
+   * Nothing recorded about it, but a higher system of the boxel is known: systems are numbered from 0
+   * without gaps for mass codes a-g (h boxels have gaps), so it exists — nobody has recorded it yet.
+   */
+  gap?: boolean;
+  /** The boxel was looked up on Spansh and this system is not there: undiscovered, as far as anyone uploaded. */
+  notOnSpansh?: boolean;
+  /** "K5 V" from a scan, "K" from the index or the jump. */
+  mainStar: string | null;
+  otherStars: string[];
+  /** STAR_CLASSES keys of every star, main first (the Star type filter). */
+  starClasses: string[];
+  /** Flown: bodies scanned of the FSS count; index: its body count (scanned null). */
+  bodies: { scanned: number | null; total: number | null } | null;
+  notables: BoxelNotableDTO[];
+  /** BODY_TRAITS keys present (the Body type filter). */
+  bodyTypes: string[];
+  /** Biology signals (null: not counted), whether any were seen, and the species logged there. */
+  bio: { signals: number | null; seen: boolean; species: string[] } | null;
+}
+
+export interface BoxelTableDTO {
+  /** The ticked boxels, in the side menu's order. */
+  boxels: SavedBoxelDTO[];
+  rows: BoxelTableRowDTO[];
+  /** The species recorded most often across the ticked boxels. */
+  common: { name: string; systems: number }[];
+  noIndex: boolean;
+  /** The ticked boxels looked up on Spansh: when, and whether every page was read. */
+  lookups: { boxelId: string; fetchedAt: string; complete: boolean; systems: number; highest: number }[];
+}
+
+/**
+ * A boxel the commander flew through (owner, 2026-10-05, "Previous systems in your paths"): every one
+ * the journals know, with what made it promising, notable ones first, and a Keep to save it.
+ */
+export interface PreviousBoxelDTO {
+  prefix: string;
+  boxel: string;
+  sector: string;
+  /** Systems of it he has flown, and the highest number among them. */
+  flown: number;
+  highest: number;
+  /** When he was last in it. */
+  lastVisit: string | null;
+  /** The system he was last in there: Keep saves the boxel from it. */
+  lastSystem: string;
+  notables: BoxelNotableDTO[];
+  bioSignals: number;
+  species: string[];
+  /** Star classes worth a return (STAR_CLASSES keys): O, B, Wolf-Rayet, carbon, neutron, black hole, Herbig, giants. */
+  rareStars: string[];
+  /** How promising, for the order: notables, rare stars and species. */
+  score: number;
+  /** Already one of his saved boxels. */
+  saved: boolean;
+}
+
+/** A Spansh look-up of a boxel in progress, or the last one's outcome (server/boxelLookup.ts). */
+export interface BoxelLookupStatus {
+  prefix: string;
+  boxel: string;
+  running: boolean;
+  pages: number;
+  systems: number;
+  note: string | null;
 }

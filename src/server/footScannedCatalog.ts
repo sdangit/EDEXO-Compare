@@ -38,7 +38,7 @@ import {
   resolveExomasteryExportBasename,
 } from "./exomasteryProfile.js";
 import { estimatedTemperatureRangeForScan, normalizeScanAtmosphereForMatch } from "./planetTemperature.js";
-import { matchDatabaseToScan, shownSpeciesMatches, speciesMatchesCriteria } from "./matchSpecies.js";
+import { matchDatabaseToScan, resolvePlanetTemperatureBand, shownSpeciesMatches, speciesMatchesCriteria } from "./matchSpecies.js";
 import { loadSpeciesDatabaseFromTree } from "./speciesTreeLoader.js";
 import { filterByGenusHints } from "./genusMatchUtils.js";
 import { resolveSpeciesPhoto } from "./speciesPhotos.js";
@@ -432,9 +432,19 @@ export function footScannedCatalogSignature(projectRoot: string): string {
   return `${statMemo.stamp}:${catalogGeneration}`;
 }
 
+/**
+ * Forget what was read from disk. Rows not yet written are not a cache and are kept, with their retry
+ * (code review 2026-10-10, A7): "refresh exomastery" flushes first, but when that flush failed the
+ * rows waiting for the retry were dropped here, the loss code review A14 fixed coming back by another door.
+ */
 export function clearFootScannedCatalogCache(): void {
   footCatalogCache.clear();
   statMemo = null;
+}
+
+/** Tests only: everything, rows not yet written included. */
+export function resetFootScannedCatalogForTests(): void {
+  clearFootScannedCatalogCache();
   pendingCatalogWrites.clear();
   if (catalogFlushTimer) {
     clearTimeout(catalogFlushTimer);
@@ -678,12 +688,16 @@ export function recordFootScanned(
 
 function hintedGeneraMissingFromMatches(hints: GenusHint[], matches: SpeciesMatch[]): GenusHint[] {
   const matched = new Set(matches.map((m) => genusFold(m.entry.genus)));
+  const entries = matches.map((m) => m.entry);
   return hints.filter((h) => {
     const a = genusFold(h.Genus_Localised || "");
     const b = genusFold(h.Genus || "");
     const k = a || b;
     if (!k) return false;
-    return !matched.has(k);
+    if (matched.has(k)) return false;
+    // The matcher's own reading of a genus name (plurals, the game's symbols, aliases such as the
+    // Thargoid "Barnacles"), so a genus it listed rows for is never also called missing.
+    return filterByGenusHints(entries, [h]).length === 0;
   });
 }
 
@@ -826,12 +840,8 @@ export function augmentMatchesWithFootCatalog(
             return { tMin: t, tMax: t, tMid: t };
           })()
         : null;
-  const planetTempBand =
-    est != null
-      ? { minK: est.tMin, maxK: est.tMax }
-      : mergedScan.SurfaceTemperature != null && Number.isFinite(mergedScan.SurfaceTemperature)
-        ? { minK: mergedScan.SurfaceTemperature, maxK: mergedScan.SurfaceTemperature }
-        : null;
+  // The matcher's band: the measured temperature first, the estimate only without one (2026-10-10).
+  const planetTempBand = resolvePlanetTemperatureBand(mergedScan, est);
 
   const catalog = { entries: footRowsWithShared(projectRoot) };
   const matchedGenera = new Set(matches.map((m) => genusFold(m.entry.genus)));

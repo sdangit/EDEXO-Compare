@@ -10,23 +10,15 @@ import {
   LS_PER_AU,
   SOLAR_RADIUS_METERS,
 } from "../shared/journalPhysics.js";
-import {
-  allStarParentIds,
-  barycentreSyntheticBodyId,
-  hostStarBodyIdsForExobiology,
-  parseJournalParentEntry,
-  resolveHostStarBodyId,
-} from "./orbitUtils.js";
+import { allStarParentIds, barycentreSyntheticBodyId, hostStarBodyIdsForExobiology, parseJournalParentEntry, resolveHostStarBodyId, orbitsAStar } from "./orbitUtils.js";
 import { hostStarClassKeys } from "../shared/hostStarGates.js";
 import { explorationRecordHasPlanetSlotDesignation } from "../shared/planetSlotDesignation.js";
 import { hostStarClassKey } from "../shared/hostStarClass.js";
 import { getProjectRoot } from "./paths.js";
 import { regionForSystem, regionIndexForSystem } from "./regionMapData.js";
 import type { GameStateStore } from "./gameState.js";
-
-function bodyKey(systemAddress: number, bodyId: number): string {
-  return `${systemAddress}:${bodyId}`;
-}
+import { bodyKey } from "../shared/bodyKey.js";
+import { mainStarRecord } from "../shared/mainStar.js";
 
 /**
  * Per-system index of exploration records, cached on the store's scan revision.
@@ -113,23 +105,7 @@ export function systemExplorationScanIndex(
  * 2,494 ls, and the codex writes the rule as "5 AU", which is 2,495 ls.
  */
 function arrivalStarBodyId(byId: Map<number, ExplorationScanRecord>): number | null {
-  /**
-   * The star you arrive at is the one the game reports at zero distance from arrival — 2,860 of the
-   * 4,635 star scans in the owner's logs carry that, and it is the only direct statement of which
-   * star the arrival distance is measured from.
-   *
-   * When the primary was never scanned, fall back to the lowest star `BodyID`, which is the primary
-   * in practice. That is a guess, so it is only ever used to *accept* the arrival distance for a body
-   * that orbits it — never to reject anything.
-   */
-  let zero: number | null = null;
-  let lowest: number | null = null;
-  for (const [bodyId, r] of byId) {
-    if (!r.starType?.trim()) continue;
-    if (lowest == null || bodyId < lowest) lowest = bodyId;
-    if (r.distanceFromArrivalLs === 0 && (zero == null || bodyId < zero)) zero = bodyId;
-  }
-  return zero ?? lowest;
+  return mainStarRecord(byId.values())?.bodyId ?? null;
 }
 
 /**
@@ -148,8 +124,7 @@ export function mainStarClassOf(byId: Map<number, ExplorationScanRecord>): strin
 
 /** The main (arrival) star's own record: its luminosity class sets the Anemone colour. */
 export function mainStarOf(byId: Map<number, ExplorationScanRecord>): ExplorationScanRecord | undefined {
-  const id = arrivalStarBodyId(byId);
-  return id == null ? undefined : byId.get(id);
+  return mainStarRecord(byId.values());
 }
 
 /**
@@ -419,7 +394,7 @@ function starLightOn(
       : undefined;
   const members = anchor.kind === "Star" ? [anchor.id] : tree.starsIn(anchor.id);
   let orbitLs = typeof orbitSma === "number" && orbitSma > 0 ? orbitSma / LIGHT_SECOND_METERS : undefined;
-  // A planet pair's barycentre with no `ScanBaryCentre` (EDSM and Spansh drop it): when the arrival
+  // A planet pair's barycentre with no `ScanBaryCentre` (EDSM drops it): when the arrival
   // star is in the group the body orbits, the arrival distance is that orbit, as in starDistanceLs.
   if (orbitLs === undefined && arrivalId != null && members.includes(arrivalId)) orbitLs = arrivalLs;
   /*
@@ -634,12 +609,14 @@ export function buildSpeciesMatchContext(exo: BodyExoState, store: GameStateStor
      * in the *current* system and the wrong one for a system being viewed remotely. Only attach it
      * when the body actually belongs to the commander's current system — a wrong coordinate would
      * demote candidates for a reason that has nothing to do with them. A looked-up system carries its
-     * own coordinates from Spansh, so the nebula / core gates can judge it.
+     * own coordinates from Spansh, so the nebula / core gates can judge it. A system flown earlier has
+     * its own `StarPos` from the journal (owner, 2026-10-07: Electricae radialem shown on Aishaist SA-G
+     * b39-0 C 5 once he had jumped on — without a position every gate stood aside).
      */
     spatialCoords:
       store.commanderPos && exo.systemAddress === store.currentSystemAddress
         ? store.commanderPos
-        : (store.remoteSystems.get(exo.systemAddress)?.coords ?? null),
+        : (store.remoteSystems.get(exo.systemAddress)?.coords ?? store.systemPositions.get(exo.systemAddress) ?? null),
     systemBodyListComplete: store.fssAllBodiesCompleteSystems.has(exo.systemAddress),
   });
 }
@@ -732,6 +709,7 @@ export function buildSpeciesMatchContextFromRecords(i: MatchContextInputs): Spec
   if (parentStarLuminosity) ctx.parentStarLuminosity = parentStarLuminosity;
   if (orbitDistanceFromParentStarLs !== undefined)
     ctx.orbitDistanceFromParentStarLs = orbitDistanceFromParentStarLs;
+  if (rec && Array.isArray(rec.parents)) ctx.orbitsAStar = orbitsAStar(rec.parents);
   if (signalHints?.length) ctx.signalHints = signalHints;
   if (hostStarClasses?.length) ctx.hostStarClasses = hostStarClasses;
   const mainStar = mainStarClassOf(byId);
@@ -742,6 +720,10 @@ export function buildSpeciesMatchContextFromRecords(i: MatchContextInputs): Spec
   const mainRec = mainStarOf(byId);
   if (mainRec?.starType?.trim()) ctx.systemMainStarType = mainRec.starType.trim();
   if (mainRec?.luminosity?.trim()) ctx.systemMainStarLuminosity = mainRec.luminosity.trim();
+  const stars = [...byId.values()]
+    .filter((r) => r.starType?.trim())
+    .map((r) => ({ type: r.starType!.trim(), ...(r.luminosity?.trim() ? { luminosity: r.luminosity.trim() } : {}) }));
+  if (stars.length) ctx.systemStars = stars;
   const colourStar = rec ? colourStarTypeFor(rec, byId) : undefined;
   if (colourStar) ctx.colourStarType = colourStar;
 

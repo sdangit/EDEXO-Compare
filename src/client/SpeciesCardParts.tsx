@@ -15,9 +15,8 @@ import { CSSProperties, useState } from "react";
 
 export function FootScanMatchCard({ payload }: { payload: FootScanMatchPayload }) {
   const [expanded, setExpanded] = useState(false);
-  const hits = payload.hits;
-  if (!hits.length) return null;
-  const [primary, ...more] = hits;
+  const [primary, ...more] = payload.hits;
+  if (!primary) return null;
 
   return (
     <div className="foot-scan-match-card">
@@ -151,7 +150,6 @@ export function SpeciesExomasterySimilarityContent({ m }: { m: BodyComputed["mat
       help: EXO_PRESENCE_HELP,
       pct: Math.max(0, Math.min(100, presence)),
       barOpacity: 1,
-      barExtraStyle: { filter: "hue-rotate(-35deg)" },
     });
   if (cols.length === 0) {
     return (

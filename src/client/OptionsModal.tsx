@@ -4,6 +4,7 @@
 import { useToast } from "./ui/feedback";
 import { useModal } from "./ui/useModal";
 import { InfoPopover } from "./ui/Tooltip";
+import { FoldPanel } from "./ui/Fold";
 import { Select } from "./ui/Select";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { AppSnapshot } from "@shared/types";
@@ -14,6 +15,7 @@ import {
   JournalHistoryPreset,
 } from "@shared/journalHistoryPreset";
 import { ExoMissLogPanel } from "./SpeciesCard";
+import { fmtCrExact } from "@shared/format";
 import {
   EXO_MAP_CR_MAX,
   EXO_MAP_CR_MIN,
@@ -94,6 +96,60 @@ function CopyLanUrlButton({ url, label = "Copy" }: { url: string; label?: string
     >
       {done ? "copied" : label}
     </button>
+  );
+}
+
+/**
+ * "Copy diagnostics" (combined plan, Phase 5 [O-C]): one block of text for a support message —
+ * build, system, journal folder, how the journals were read at start, LAN and upload switches, the
+ * last warnings. The server leaves out what is private (server/diagnostics.ts); the text is shown
+ * here as well, so the commander sees what they are about to send, and can copy it by hand where
+ * the clipboard is refused.
+ */
+function CopyDiagnostics() {
+  const toast = useToast();
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const copy = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/app/diagnostics", { cache: "no-store" });
+      if (!r.ok) throw new Error(r.status === 501 ? "Not available in this build." : r.statusText);
+      const t = await r.text();
+      setText(t);
+      try {
+        await navigator.clipboard.writeText(t);
+        toast.success("Diagnostics copied — paste them into your message.");
+      } catch {
+        toast.info("Copy them from the box below.");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not read the diagnostics.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="options-diagnostics">
+      <div className="options-oneline">
+        <button type="button" className="btn secondary" disabled={busy} onClick={() => void copy()}>
+          Copy diagnostics
+        </button>
+        <span className="dim options-diagnostics-hint">
+          For a bug report: no names, keys or links, your home folder as ~.
+        </span>
+      </div>
+      {text ? (
+        <textarea
+          className="options-diagnostics-text"
+          readOnly
+          value={text}
+          rows={Math.min(18, text.split("\n").length)}
+          onFocus={(e) => e.currentTarget.select()}
+          aria-label="Diagnostics"
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -214,21 +270,118 @@ export function MapOptionsModal({
           </button>
         </div>
         <div className="modal-body">
-          <section className="options-meta-block">
-            {snap.lastJournalEventIso ? (
-              <p className="options-last-event dim">
-                <span className="options-last-event-label">Last event:</span> {snap.lastJournalEventIso}
-              </p>
-            ) : null}
-            <p className="options-journal-line dim">
-              Journal: <code>{tail}</code>
-              {snap.journalFileCount > 0 ? (
-                <span className="tab"> · merged {snap.journalFileCount} log file(s)</span>
-              ) : null}
+          {/*
+            Grouped (owner, 2026-10-04: "less chaotic options everywhere, with hover-on details for each
+            one"): a heading per kind of setting, explained on hover, and every panel a fold that starts
+            closed and remembers being opened. Each fold's "?" holds its own explanations.
+          */}
+          <h4 className="options-group-head" title="How the app and its maps look, and the stamp on snapshot images">
+            Look
+          </h4>
+          <ColourSchemePanel />
+          {/*
+            The mechanism here predates this session and is not being changed — only its presentation
+            (A5). Two paragraphs explained what a <strong>+</strong> means before either slider was
+            reachable, which put the explanation of a control above the control itself. The owner's
+            shape: one title saying what is being marked, then two labelled bars.
+          */}
+          <FoldPanel
+            foldKey="options-map-marks"
+            defaultOpen={false}
+            className="options-meta-block options-tier-group"
+            title="System map + and ++ marks"
+            summary={`+ from ${fmtCrExact(Math.min(optPlus, EXO_MAP_PLUS_SLIDER_MAX))} · ++ from ${fmtCrExact(Math.max(plusPlusSliderMin, optPlusPlus))}`}
+          >
+            <p className="options-tier-lead dim">
+              The lowest per-species sell value a body must be worth before the system map marks it.
+              <InfoPopover title="Body on system map marking" label="How the map marking works">
+                <p>
+                  <strong>Min. CR for +</strong> is the lowest per-species sell value (CR) that must be met
+                  before the system map shows a <strong>+</strong> on that planet for exobiology.
+                </p>
+                <p>
+                  <strong>Min. CR for ++</strong> does the same with a higher threshold: when it is met the
+                  map shows <strong>++</strong> instead, so the more valuable finds stand out. It must stay
+                  above the <strong>+</strong> threshold, which is why its slider starts where it does.
+                </p>
+              </InfoPopover>
             </p>
-            <p className="options-journal-line dim">Species DB: {snap.speciesCount}</p>
-            <FeederCorpusSetting />
-            <CollectionFocusPanel />
+            <div className="options-tier-field">
+              <label htmlFor="exo-tier-plus">Min. CR for +</label>
+              <input
+                id="exo-tier-plus"
+                type="range"
+                min={EXO_MAP_CR_MIN}
+                max={EXO_MAP_PLUS_SLIDER_MAX}
+                step={EXO_MAP_CR_STEP}
+                value={Math.min(optPlus, EXO_MAP_PLUS_SLIDER_MAX)}
+                onChange={(ev) => {
+                  const plus = Number(ev.target.value);
+                  let pp = optPlusPlus;
+                  if (pp <= plus) {
+                    pp = Math.min(EXO_MAP_CR_MAX, plus + EXO_MAP_CR_STEP);
+                    if (pp <= plus) pp = plus + 1;
+                  }
+                  setOptPlus(plus);
+                  setOptPlusPlus(pp);
+                  queueSave(plus, pp);
+                }}
+              />
+              <div className="options-tier-value">
+                {fmtCrExact(Math.min(optPlus, EXO_MAP_PLUS_SLIDER_MAX))}
+              </div>
+            </div>
+            <div className="options-tier-field">
+              <label htmlFor="exo-tier-plusplus">Min. CR for ++</label>
+              <input
+                id="exo-tier-plusplus"
+                type="range"
+                min={plusPlusSliderMin}
+                max={EXO_MAP_CR_MAX}
+                step={EXO_MAP_CR_STEP}
+                value={Math.max(plusPlusSliderMin, optPlusPlus)}
+                onChange={(ev) => {
+                  let pp = Number(ev.target.value);
+                  pp = Math.round(pp / EXO_MAP_CR_STEP) * EXO_MAP_CR_STEP;
+                  const minPP = plusPlusSliderMin;
+                  pp = Math.max(minPP, Math.min(EXO_MAP_CR_MAX, pp));
+                  setOptPlusPlus(pp);
+                  queueSave(optPlus, pp);
+                }}
+              />
+              <div className="options-tier-value">
+                {fmtCrExact(Math.max(plusPlusSliderMin, optPlusPlus))} (min{" "}
+                {fmtCrExact(plusPlusSliderMin)})
+              </div>
+            </div>
+          </FoldPanel>
+          <SnapshotStampPanel prefs={snap.photoStamp} />
+          <h4 className="options-group-head" title="What the app tells you about, on the bell and the Notices HUD">
+            Notifications
+          </h4>
+          <NotifyPanel />
+          <h4 className="options-group-head" title="Which species are worth sampling, and the predictions the app missed">
+            Exobiology
+          </h4>
+          <CollectionFocusPanel />
+          <ExoMissLogPanel outliers={snap.exoOutliers} />
+          <h4 className="options-group-head" title="What the app fetches from EDSM, and what it sends to EDSM, Canonn and EDDN under your name">
+            Online data
+          </h4>
+          <EdsmFetchPanel state={snap.edsmAutoFetch} />
+          <EdsmUploadPanel state={snap.edsmUpload} hasKey={snap.edsmAutoFetch.hasKey} />
+          <CanonnUploadPanel state={snap.canonnUpload} />
+          <EddnUploadPanel state={snap.eddnUpload} />
+          <h4 className="options-group-head" title="Links for a phone or a second screen, and how much journal history the app reads">
+            Devices and journals
+          </h4>
+          <FoldPanel
+            foldKey="options-lan"
+            defaultOpen={false}
+            className="options-meta-block"
+            title="Phone and second screen"
+            summary={snap.mode === "server" && snap.lanUrls.length > 0 ? `${snap.lanUrls.length} address${snap.lanUrls.length === 1 ? "" : "es"}` : "LAN access off"}
+          >
             {/*
               The second screen is the same server on the same key — one query parameter apart
               (§51). Both were printed as whole URLs, on the reasoning that a bookmarkable link
@@ -274,122 +427,69 @@ export function MapOptionsModal({
                 links.
               </p>
             )}
-          </section>
-
-          <NotifyPanel />
-          <ColourSchemePanel />
-
-          <ExoMissLogPanel outliers={snap.exoOutliers} />
-
-          <EdsmFetchPanel state={snap.edsmAutoFetch} />
-          <EdsmUploadPanel state={snap.edsmUpload} hasKey={snap.edsmAutoFetch.hasKey} />
-          <CanonnUploadPanel state={snap.canonnUpload} />
-          <EddnUploadPanel state={snap.eddnUpload} />
-          <SnapshotStampPanel prefs={snap.photoStamp} />
-
-          <section className="options-journal-history options-meta-block options-oneline">
+          </FoldPanel>
+          <FoldPanel
+            foldKey="options-journal-history"
+            defaultOpen={false}
+            className="options-meta-block"
+            title="Journal history"
+            summary={journalHistoryPresetLabel(serverJournalHistoryPreset)}
+          >
+            <div className="options-journal-history options-oneline">
             <label className="options-oneline-label" htmlFor="journal-history-window">
-              Journal history
-            </label>
-            <Select
-              id="journal-history-window"
-              className="options-inline-select"
-              value={serverJournalHistoryPreset}
-              options={[
-                { value: "all", label: journalHistoryPresetLabel("all") },
-                ...journalHistoryWindowPresetChoices().map((p) => ({
-                  value: p,
-                  label: journalHistoryPresetLabel(p),
-                })),
-              ]}
-              onChange={(v) => {
-                void persistJournalHistory(parseJournalHistoryPreset(v));
-              }}
-            />
-            <InfoPopover title="Journal history" label="What journal history changes">
-              <p>
-                By default the app merges <strong>every</strong> <code>Journal.*.log</code> in your Elite
-                folder. Pick a window instead and it reads only the logs that start inside it.
-              </p>
-              <p>
-                The cutoff uses real time and advances while the app runs. Changing this triggers a full
-                journal resync.
-              </p>
-            </InfoPopover>
-          </section>
-
-          {/*
-            The mechanism here predates this session and is not being changed — only its presentation
-            (A5). Two paragraphs explained what a <strong>+</strong> means before either slider was
-            reachable, which put the explanation of a control above the control itself. The owner's
-            shape: one title saying what is being marked, then two labelled bars.
-          */}
-          <section className="options-meta-block options-tier-group">
-            <h4 className="options-block-title">Body on system map marking</h4>
-            <p className="options-tier-lead dim">
-              The lowest per-species sell value a body must be worth before the system map marks it.
-              <InfoPopover title="Body on system map marking" label="How the map marking works">
+                Journal history
+              </label>
+              <Select
+                id="journal-history-window"
+                className="options-inline-select"
+                value={serverJournalHistoryPreset}
+                options={[
+                  { value: "all", label: journalHistoryPresetLabel("all") },
+                  ...journalHistoryWindowPresetChoices().map((p) => ({
+                    value: p,
+                    label: journalHistoryPresetLabel(p),
+                  })),
+                ]}
+                onChange={(v) => {
+                  void persistJournalHistory(parseJournalHistoryPreset(v));
+                }}
+              />
+              <InfoPopover title="Journal history" label="What journal history changes">
                 <p>
-                  <strong>Min. CR for +</strong> is the lowest per-species sell value (CR) that must be met
-                  before the system map shows a <strong>+</strong> on that planet for exobiology.
+                  By default the app merges <strong>every</strong> <code>Journal.*.log</code> in your Elite
+                  folder. Pick a window instead and it reads only the logs that start inside it.
                 </p>
                 <p>
-                  <strong>Min. CR for ++</strong> does the same with a higher threshold: when it is met the
-                  map shows <strong>++</strong> instead, so the more valuable finds stand out. It must stay
-                  above the <strong>+</strong> threshold, which is why its slider starts where it does.
+                  The cutoff uses real time and advances while the app runs. Changing this triggers a full
+                  journal resync.
                 </p>
               </InfoPopover>
+            </div>
+          </FoldPanel>
+          <h4 className="options-group-head" title="What this install runs on, for a bug report">
+            About
+          </h4>
+          {/*
+            What the app is running on, for support (review F-1.6, combined plan 3.3 + Phase 5 [O-C]):
+            Options used to open on these lines, which mean nothing to someone choosing a colour scheme.
+          */}
+          <details className="options-about options-meta-block">
+            <summary>About this install</summary>
+            {snap.lastJournalEventIso ? (
+              <p className="options-last-event dim">
+                <span className="options-last-event-label">Last event:</span> {snap.lastJournalEventIso}
+              </p>
+            ) : null}
+            <p className="options-journal-line dim">
+              Journal: <code>{tail}</code>
+              {snap.journalFileCount > 0 ? (
+                <span className="tab"> · merged {snap.journalFileCount} log file(s)</span>
+              ) : null}
             </p>
-            <div className="options-tier-field">
-              <label htmlFor="exo-tier-plus">Min. CR for +</label>
-              <input
-                id="exo-tier-plus"
-                type="range"
-                min={EXO_MAP_CR_MIN}
-                max={EXO_MAP_PLUS_SLIDER_MAX}
-                step={EXO_MAP_CR_STEP}
-                value={Math.min(optPlus, EXO_MAP_PLUS_SLIDER_MAX)}
-                onChange={(ev) => {
-                  const plus = Number(ev.target.value);
-                  let pp = optPlusPlus;
-                  if (pp <= plus) {
-                    pp = Math.min(EXO_MAP_CR_MAX, plus + EXO_MAP_CR_STEP);
-                    if (pp <= plus) pp = plus + 1;
-                  }
-                  setOptPlus(plus);
-                  setOptPlusPlus(pp);
-                  queueSave(plus, pp);
-                }}
-              />
-              <div className="options-tier-value">
-                {Math.min(optPlus, EXO_MAP_PLUS_SLIDER_MAX).toLocaleString()} CR
-              </div>
-            </div>
-            <div className="options-tier-field">
-              <label htmlFor="exo-tier-plusplus">Min. CR for ++</label>
-              <input
-                id="exo-tier-plusplus"
-                type="range"
-                min={plusPlusSliderMin}
-                max={EXO_MAP_CR_MAX}
-                step={EXO_MAP_CR_STEP}
-                value={Math.max(plusPlusSliderMin, optPlusPlus)}
-                onChange={(ev) => {
-                  let pp = Number(ev.target.value);
-                  pp = Math.round(pp / EXO_MAP_CR_STEP) * EXO_MAP_CR_STEP;
-                  const minPP = plusPlusSliderMin;
-                  pp = Math.max(minPP, Math.min(EXO_MAP_CR_MAX, pp));
-                  setOptPlusPlus(pp);
-                  queueSave(optPlus, pp);
-                }}
-              />
-              <div className="options-tier-value">
-                {Math.max(plusPlusSliderMin, optPlusPlus).toLocaleString()} CR (min{" "}
-                {plusPlusSliderMin.toLocaleString()} CR)
-              </div>
-            </div>
-          </section>
-
+            <p className="options-journal-line dim">Species DB: {snap.speciesCount}</p>
+            <CopyDiagnostics />
+            <FeederCorpusSetting />
+          </details>
           <button type="button" className="btn-top-danger options-reset-exo" onClick={onResetExobiology}>
             Reset exobiology…
           </button>

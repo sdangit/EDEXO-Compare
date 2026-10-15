@@ -15,23 +15,38 @@ export function formatTempScalar(k: number, u: TempUnit): string {
   return `${((c * 9) / 5 + 32).toFixed(0)}°F`;
 }
 
-/** One-line temperature pill: band from heuristic + journal snapshot. */
+/**
+ * The temperature, journal value first (owner, D2, 2026-10-01; review F-1.4).
+ *
+ * The label read "108 K · 270 K J: 223 K": the estimated band first, then the journal's value — the
+ * one that is true — last and behind a cipher. Now `main` is the journal value and `est` the band,
+ * shown dimmed beside it; with no journal value the band is the main text, said to be an estimate.
+ */
+export function temperatureParts(
+  journalK: number | null | undefined,
+  est: EstimatedSurfaceTempBand | null,
+  u: TempUnit,
+): { main: string; est: string | null } {
+  const j = journalK != null && Number.isFinite(journalK) ? journalK : null;
+  const hasEst = est != null && Number.isFinite(est.minK) && Number.isFinite(est.maxK);
+  const band = hasEst
+    ? u === "K"
+      ? `${est!.minK.toFixed(0)}–${est!.maxK.toFixed(0)} K`
+      : `${formatTempScalar(est!.minK, u)} – ${formatTempScalar(est!.maxK, u)}`
+    : null;
+  if (j != null) return { main: formatTempScalar(j, u), est: band ? `est. ${band}` : null };
+  if (band) return { main: `est. ${band}`, est: null };
+  return { main: "—", est: null };
+}
+
+/** The same as one line of text (copied summaries, titles): "223 K (est. 108–270 K)". */
 export function formatTemperaturePillLine(
   journalK: number | null | undefined,
   est: EstimatedSurfaceTempBand | null,
   u: TempUnit,
 ): string {
-  const j = journalK != null && Number.isFinite(journalK) ? journalK : null;
-  const hasEst = est != null && Number.isFinite(est.minK) && Number.isFinite(est.maxK);
-  if (!hasEst && j == null) return "—";
-  const rng = (a: number, b: number) => `${formatTempScalar(a, u)} \u00b7 ${formatTempScalar(b, u)}`;
-  if (hasEst && j != null) {
-    return `${rng(est!.minK, est!.maxK)} J: ${formatTempScalar(j, u)}`;
-  }
-  if (hasEst) {
-    return rng(est!.minK, est!.maxK);
-  }
-  return `J: ${formatTempScalar(j!, u)}`;
+  const p = temperatureParts(journalK, est, u);
+  return p.est ? `${p.main} (${p.est})` : p.main;
 }
 
 export function formatPressurePill(rawJournal: number | null | undefined, display: PressDisplay): string {
@@ -182,8 +197,10 @@ export function planetClassPillStyle(planetClass: string): CSSProperties {
   if (bl === "AW") return { borderColor: "#facc15", color: "#fde047", background: "rgba(234,179,8,0.2)" };
   if (bl === "I" || bl === "RI")
     return { borderColor: "#22d3ee", color: "#a5f3fc", background: "rgba(34,211,238,0.16)" };
-  if (bl === "R" || bl === "HMC" || bl === "MR")
-    return { borderColor: "#ff8a1f", color: "#ff9a4d", background: "rgba(255,122,36,0.12)" };
+  // The system map's rock tints (owner, D3): no accent orange.
+  if (bl === "R") return { borderColor: "#8f7258", color: "#dcc6ae", background: "rgba(143,114,88,0.16)" };
+  if (bl === "HMC") return { borderColor: "#a69a88", color: "#e4ddd2", background: "rgba(166,154,136,0.16)" };
+  if (bl === "MR") return { borderColor: "#a9aebb", color: "#e2e4ea", background: "rgba(169,174,187,0.16)" };
   if (bl === "GG" || /^GG[1-5]$/.test(bl))
     return { borderColor: "#c4a574", color: "#e8d5b8", background: "rgba(196,165,116,0.22)" };
   return { borderColor: "#fb923c", color: "#fdba74", background: "rgba(251,146,60,0.12)" };
@@ -200,7 +217,7 @@ const ATMOSPHERE_PALETTE: { test: (s: string) => boolean; rgb: string }[] = [
   { test: (s) => /\bhelium/i.test(s), rgb: "255, 235, 150" },
   { test: (s) => /\bneon/i.test(s), rgb: "255, 120, 200" },
   { test: (s) => /\bcarbon\s*dioxide|co2/i.test(s), rgb: "158, 158, 158" },
-  { test: (s) => /\bsulfur/i.test(s), rgb: "255, 213, 79" },
+  { test: (s) => /\bsul(f|ph)ur/i.test(s), rgb: "255, 213, 79" },
   { test: (s) => /\bhydrogen/i.test(s), rgb: "240, 230, 255" },
 ];
 

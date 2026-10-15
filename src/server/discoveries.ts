@@ -27,9 +27,8 @@
  * cashes in. Value on those rows is the sale, not an estimate, because the estimate no longer
  * applies to anything he can sell again.
  */
-import { bodyFeatures, directParent } from "../shared/bodyFeatures.js";
-import { greenGiantForRecord, type GreenGiantSources } from "./greenGiants.js";
-import { isGggClass } from "../shared/greenGasGiant.js";
+import { bodyFeatures, directParent, type BodyFeatureKey } from "../shared/bodyFeatures.js";
+import { greenGiantForRecord, greenMarkToAsk, type GreenGiantSources } from "./greenGiants.js";
 import type {
   BodyExoState,
   DiscoveriesDTO,
@@ -39,11 +38,17 @@ import type {
   ExplorationScanRecord,
 } from "../shared/types.js";
 import type { GameStateStore } from "./gameState.js";
-import { bodyScanValueCredits, starScanValueCredits } from "./explorationValue.js";
+import {
+  bodyScanValueCredits,
+  starScanValueCredits,
+  systemHonkCredits,
+  type HonkBody,
+} from "./explorationValue.js";
 import { regionForSystem } from "./regionMapData.js";
 import { journalSurfaceGravityToG, SOLAR_RADIUS_METERS } from "../shared/journalPhysics.js";
 import { commanderFirstDiscoveredBody } from "./developerPopulatedSystems.js";
 import { isTerraformableState } from "../shared/terraformState.js";
+import { bodyKey } from "../shared/bodyKey.js";
 
 /**
  * Radii are reported against the Sun and the Earth, never in kilometres.
@@ -90,10 +95,11 @@ function prettyClass(planetClass: string | undefined): string {
  * From the body's own organic locks rather than from the foot catalog, because the locks are what
  * the panel everywhere else in the app treats as proof.
  */
-function confirmedOn(b: BodyExoState | undefined): string[] {
+export function confirmedOn(b: BodyExoState | undefined): string[] {
   if (!b) return [];
   const out = new Set<string>();
   for (const lock of b.organicGenusLocks ?? []) {
+    if (lock.fromSibling) continue; // a sibling moon's species, a hint here, not a find
     const label = (lock.speciesLocalised || lock.genusLocalised || "").trim();
     if (label) out.add(label);
   }
@@ -166,9 +172,29 @@ export function buildDiscoveries(
     return row;
   };
 
+  // The Feature filter on the Systems tab: a system has a feature when any body or star of it has.
+  const addFeatureKeys = (row: DiscoverySystemRow, hits: readonly { key: BodyFeatureKey }[]) => {
+    if (!hits.length) return;
+    const set = new Set(row.featureKeys ?? []);
+    for (const h of hits) set.add(h.key);
+    row.featureKeys = [...set];
+  };
+
   // Every system he has been to gets a row, even one he flew through without scanning — the absence
   // of scans is itself an answer to "where have I not looked".
   for (const [addr, name] of store.visitedSystems) systemRow(addr, name);
+
+  // The honk, carried by each system's arrival star as the game's map shows it (explorationValue.ts):
+  // the other bodies per system, and the arrival star's row and first-discovery flag.
+  const honk = new Map<
+    number,
+    { bodies: HonkBody[]; arrivalRow: DiscoveryStarRow | null; arrivalFd: boolean }
+  >();
+  const honkOf = (addr: number) => {
+    let h = honk.get(addr);
+    if (!h) honk.set(addr, (h = { bodies: [], arrivalRow: null, arrivalFd: false }));
+    return h;
+  };
 
   for (const [key, rec] of scans) {
     const addr = rec.systemAddress;
@@ -195,8 +221,17 @@ export function buildDiscoveries(
       // The arrival star is body 0 in almost every system, and is what a commander means by "the
       // star" when filtering a system list.
       if (sys.primaryStarType == null || rec.bodyId === 0) sys.primaryStarType = rec.starType;
+      const sp = directParent(rec.parents);
+      const starHits = bodyFeatures(
+        rec,
+        sp && sp.kind !== "Null" ? (scans.get(bodyKey(addr, sp.id)) ?? null) : null,
+      );
+      addFeatureKeys(sys, starHits);
       stars.push({
         key,
+        ...(starHits.length
+          ? { features: starHits.map((f) => f.label), featureKeys: starHits.map((f) => f.key) }
+          : {}),
         systemAddress: addr,
         system: sys.name,
         region: sys.region,
@@ -213,6 +248,18 @@ export function buildDiscoveries(
         estimatedCredits: Math.round(v.value),
         scannedAt: at || null,
       });
+      if (!((rec.distanceFromArrivalLs ?? 0) > 0)) {
+        const h = honkOf(addr);
+        h.arrivalRow = stars[stars.length - 1]!;
+        h.arrivalFd = firstDiscoverer;
+      } else {
+        honkOf(addr).bodies.push({
+          kind: "star",
+          // A missing mass reads 1, as Data value and the system map read it (one honk everywhere).
+          stellarMass: rec.stellarMass ?? 1,
+          starType: rec.starType,
+        });
+      }
       continue;
     }
 
@@ -229,10 +276,16 @@ export function buildDiscoveries(
       Number.isFinite(massEM) ? massEM : 0,
       firstDiscoverer,
       firstMapper,
-      false,
+      true,
       store.dssMappingEfficientByBodyKey.get(key) === true,
     );
     const estimated = dssComplete ? v.dssMapped : v.fss;
+    honkOf(addr).bodies.push({
+      kind: "planet",
+      planetClass,
+      terraformable,
+      massEM: rec.massEM ?? 1,
+    });
     const species = confirmedOn(b);
     const signals = b?.biologicalSignals ?? null;
     const isLandable = landable(rec);
@@ -254,12 +307,17 @@ export function buildDiscoveries(
     if (footfall) sys.firstFootfalls += 1;
 
     const dp = directParent(rec.parents);
-    const parentRec = dp && dp.kind !== "Null" ? (scans.get(`${addr}:${dp.id}`) ?? null) : null;
-    const features = bodyFeatures(rec, parentRec).map((f) => f.label);
+    const parentRec = dp && dp.kind !== "Null" ? (scans.get(bodyKey(addr, dp.id)) ?? null) : null;
+    const hits = bodyFeatures(rec, parentRec);
+    const features = hits.map((f) => f.label);
+    const greenGiant = greenGiantForRecord(rec, greenSrc);
+    const askMark = greenMarkToAsk(rec, greenGiant, greenSrc.marks);
+    addFeatureKeys(sys, hits);
     bodies.push({
       key,
-      greenGiant: greenGiantForRecord(rec, greenSrc),
-      ...(isGggClass(rec.planetClass) ? { greenMark: greenSrc.marks.get(key) } : {}),
+      ...(hits.length ? { featureKeys: [...new Set(hits.map((f) => f.key))] } : {}),
+      greenGiant,
+      ...(askMark !== undefined ? { greenMark: askMark } : {}),
       ...(features.length ? { features } : {}),
       systemAddress: addr,
       system: sys.name,
@@ -294,6 +352,13 @@ export function buildDiscoveries(
   for (const [addr, tally] of store.soldOrganicBySystem) {
     const row = systems.get(addr);
     if (row) row.soldExobiologyCredits = Math.round(tally.credits);
+  }
+  for (const [addr, h] of honk) {
+    if (!h.arrivalRow) continue;
+    const credits = systemHonkCredits(h.bodies, h.arrivalFd);
+    h.arrivalRow.estimatedCredits += credits;
+    const row = systems.get(addr);
+    if (row) row.estimatedCredits += credits;
   }
   for (const row of systems.values()) row.estimatedCredits = Math.round(row.estimatedCredits);
 

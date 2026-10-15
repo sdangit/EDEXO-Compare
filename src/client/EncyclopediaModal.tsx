@@ -1,3 +1,4 @@
+import { LazyMount } from "./ui/LazyMount";
 import { isBool, isStr, usePersistedState } from "./usePersistedState";
 import type {
   EncyclopediaExomasteryPlanetsResponseDTO,
@@ -17,7 +18,9 @@ import { useModal } from "./ui/useModal";
 import { SkeletonRows } from "./ui/Skeleton";
 import { Tooltip } from "./ui/Tooltip";
 import {
+  applyCardVerdicts,
   buildEncyclopediaSpawnConditionCards,
+  type EncyclopediaCardVerdict,
   type EncyclopediaSpawnTier,
 } from "@shared/speciesSpawnConditionCards";
 import {
@@ -35,14 +38,9 @@ import { rarityTierInfo, type RegionalRarity } from "@shared/speciesRarity";
 import { EncyclopediaFilterBar } from "./EncyclopediaFilterBar";
 import { RarityGem } from "./RarityGem";
 import { ExomasteryPlanetsBody, FoundSpeciesPopup } from "./EncyclopediaPanels";
-import {
-  GuideColoursBlock,
-  GuideGenusIntro,
-  GuideMeasuredBlock,
-  fmtGuideCredits,
-  guideBodyFrom,
-} from "./FieldGuide";
+import { GuideBandsBlock, GuideColoursBlock, GuideGenusIntro, GuideMeasuredBlock, GuideWithinBlock, guideBodyFrom } from "./FieldGuide";
 import type { FieldGuideDTO, GuideGenus, GuideSpecies } from "@shared/fieldGuide";
+import { fmtCrExact, fmtCrTick } from "@shared/format";
 
 const EXO_DRAWER_TRANSITION_MS = 380;
 
@@ -135,22 +133,61 @@ export type EncyclopediaSpawnCompare = {
   bodyTabLabel?: string;
 };
 
+type CardVerdicts = Record<string, Record<string, EncyclopediaCardVerdict>>;
+
+/**
+ * The matcher's grade of every species' cards on the compared body (plan 1.10): one request per body,
+ * null until it answers (the cards show their own tiers meanwhile) or when there is no body.
+ */
+function useCardVerdicts(spawnCompare: EncyclopediaSpawnCompare | null): CardVerdicts | null {
+  const [v, setV] = useState<CardVerdicts | null>(null);
+  // Each snapshot brings new objects for the same body: keyed on the content, not the identity.
+  const body = spawnCompare?.scan
+    ? JSON.stringify({ scan: spawnCompare.scan, est: spawnCompare.estimatedSurfaceTempK, ctx: spawnCompare.speciesMatchContext })
+    : null;
+  useEffect(() => {
+    setV(null);
+    if (!body) return;
+    const ac = new AbortController();
+    void fetch("/api/encyclopedia/card-verdicts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal: ac.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { verdicts?: CardVerdicts } | null) => {
+        if (!ac.signal.aborted) setV(j?.verdicts ?? null);
+      })
+      .catch(() => {
+        /* the cards keep their own tiers */
+      });
+    return () => ac.abort();
+  }, [body]);
+  return v;
+}
+
 function EncyclopediaSpeciesConditions({
   entry,
   spawnCompare,
+  verdicts,
 }: {
   entry: SpeciesEntry;
   spawnCompare: EncyclopediaSpawnCompare | null;
+  verdicts: Record<string, EncyclopediaCardVerdict> | null;
 }) {
   const cards = useMemo(
     () =>
-      buildEncyclopediaSpawnConditionCards({
-        entry,
-        scan: spawnCompare?.scan ?? null,
-        estimatedSurfaceTempK: spawnCompare?.estimatedSurfaceTempK ?? null,
-        speciesMatchContext: spawnCompare?.speciesMatchContext ?? null,
-      }),
-    [entry, spawnCompare?.scan, spawnCompare?.estimatedSurfaceTempK, spawnCompare?.speciesMatchContext],
+      applyCardVerdicts(
+        buildEncyclopediaSpawnConditionCards({
+          entry,
+          scan: spawnCompare?.scan ?? null,
+          estimatedSurfaceTempK: spawnCompare?.estimatedSurfaceTempK ?? null,
+          speciesMatchContext: spawnCompare?.speciesMatchContext ?? null,
+        }),
+        verdicts,
+      ),
+    [entry, spawnCompare?.scan, spawnCompare?.estimatedSurfaceTempK, spawnCompare?.speciesMatchContext, verdicts],
   );
 
   // The field-guide layout (owner, 2026-09-29): one row per condition — what the species needs, and
@@ -494,6 +531,7 @@ export function EncyclopediaModal({
         /* the cards still show everything else */
       });
   }, []);
+  const cardVerdicts = useCardVerdicts(spawnCompare);
   const guideBody = useMemo(
     () =>
       spawnCompare
@@ -698,182 +736,202 @@ export function EncyclopediaModal({
     const g = guide?.species.get(entry.id);
     // Before the second pass only the first cards exist (see allCharts).
     if (!allCharts && (displayOrder.get(entry.id) ?? 0) >= FIRST_CHARTS) return null;
+    // Built when it comes near the screen (plan 3.4, 2026-10-04); a placeholder of a card's height until then.
     return (
-      <article key={entry.id} className="encyclopedia-species-card fg-card">
-        {exoEnabled && exomasteryDataInsufficient ? (
-          <Tooltip
-            className="ency-low-sample-anchor"
-            text="Low sample — exomastery has only one recorded body for this species, so its habitat figures are indicative, not typical."
-          >
-            <span className="encyclopedia-exomastery-insufficient">
-              <svg
-                width="11"
-                height="11"
-                viewBox="0 0 16 16"
-                aria-hidden
-                focusable="false"
-                className="ency-low-sample-icon"
-              >
-                <path
-                  d="M8 1.8 15 14.2H1Z"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinejoin="round"
-                />
-                <path d="M8 6v3.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                <circle cx="8" cy="11.7" r="0.85" fill="currentColor" />
-              </svg>
-              Low sample
-            </span>
-          </Tooltip>
-        ) : null}
-        {/*
+      <LazyMount
+        key={entry.id}
+        minHeight={560}
+        rootSelector=".encyclopedia-scroll"
+        className="encyclopedia-species-card encyclopedia-species-card--waiting fg-card"
+      >
+        <article className="encyclopedia-species-card fg-card">
+          {exoEnabled && exomasteryDataInsufficient ? (
+            <Tooltip
+              className="ency-low-sample-anchor"
+              text="Low sample — exomastery has only one recorded body for this species, so its habitat figures are indicative, not typical."
+            >
+              <span className="encyclopedia-exomastery-insufficient">
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 16 16"
+                  aria-hidden
+                  focusable="false"
+                  className="ency-low-sample-icon"
+                >
+                  <path
+                    d="M8 1.8 15 14.2H1Z"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M8 6v3.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <circle cx="8" cy="11.7" r="0.85" fill="currentColor" />
+                </svg>
+                Low sample
+              </span>
+            </Tooltip>
+          ) : null}
+          {/*
           The field-guide card (owner, 2026-09-29, after the website's species page): the photo on
           top, then the description, the conditions checked against the body, where the species was
           actually found, and mode charts with the body marked on each.
         */}
-        <button
-          type="button"
-          className="fg-photo"
-          onClick={() =>
-            setPhotoZoom({
-              urls: photoUrls?.length ? photoUrls : [photoUrl],
-              note: photoNote,
-              creditByUrl: photoCreditByUrl,
-            })
-          }
-          aria-label={`Enlarge photo for ${entry.displayName}`}
-          // Credit on the hover here and in full once opened: the photographs are not this
-          // project's to show unmarked.
-          title={[photoCreditTitle(photoUrl, photoCreditByUrl?.[photoUrl]), "Click for the full-size photos"]
-            .filter(Boolean)
-            .join(" — ")}
-        >
-          <EncyclopediaThumb
-            photoUrl={photoUrl}
-            displayName={entry.displayName}
-            className="fg-photo-img"
-            size="card"
-          />
-          {(photoUrls?.length ?? 0) > 1 ? (
-            <span className="fg-photo-count">{photoUrls!.length} photos</span>
-          ) : null}
-        </button>
-        <div className="encyclopedia-species-col">
-          <header className="fg-head">
-            <div className="fg-head-name">
-              <h4 className="encyclopedia-species-title">
-                <RarityGem rarity={entry.rarity} className="rarity-gem--ency" />
-                {entry.displayName}
-              </h4>
-              <span className="encyclopedia-species-genus dim tiny">{entry.genus || entry.genusDataDir}</span>
-              {regionInfo ? (
-                <RegionMark region={regionInfo.region} r={regionInfo.species[entry.id] ?? null} />
-              ) : null}
-            </div>
-            {priceCredits ? (
-              <div className="fg-value">
-                <strong title={`${priceCredits.toLocaleString("en-US")} cr`}>
-                  {fmtGuideCredits(priceCredits)} cr
-                </strong>
-                <span title={`${(priceCredits * 5).toLocaleString("en-US")} cr`}>
-                  {fmtGuideCredits(priceCredits * 5)} first footfall
-                </span>
-              </div>
-            ) : null}
-          </header>
-          {photoNote ? <p className="encyclopedia-photo-note dim tiny">{photoNote}</p> : null}
-          {entry.description ? <p className="encyclopedia-desc">{entry.description}</p> : null}
-          {g?.sampleDistanceM ? (
-            <span className="fg-chip">Clonal range {g.sampleDistanceM.toLocaleString("en-US")} m</span>
-          ) : null}
-          <div className="encyclopedia-criteria">
-            <span className="fg-h">
-              Conditions{spawnCompare ? ` · vs ${spawnCompare.bodyTabLabel ?? "this body"}` : ""}
-            </span>
-            <EncyclopediaSpeciesConditions entry={entry} spawnCompare={spawnCompare} />
-          </div>
-          {g?.measured ? (
-            <GuideMeasuredBlock m={g.measured} body={guideBody} />
-          ) : guide ? (
-            <p className="fg-none">
-              Not measured yet: the corpus has not confirmed this species on enough bodies to chart. The
-              conditions above are what the app predicts from.
-            </p>
-          ) : null}
-          <GuideColoursBlock c={g?.colours ?? null} />
-          <div className="encyclopedia-species-actions">
-            <button
-              type="button"
-              className="btn-ency-found"
-              title="Show matching rows from your foot catalog for this species"
-              onClick={() => setFoundFor(entry)}
-            >
-              Found ({foundN})
-            </button>
-            {exoEnabled ? (
-              <button
-                type="button"
-                className="btn-ency-exomastery"
-                title={
-                  exoExpanded
-                    ? "Hide exomastery data for this species"
-                    : exomasteryProfileFilePresent
-                      ? "Show Exomastery profile (mode vs mean) from feeder JSON"
-                      : "Show EDSM / per-body exomastery rows for this species"
-                }
-                onClick={() => toggleInlineExomastery(entry)}
-              >
-                {exoExpanded
-                  ? `Hide exomastery (${exomasteryFeederBodyCount})`
-                  : `Exomastery (${exomasteryFeederBodyCount})`}
-              </button>
-            ) : null}
-          </div>
-        </div>
-        {hasExoDrawer ? (
-          <div
-            data-exo-drawer={entry.id}
-            className={`encyclopedia-exomastery-drawer ${exoDrawerReveal && !exoClosing ? "encyclopedia-exomastery-drawer--open" : ""}`}
+          <button
+            type="button"
+            className="fg-photo"
+            onClick={() =>
+              setPhotoZoom({
+                urls: photoUrls?.length ? photoUrls : [photoUrl],
+                note: photoNote,
+                creditByUrl: photoCreditByUrl,
+              })
+            }
+            aria-label={`Enlarge photo for ${entry.displayName}`}
+            // Credit on the hover here and in full once opened: the photographs are not this
+            // project's to show unmarked.
+            title={[
+              photoCreditTitle(photoUrl, photoCreditByUrl?.[photoUrl]),
+              "Click for the full-size photos",
+            ]
+              .filter(Boolean)
+              .join(" — ")}
           >
-            <div className="encyclopedia-exomastery-drawer-inner">
-              <div className="encyclopedia-exomastery-inline-head">
-                <div className="encyclopedia-exomastery-inline-head-text">
-                  <strong className="encyclopedia-exomastery-inline-title">
-                    {inlineExo?.data?.source === "profile"
-                      ? "Exomastery profile"
-                      : "Exomastery sample bodies"}
-                  </strong>
-                  {inlineExo?.data ? (
-                    <span className="dim tiny encyclopedia-exomastery-inline-sub">
-                      {inlineExo.data.source === "profile"
-                        ? inlineExo.data.sampleCount > 0
-                          ? `n ≤ ${inlineExo.data.sampleCount} (feeder counts)`
-                          : "feeder rollups"
-                        : `n = ${inlineExo.data.sampleCount}`}
-                    </span>
-                  ) : null}
-                </div>
-                {inlineExo?.speciesEntryId === entry.id && !exoClosing ? (
-                  <button
-                    type="button"
-                    className="encyclopedia-exomastery-refetch"
-                    disabled={!!inlineExo.loading}
-                    title="Clear cached feeder JSON for this species and reload from disk."
-                    onClick={() => refetchInlineExomastery()}
-                  >
-                    Force re-fetch
-                  </button>
+            <EncyclopediaThumb
+              photoUrl={photoUrl}
+              displayName={entry.displayName}
+              className="fg-photo-img"
+              size="card"
+            />
+            {(photoUrls?.length ?? 0) > 1 ? (
+              <span className="fg-photo-count">{photoUrls!.length} photos</span>
+            ) : null}
+          </button>
+          <div className="encyclopedia-species-col">
+            <header className="fg-head">
+              <div className="fg-head-name">
+                <h4 className="encyclopedia-species-title">
+                  <RarityGem rarity={entry.rarity} className="rarity-gem--ency" />
+                  {entry.displayName}
+                </h4>
+                <span className="encyclopedia-species-genus dim tiny">
+                  {entry.genus || entry.genusDataDir}
+                </span>
+                {regionInfo ? (
+                  <RegionMark region={regionInfo.region} r={regionInfo.species[entry.id] ?? null} />
                 ) : null}
               </div>
-              {inlineExo?.loading ? <p className="dim">Loading planetary data…</p> : null}
-              {inlineExo?.err ? <p className="warn">{inlineExo.err}</p> : null}
-              {inlineExo?.data && !inlineExo.loading ? <ExomasteryPlanetsBody data={inlineExo.data} /> : null}
+              {priceCredits ? (
+                <div className="fg-value">
+                  {/* CR in capitals, as everywhere else in the app (review V8). */}
+                  <strong title={`${fmtCrExact(priceCredits)}`}>{fmtCrTick(priceCredits)} CR</strong>
+                  <span title={`${fmtCrExact(priceCredits * 5)}`}>
+                    {fmtCrTick(priceCredits * 5)} CR first footfall
+                  </span>
+                </div>
+              ) : null}
+            </header>
+            {photoNote ? <p className="encyclopedia-photo-note dim tiny">{photoNote}</p> : null}
+            {entry.description ? <p className="encyclopedia-desc">{entry.description}</p> : null}
+            {g?.sampleDistanceM ? (
+              <span className="fg-chip">Clonal range {g.sampleDistanceM.toLocaleString("en-US")} m</span>
+            ) : null}
+            <div className="encyclopedia-criteria">
+              <span className="fg-h">
+                Conditions{spawnCompare ? ` · vs ${spawnCompare.bodyTabLabel ?? "this body"}` : ""}
+              </span>
+              <EncyclopediaSpeciesConditions
+                entry={entry}
+                spawnCompare={spawnCompare}
+                verdicts={cardVerdicts?.[entry.id] ?? null}
+              />
+            </div>
+            {g?.bands ? <GuideBandsBlock b={g.bands} body={guideBody} /> : null}
+            {g?.bands ? <GuideWithinBlock b={g.bands} name={entry.displayName} body={guideBody} /> : null}
+            {g?.measured ? (
+              <GuideMeasuredBlock m={g.measured} body={guideBody} bands={g.bands} />
+            ) : guide && !g?.bands ? (
+              <p className="fg-none">
+                Not measured yet: the corpus has not confirmed this species on enough bodies to chart. The
+                conditions above are what the app predicts from.
+              </p>
+            ) : null}
+            <GuideColoursBlock c={g?.colours ?? null} />
+            <div className="encyclopedia-species-actions">
+              <button
+                type="button"
+                className="btn-ency-found"
+                title="Show matching rows from your foot catalog for this species"
+                onClick={() => setFoundFor(entry)}
+              >
+                Found ({foundN})
+              </button>
+              {exoEnabled ? (
+                <button
+                  type="button"
+                  className="btn-ency-exomastery"
+                  title={
+                    exoExpanded
+                      ? "Hide exomastery data for this species"
+                      : exomasteryProfileFilePresent
+                        ? "Show Exomastery profile (mode vs mean) from feeder JSON"
+                        : "Show EDSM / per-body exomastery rows for this species"
+                  }
+                  onClick={() => toggleInlineExomastery(entry)}
+                >
+                  {exoExpanded
+                    ? `Hide exomastery (${exomasteryFeederBodyCount})`
+                    : `Exomastery (${exomasteryFeederBodyCount})`}
+                </button>
+              ) : null}
             </div>
           </div>
-        ) : null}
-      </article>
+          {hasExoDrawer ? (
+            <div
+              data-exo-drawer={entry.id}
+              className={`encyclopedia-exomastery-drawer ${exoDrawerReveal && !exoClosing ? "encyclopedia-exomastery-drawer--open" : ""}`}
+            >
+              <div className="encyclopedia-exomastery-drawer-inner">
+                <div className="encyclopedia-exomastery-inline-head">
+                  <div className="encyclopedia-exomastery-inline-head-text">
+                    <strong className="encyclopedia-exomastery-inline-title">
+                      {inlineExo?.data?.source === "profile"
+                        ? "Exomastery profile"
+                        : "Exomastery sample bodies"}
+                    </strong>
+                    {inlineExo?.data ? (
+                      <span className="dim tiny encyclopedia-exomastery-inline-sub">
+                        {inlineExo.data.source === "profile"
+                          ? inlineExo.data.sampleCount > 0
+                            ? `n ≤ ${inlineExo.data.sampleCount} (feeder counts)`
+                            : "feeder rollups"
+                          : `n = ${inlineExo.data.sampleCount}`}
+                      </span>
+                    ) : null}
+                  </div>
+                  {inlineExo?.speciesEntryId === entry.id && !exoClosing ? (
+                    <button
+                      type="button"
+                      className="encyclopedia-exomastery-refetch"
+                      disabled={!!inlineExo.loading}
+                      title="Clear cached feeder JSON for this species and reload from disk."
+                      onClick={() => refetchInlineExomastery()}
+                    >
+                      Force re-fetch
+                    </button>
+                  ) : null}
+                </div>
+                {inlineExo?.loading ? <p className="dim">Loading planetary data…</p> : null}
+                {inlineExo?.err ? <p className="warn">{inlineExo.err}</p> : null}
+                {inlineExo?.data && !inlineExo.loading ? (
+                  <ExomasteryPlanetsBody data={inlineExo.data} />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </article>
+      </LazyMount>
     );
   };
 

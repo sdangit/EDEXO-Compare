@@ -7,7 +7,7 @@
  * there 15 % of the time.
  *
  * `data/exomastery/genus-prior.json` answers it from every landable bio body in the Spansh dump
- * (2,810,046 with a DSS genus list): P(genus present | planet type, signal count, atmosphere, 20 K
+ * (2,832,823 with a DSS genus list, export of 2026-10-03; was 2,810,046): P(genus present | planet type, signal count, atmosphere, 20 K
  * band, host star class, volcanism), backing off to coarser cells (dropping volcanism, then the star,
  * then the temperature, the atmosphere, the planet type) until one holds 100 bodies
  * (`docs/perf/genus_prior_eval.py`). Before a DSS each shown genus's total chance becomes
@@ -43,6 +43,11 @@ interface PriorFile {
 
 let cache: { root: string; file: PriorFile | null } | null = null;
 
+/** Forget the table: after "Refresh exomastery" the next read sees the file on disk (code review B10). */
+export function clearGenusPriorCache(): void {
+  cache = null;
+}
+
 function load(root: string): PriorFile | null {
   if (cache?.root === root) return cache.file;
   let file: PriorFile | null = null;
@@ -61,7 +66,10 @@ function load(root: string): PriorFile | null {
 
 /** One key for a genus however it is spelt ("Brain Tree" / "Brain Trees", "Sinuous Tuber(s)"). */
 export function genusPriorKey(name: string): string {
-  return name.toLowerCase().replace(/[^a-z]/g, "").slice(0, 6);
+  return name
+    .toLowerCase()
+    .replace(/[^a-z]/g, "")
+    .slice(0, 6);
 }
 
 /** The table's cells for a body, finest first — the same keys docs/perf/genus_prior_eval.py writes. */
@@ -112,20 +120,22 @@ export function genusPriorFor(
  * limit where they are real signals vs not real, for every species." So the limit is per genus and
  * measured, not one threshold for all: from every landable bio body in the dump that really carries
  * the genus, how common the genus is in that body's cell; the genus's limit is the share below which
- * only 0.25 % of its own real bodies fall (`veto` in data/exomastery/genus-prior.json, built by
+ * only 0.01 % of its own real bodies fall (`veto` in data/exomastery/genus-prior.json, built by
  * docs/perf/genus_veto_limits.py). Each genus may lose at most that share of its own bodies, rare or
- * common alike — Fumerola's limit comes out at 0.07 %, Recepta's 0.02 %, Fungoida's 4.5 %.
+ * common alike — Fumerola's limit comes out at 0.003 %, Recepta's 0.008 %, Fungoida's 0.47 %. It was
+ * 0.25 % until 2026-10-03 (owner: no misses), which hid a real genus on 0.21 % of bodies.
  *
  * The list the presence floor left is the starting point. Never hidden this way: a genus placed by
  * position (the table cannot see a nebula or a Guardian site), anything sampled here, the last genus
  * on the list. On C 6 (5,332 bodies like it) Osseus 0.3 %, Concha 0.1 % and Fungoida 2.9 % go, and
  * Aleoida (1.4 %, above its 0.28 % limit: a real signal) stays.
  *
- * Measured against 1.2.9's own list on 6,566 bodies: genera shown 3.56 → 3.24 per body, the true
- * genera still shown 99.50 → 99.29 %, no genus down more than 0.4 points, every rare genus as before.
+ * Measured against 1.2.9's own list on 6,566 bodies, at 0.01 %: genera shown 3.56 → 3.48 per body,
+ * the true genera still shown 99.50 → 99.50 % (at 0.25 % it was 3.24 and 99.29 %).
  */
 export function vetoUnseenGenera(
-  matches: SpeciesMatch[],
+  // Any match rows: the body tab's, the system map's and the backlog's (owner, 2026-10-07).
+  matches: Pick<SpeciesMatch, "entry" | "unlikely" | "unlikelyReasons" | "organicAnalysisComplete">[],
   b: Pick<BodyExoState, "genusHints" | "biologicalSignals">,
   scan: PlanetScan | null,
   ctx: Pick<SpeciesMatchContext, "parentStarType"> | null | undefined,
@@ -142,11 +152,7 @@ export function vetoUnseenGenera(
   const protectedGenera = new Set<string>();
   for (const m of shown) {
     const k = genusPriorKey(m.entry.genus);
-    if (
-      gateForSpeciesId(m.entry.id) ||
-      confirmedIds.has(m.entry.id) ||
-      m.organicAnalysisComplete === true
-    ) {
+    if (gateForSpeciesId(m.entry.id) || confirmedIds.has(m.entry.id) || m.organicAnalysisComplete === true) {
       protectedGenera.add(k);
     }
   }
@@ -154,7 +160,11 @@ export function vetoUnseenGenera(
   const vetoed = [...genera].filter((g) => !protectedGenera.has(g) && (prior.p[g] ?? 0) < (limits[g] ?? 0));
   if (vetoed.length === 0) return;
   // Never empty the list: if every genus would go, the one the dump sees most stays.
-  if (vetoed.length === genera.size) vetoed.splice(vetoed.indexOf(vetoed.reduce((a, g) => ((prior.p[g] ?? 0) > (prior.p[a] ?? 0) ? g : a))), 1);
+  if (vetoed.length === genera.size)
+    vetoed.splice(
+      vetoed.indexOf(vetoed.reduce((a, g) => ((prior.p[g] ?? 0) > (prior.p[a] ?? 0) ? g : a))),
+      1,
+    );
   const out = new Set(vetoed);
   for (const m of shown) {
     const k = genusPriorKey(m.entry.genus);
@@ -192,17 +202,24 @@ export function applyGenusPrior(
   // A genus placed by where the system is (a nebula, a Guardian site, the core) keeps the model's
   // chance, all of its species: the table cannot see position, and pulled Electricae under the floor
   // beside nebulae (radialem is gated there, pluma is not, and they are one genus).
-  const placed = new Set(matches.filter((m) => gateForSpeciesId(m.entry.id)).map((m) => genusPriorKey(m.entry.genus)));
+  const placed = new Set(
+    matches.filter((m) => gateForSpeciesId(m.entry.id)).map((m) => genusPriorKey(m.entry.genus)),
+  );
   const byGenus = new Map<string, SpeciesMatch[]>();
   for (const m of matches) {
-    if (m.unlikely || m.presenceProbabilityPercent == null || !Number.isFinite(m.presenceProbabilityPercent)) continue;
+    if (m.unlikely || m.presenceProbabilityPercent == null || !Number.isFinite(m.presenceProbabilityPercent))
+      continue;
     const k = genusPriorKey(m.entry.genus);
     if (placed.has(k)) continue;
     byGenus.set(k, [...(byGenus.get(k) ?? []), m]);
   }
   if (byGenus.size < 2) return;
   const mass = new Map<string, number>();
-  for (const [g, rows] of byGenus) mass.set(g, rows.reduce((a, m) => a + m.presenceProbabilityPercent!, 0));
+  for (const [g, rows] of byGenus)
+    mass.set(
+      g,
+      rows.reduce((a, m) => a + m.presenceProbabilityPercent!, 0),
+    );
   const total = [...mass.values()].reduce((a, x) => a + x, 0);
   if (!(total > 0)) return;
   // A genus the table never saw on such bodies: half a body's worth, not zero (rank, never wall).
@@ -212,7 +229,9 @@ export function applyGenusPrior(
     const p = Math.max(prior.p[g] ?? 0, floor);
     target.set(
       g,
-      Math.exp((1 - GENUS_PRIOR_WEIGHT) * Math.log(Math.max(mm / 100, 1e-6)) + GENUS_PRIOR_WEIGHT * Math.log(p)),
+      Math.exp(
+        (1 - GENUS_PRIOR_WEIGHT) * Math.log(Math.max(mm / 100, 1e-6)) + GENUS_PRIOR_WEIGHT * Math.log(p),
+      ),
     );
   }
   const z = [...target.values()].reduce((a, x) => a + x, 0);
@@ -224,4 +243,15 @@ export function applyGenusPrior(
       m.presenceProbabilityPercent = Math.round(Math.min(100, m.presenceProbabilityPercent! * k) * 10) / 10;
     }
   }
+}
+
+/**
+ * The coarsest cell's genus shares, bodies with this many signals of any kind ("L5|n"), for the
+ * candidate row's "why this chance" (plan 1.7): how much more or less often the genus grows on a body
+ * like this one than on any body with the same signal count.
+ */
+export function genusPriorBaseline(root: string, signals: number): Record<string, number> | null {
+  const file = load(root);
+  const c = file?.cells[`L5|${Math.min(Math.trunc(signals), 5)}`];
+  return c ? c.p : null;
 }

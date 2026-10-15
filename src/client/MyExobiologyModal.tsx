@@ -1,6 +1,7 @@
 /**
  * My exobiology: the finds table and the discoveries views. Split out of AppModals.tsx (code review D, 2026-09-27).
  */
+import { tabListKeyDown } from "./ui/Tabs";
 import { usePersistedState } from "./usePersistedState";
 import { footConfirmationLabel } from "@shared/footConfirmationLabel";
 import { CopySystemButton } from "./CopySystemButton";
@@ -16,6 +17,7 @@ import { fuzzyRankAny } from "./fuzzyMatch";
 import { ScrollArea } from "./ui/ScrollArea";
 import { InfoPopover } from "./ui/Tooltip";
 import { useModal } from "./ui/useModal";
+import { LoadingNote } from "./ui/Loading";
 import type { DiscoveriesDTO, FootScannedEntry } from "@shared/types";
 import { readableAtmosphereType } from "@shared/atmosphereLabel";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
@@ -235,7 +237,7 @@ export const MyExobiologyModal = memo(function MyExobiologyModal({
       >
         <div className="modal-head">
           <h3 id="my-exo-title">My discoveries</h3>
-          <div className="disc-tabs" role="tablist" aria-label="What to show">
+          <div className="disc-tabs" role="tablist" aria-label="What to show" onKeyDown={(ev) => tabListKeyDown(ev, { follow: true })}>
             {(
               [
                 ["species", "Exobiology"],
@@ -249,6 +251,7 @@ export const MyExobiologyModal = memo(function MyExobiologyModal({
                 type="button"
                 role="tab"
                 aria-selected={view === k}
+                tabIndex={view === k ? 0 : -1}
                 className={`disc-tab${view === k ? " disc-tab--on" : ""}`}
                 onClick={() => setView(k)}
               >
@@ -284,7 +287,7 @@ export const MyExobiologyModal = memo(function MyExobiologyModal({
             discoveriesError ? (
               <p className="dim disc-empty">{discoveriesError}</p>
             ) : !discoveries ? (
-              <p className="dim disc-empty">Reading your journals…</p>
+              <LoadingNote className="disc-empty" label="Reading your journals…" detail="Every system and body you have scanned." />
             ) : (
               <DiscoveriesTables
                 data={discoveries}
@@ -333,6 +336,7 @@ export const MyExobiologyModal = memo(function MyExobiologyModal({
                     )
                   }
                   rowKey={(e) => e.id}
+                  csvName="exobiology scanned on foot"
                   empty="No foot-catalog entries yet."
                   resetKey={query}
                 />
