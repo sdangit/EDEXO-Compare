@@ -9,6 +9,7 @@ import { releaseMac } from "../scripts/release-mac.mjs";
 const HEAD = "a".repeat(40);
 const ORIGIN = "https://github.com/sdangit/EDEXO-Compare.git";
 interface Release {
+  id: number;
   tag_name: string;
   draft: boolean;
   prerelease: boolean;
@@ -17,6 +18,7 @@ interface Release {
   assets: { name: string; state: string; size: number; digest: string }[];
 }
 const draft = (): Release => ({
+  id: 123,
   tag_name: "v1.2.17-macos",
   draft: true,
   prerelease: false,
@@ -44,6 +46,7 @@ function harness() {
     release: undefined as Release | undefined,
     fail: "",
     corrupt: false,
+    staleList: false,
   };
   const calls: { command: string; args: string[] }[] = [];
   const run = (command: string, args: string[]) => {
@@ -66,7 +69,10 @@ function harness() {
     }
     if (command === "gh") {
       if (args[0] === "api" && args[1]!.includes("/releases?"))
-        return JSON.stringify([state.release ? [state.release] : []]);
+        return JSON.stringify([state.release && !state.staleList ? [state.release] : []]);
+      if (args[0] === "api" && args[1]!.includes("/releases/")) return JSON.stringify(state.release);
+      if (args[0] === "release" && args[1] === "view" && args.includes("--json"))
+        return JSON.stringify({ databaseId: state.release!.id });
       if (args[0] === "release" && args[1] === "create") state.release = draft();
       if (args[0] === "release" && args[1] === "upload") {
         state.release!.assets = args.slice(3, args.indexOf("--repo")).map((file) => {
@@ -125,6 +131,16 @@ describe("the macOS draft release command", () => {
     await h.start();
     expect(h.calls.some((call) => call.command === "gh" && call.args[1] === "create")).toBe(false);
     expect(h.state.release.assets).toHaveLength(3);
+  });
+
+  it("reads a new draft by ID when the release list has not caught up", async () => {
+    const h = harness();
+    h.state.staleList = true;
+    await expect(h.start()).resolves.toBe(draft().html_url);
+    expect(h.state.release!.assets).toHaveLength(3);
+    expect(h.calls.some((call) => call.command === "gh" && call.args[1]?.endsWith("/releases/123"))).toBe(
+      true,
+    );
   });
 
   it.each(["published", "different commit", "prerelease"])(

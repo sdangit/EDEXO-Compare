@@ -75,14 +75,40 @@ export async function releaseMac({
   const tag = `v${version}-macos`;
   // Verify credentials before spending time building; never print or read the token itself.
   gh("api", "user", "--hostname", "github.com", "--jq", ".login");
+  let releaseId;
   const getRelease = () => {
+    // The release list can lag creation/upload. Once known, read the draft resource directly.
+    if (releaseId)
+      return JSON.parse(
+        gh(
+          "api",
+          `repos/${REPO}/releases/${releaseId}`,
+          "--hostname",
+          "github.com",
+          "--header",
+          "Cache-Control: no-cache",
+        ),
+      );
     const pages = JSON.parse(
-      gh("api", `repos/${REPO}/releases?per_page=100`, "--hostname", "github.com", "--paginate", "--slurp"),
+      gh(
+        "api",
+        `repos/${REPO}/releases?per_page=100`,
+        "--hostname",
+        "github.com",
+        "--paginate",
+        "--slurp",
+        "--header",
+        "Cache-Control: no-cache",
+      ),
     );
-    return pages.flat().find((release) => release.tag_name === tag);
+    const release = pages.flat().find((release) => release.tag_name === tag);
+    releaseId = release?.id;
+    return release;
   };
   const assertDraft = (release) => {
     if (!release) return;
+    if (release.tag_name !== tag)
+      throw new Error("The draft's tag changed during staging; review it on GitHub first.");
     if (!release.draft) throw new Error(`${tag} is already published; it will not be changed.`);
     if (release.target_commitish !== head)
       throw new Error(`${tag} is a draft for a different commit; review it on GitHub first.`);
@@ -174,6 +200,9 @@ Source: [${head}](https://github.com/${REPO}/commit/${head}). Unit tests, typech
       "--notes-file",
       notes,
     ]);
+    // CLI resolves unpublished releases as well; REST's /releases/tags endpoint does not.
+    const created = JSON.parse(gh("release", "view", tag, "--repo", GH_REPO, "--json", "databaseId"));
+    releaseId = created.databaseId;
   }
   // A retry may replace only this architecture's files in the same unpublished draft.
   const draft = getRelease();
