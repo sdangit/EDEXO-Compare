@@ -51,9 +51,9 @@ async function settle(svc: BackupService) {
 }
 
 describe("backup service", () => {
-  it("backs up a minute after the game's Shutdown line, and says it is waiting", async () => {
+  it.each([false, true])("backs up after Shutdown even when the process probe reports running=%s", async (gameRunning) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const { svc, out } = setup();
+    const { svc, out } = setup({ gameRunning });
     svc.onJournalLine("Music");
     svc.onJournalLine("Shutdown");
     expect((await svc.status()).pendingAt).not.toBeNull();

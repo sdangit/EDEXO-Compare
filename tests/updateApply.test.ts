@@ -56,8 +56,9 @@ describe("which copies can update themselves", () => {
   it("packaged portable, packaged folder, AppImage; not a source run", () => {
     expect(updater.selfUpdateForm({ isPackaged: false, platform: "win32", env: { PORTABLE_EXECUTABLE_FILE: "x" } })).toBeNull();
     expect(updater.selfUpdateForm({ isPackaged: true, platform: "win32", env: { PORTABLE_EXECUTABLE_FILE: "C:\\a\\EDExoCompare.exe" } })).toBe("portable");
-    expect(updater.selfUpdateForm({ isPackaged: true, platform: "win32", env: {}, execPath: "D:\\Games\\ED Exo Compare 1.2.9\\EDExoCompare.exe" })).toBe("zip");
-    expect(updater.selfUpdateForm({ isPackaged: true, platform: "win32", env: {}, execPath: "C:\\x\\electron.exe" })).toBeNull();
+    // The platform is simulated; execPath uses host separators just like node:path in the updater.
+    expect(updater.selfUpdateForm({ isPackaged: true, platform: "win32", env: {}, execPath: path.join("program folder", "EDExoCompare.exe") })).toBe("zip");
+    expect(updater.selfUpdateForm({ isPackaged: true, platform: "win32", env: {}, execPath: path.join("source run", "electron.exe") })).toBeNull();
     expect(updater.selfUpdateForm({ isPackaged: true, platform: "linux", env: { APPIMAGE: "/home/a/EDExo.AppImage" } })).toBe("appimage");
     expect(updater.selfUpdateForm({ isPackaged: true, platform: "darwin", env: {} })).toBeNull();
   });

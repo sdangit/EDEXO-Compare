@@ -56,7 +56,8 @@
     "dist:mac:electron": "npm run build && npm run bundle && node scripts/dist-mac-electron.mjs",
     "electron:dev:mac": "npm run build && npm run bundle && electron electron/main.mac.cjs",
     "test:e2e:mac": "playwright test -c playwright.mac.config.ts",
-    "test:electron:mac": "node scripts/smoke-mac-electron.mjs"
+    "test:electron:mac": "node scripts/smoke-mac-electron.mjs",
+    "test:mac": "vitest run tests/mac tests/journalDirPreference.test.ts tests/backupService.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-popover": "^1.2.0",

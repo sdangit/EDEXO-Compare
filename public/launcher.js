@@ -8,6 +8,8 @@
   if (!hudEnabled) {
     document.getElementById("btnOverlayMenu").remove();
     document.getElementById("overlayPickModal").remove();
+    document.getElementById("btnKeybinds").remove();
+    document.getElementById("keybindsModal").remove();
     document.getElementById("wzHud").closest("li").remove();
     document.getElementById("wzOpenHud").remove();
     document.querySelector("#wizardModal h3 + p").textContent = "Choose your journal folder and open the exobiology UI. Start Elite Dangerous before this app.";

@@ -395,6 +395,7 @@ they are local port artifacts, not an upstream release.
 
 ```sh
 npm test
+npm run test:mac               # focused macOS integration and regression checks
 npm run typecheck              # client, server, and tests
 npm run lint
 npm run dist:mac
@@ -403,9 +404,22 @@ npm run dist:mac:electron
 npm run test:electron:mac       # currently targets the packaged arm64 app
 ```
 
+Run these checks after resolving every upstream sync. `test:mac` also runs within
+`npm test`; it provides a shorter check while working on the port.
+
+| Touchpoint | Regression coverage |
+| --- | --- |
+| Shared HTTP/WebSocket server | macOS HUD route and channel rejection, platform capabilities, app UI commands, connection cleanup, Windows/Linux HUD availability |
+| Bootstrap and CrossOver journals | No desktop process polling, bottle selection and persistence, live journal watcher restart, journal Shutdown backup scheduling, shutdown with an app socket open |
+| Electron shell | Packaged/source startup, window reuse, single-instance handling, navigation and IPC boundaries, waiting for backups before shutdown |
+| Release resources | Main app, launcher, species and SQLite WASM retained; HUDs, stale files and commander data omitted |
+
 The browser test extracts the archive into a temporary path with spaces and
-checks live journal updates and HUD omission. The Electron smoke test checks the
-launcher, main window, and clean shutdown using a temporary profile and journals.
+checks live journal updates, Status.json updates through the app WebSocket, and
+HUD omission. The Electron smoke test checks the real preload bridge, isolated
+windows, opening/reopening the main app, and clean shutdown with a temporary
+profile and synthetic journals. These automated checks do not replace live
+CrossOver testing or validation on an Intel Mac.
 
 ### Windows / upstream development
 
