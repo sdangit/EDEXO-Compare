@@ -14,7 +14,7 @@ const out = join("dist", "mac", folder);
 stageMacResources(out);
 const { server, client } = writeCliLaunchers();
 // Source packaging avoids executing the target Node during bytecode generation (including cross-arch).
-const target = `node24-macos-${arch}`;
+const target = `node26-macos-${arch}`;
 runPkg("dist:mac", "Server", server, join(out, "edexo-server"), target, ["--no-bytecode", "--public"]);
 runPkg("dist:mac", "Client", client, join(out, "edexo-client"), target, ["--no-bytecode", "--public"]);
 for (const mode of ["client", "server"]) {

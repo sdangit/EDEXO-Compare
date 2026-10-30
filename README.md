@@ -397,7 +397,7 @@ Every request is listed in the [privacy policy](public/legal/privacy.html), whic
 
 #### Run from source
 
-Use Node 24 LTS, at least 24.15 (`.nvmrc` pins the major), and install the locked
+Use Node 26 LTS, at least 26.13 (`.nvmrc` pins the major), and install the locked
 dependencies with `npm ci`. Start Elite Dangerous in CrossOver before starting
 this app; the port reads the journals the game writes inside its bottle.
 
@@ -422,7 +422,7 @@ npm run dist:mac -- --arch x64 # optional Intel release, built on macOS
 npm run dist:mac:electron      # .app and release ZIP in dist/electron-out-mac
 ```
 
-The browser release is under `dist/mac/` as a folder and `.tar.gz`. It embeds Node 24;
+The browser release is under `dist/mac/` as a folder and `.tar.gz`. It embeds Node 26;
 users do not need Node installed. Double-click `edexo-client.command` in the extracted
 folder, and keep its Terminal window open; Ctrl+C stops the server. Settings and
 backups are available at `http://127.0.0.1:7111/launcher.html`.
@@ -459,7 +459,7 @@ there is no separate Mac changelog to maintain.
 After integrating the work into `macos`, use the release command from a clean checkout:
 
 ```sh
-nvm use 24
+nvm use 26
 npm run release:mac
 ```
 

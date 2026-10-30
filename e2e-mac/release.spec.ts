@@ -106,6 +106,8 @@ test("extracted Mac release serves predictions and its launcher without HUDs", a
   const update = await (await request.get("/api/app/update")).json();
   expect(update.form).toBe("macos-browser");
   expect(update.download.supported).toBe(false);
+  const diagnostics = await (await request.get("/api/app/diagnostics")).text();
+  expect(diagnostics).toMatch(/Node 26\./);
   if (update.pageUrl)
     expect(update.pageUrl).toMatch(/^https:\/\/github\.com\/sdangit\/EDEXO-Compare\/releases\/tag\//);
   await page.locator("#wzDone").dispatchEvent("click");

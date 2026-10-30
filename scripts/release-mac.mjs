@@ -41,8 +41,8 @@ export async function releaseMac({
       "Run release:mac on an Apple Silicon or Intel Mac; only the host architecture is released.",
     );
   const [major, minor] = nodeVersion.split(".").map(Number);
-  if (major !== 24 || minor < 15)
-    throw new Error("Use Node 24.15 or newer in the Node 24 series (nvm use 24).");
+  if (major !== 26 || minor < 13)
+    throw new Error("Use Node 26.13 or newer in the Node 26 series (nvm use 26).");
   const cmd = (command, args, capture = false) => run(command, args, { cwd: root, capture });
   const git = (...args) => cmd("git", args, true);
   const gh = (...args) => cmd("gh", args, true);

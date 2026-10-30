@@ -94,7 +94,7 @@ function harness() {
     return "";
   };
   const start = (extra = {}) =>
-    releaseMac({ root, run, platform: "darwin", arch: "arm64", nodeVersion: "24.15.0", ...extra });
+    releaseMac({ root, run, platform: "darwin", arch: "arm64", nodeVersion: "26.13.0", ...extra });
   return { root, state, calls, start };
 }
 
@@ -199,7 +199,7 @@ describe("the macOS draft release command", () => {
     expect(h.calls.some((call) => call.args.includes("--web"))).toBe(false);
   });
 
-  it.each([{ platform: "linux" }, { nodeVersion: "26.0.0" }, { nodeVersion: "24.14.0" }, { arch: "ia32" }])(
+  it.each([{ platform: "linux" }, { nodeVersion: "26.12.1" }, { nodeVersion: "24.22.2" }, { nodeVersion: "28.0.0" }, { arch: "ia32" }])(
     "rejects unsupported build environments (%j)",
     async (extra) => {
       const h = harness();

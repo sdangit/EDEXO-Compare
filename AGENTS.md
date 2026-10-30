@@ -54,7 +54,7 @@ this app starts. macOS supports browser and Electron main-app experiences, with
 no HUD overlays or game-process/focus polling. Preserve the existing Windows and
 Linux behavior when making platform-specific changes.
 
-Use Node 24 (at least 24.15) and the committed lockfile (`npm ci`). For code changes,
+Use Node 26 (at least 26.13) and the committed lockfile (`npm ci`). For code changes,
 run relevant tests, `npm run typecheck`, and `npm run lint`. For packaging or runtime
 changes, build and exercise the affected macOS release using the README commands.
 Documentation-only changes need a diff/format review, not a full release rebuild.

@@ -80,7 +80,7 @@
     "@types/three": "^0.186.0",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^6.1.2",
-    "@yao-pkg/pkg": "^6.23.0",
+    "@yao-pkg/pkg": "^6.24.0",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "csv-parse": "^7.0.3",
@@ -110,7 +110,7 @@
     "vitest": "^5.0.5"
   },
   "engines": {
-    "node": ">=24.15.0"
+    "node": ">=26.13.0"
   },
   "overrides": {
     "express": {
