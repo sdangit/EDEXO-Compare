@@ -1,24 +1,8 @@
-import { boxelSystems, boxelTable, previousBoxelsPage, type SystemStats } from "../boxel.js";
-import { parseBoxel } from "../../shared/boxel.js";
-import { createBoxelLookups } from "../boxelLookup.js";
-import { resolveUserSettingsJsonPath } from "../paths.js";
-import { boxelJournalFacts, notableBodiesForSystem, systemBodyTally } from "../snapshotSystemInfo.js";
-import type { GameStateStore } from "../gameState.js";
 
-/** Bodies scanned and notable bodies per visited system, for the boxel lists (owner, 2026-09-30). */
-function boxelStats(store: GameStateStore): SystemStats {
-  return (addr) => ({
-    bodies: systemBodyTally(store, addr),
-    notable: notableBodiesForSystem(store, addr, null).length,
-  });
-}
 import { getCachedSpeciesDatabase } from "../snapshot.js";
-import path from "node:path";
-import { existsSync, readFileSync, statSync } from "node:fs";
 import express from "express";
 import { getProjectRoot } from "../paths.js";
 import { perfCount } from "../perf.js";
-import { codexMapRegion, codexMapRegions } from "../codexMap.js";
 import { clearGalaxyPoints, galaxyPointsAsync } from "../galaxyPoints.js";
 import {
   clearTileIndex,
@@ -33,7 +17,7 @@ import { registerGalaxyCache, touchGalaxyMemory } from "../galaxyMemory.js";
 import { clearBioBodiesCache } from "../bioBodies.js";
 import {
   clearBioIndexCache,
-  loadBioIndex,
+  loadBioIndexAsync,
   TIER_BODIES_KNOWN,
   TIER_CODEX,
   TIER_DSS,
@@ -61,8 +45,7 @@ import { doneAddresses, MAX_PLAN_STOPS, nextTarget, ordinalsOf } from "../galaxy
 import type { GalaxyFindDTO, GalaxySystemDTO } from "../../shared/dto/galaxy.js";
 import { ownCarrierNow } from "../../shared/ownAssets.js";
 import { id64Boxel } from "../../shared/id64.js";
-
-import type { HttpServerOptions, RouteContext } from "../httpServer.js";
+import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
 import { galaxyLayer, type GalaxyLayerKind } from "../galaxyLayers.js";
 import { GALAXY_LAYER_KINDS } from "../../shared/galaxyLayers.js";
 import { clearBarrenTable } from "../boxelBarren.js";
@@ -89,7 +72,7 @@ import {
 export function registerGalaxyRoutes(
   app: express.Express,
   opts: HttpServerOptions,
-  _ctx: RouteContext,
+  ctx: RouteContext,
 ): void {
   // The map's extra layers (galaxyLayers.ts): points of interest, phenomena, carriers, bookmarks.
   app.get("/api/galaxy/layers", (req, res) => {
@@ -128,7 +111,7 @@ export function registerGalaxyRoutes(
    */
   /*
     What under /api/galaxy reads these keeps the map's memory alive (journal-only routes do not, see
-    JOURNAL_ONLY); five idle minutes lets it go (galaxyMemory.ts — the map is its own window, loaded
+    JOURNAL_ONLY); two idle minutes let it go (galaxyMemory.ts — the map is its own window, loaded
     fresh each time, owner 2026-09-28).
   */
   registerGalaxyCache("bio-index", clearBioIndexCache);
@@ -145,32 +128,38 @@ export function registerGalaxyRoutes(
   // search kept it for the rest of the session (plan 4.1, 2026-10-10).
   registerGalaxyCache("bio-bodies", clearBioBodiesCache);
   /*
-    And the index is read off the main thread before a request that needs it (owner, 2026-10-07: the
-    app went "Not responding" for a moment as the map loaded — the server shares Electron's main
-    process, as Boxels found). The requests that only read the journal or the index's status go on.
+    And what a request reads synchronously is read off the main thread before it (owner, 2026-10-07: the app went
+    "Not responding" for a moment as the map loaded — the server shares Electron's main process, as Boxels found).
+    Only for the requests that read it (2026-10-26): every other galaxy request used to wait for the tile index and
+    the traits too, so the sector map's search panel asking for its region list (`/regions`, an answer from the body
+    file's summary) loaded ~360 MB it never read, held for five idle minutes. The rest load what they need themselves
+    (`loadBioIndexAsync`, `galaxyPointsAsync`) or read only the journal.
   */
-  const NO_INDEX = new Set([
-    "/index",
-    "/index/download",
-    "/route",
-    "/visited",
-    "/mine",
-    "/mine/system",
-    "/my-sectors",
-    "/layers",
-    "/own",
-  ]);
+  const NEEDS_TILES = new Set(["/cells", "/sector-names", "/sector", "/tile", "/find"]);
+  const NEEDS_TRAITS = new Set(["/traits", "/filter"]);
   /*
     These read only the journal store or the download's status, so they do not keep the map's memory
     alive (code review, 2026-10-14): the map's route and own-assets polls kept resetting the idle clock,
     and nothing was ever let go while a map tab was open, in front or not. /mine/system (the bio index)
     reads a registered cache and touches it; /layers is registered above and touches it itself.
   */
-  const JOURNAL_ONLY = new Set(["/index", "/index/download", "/route", "/visited", "/mine", "/my-sectors", "/own"]);
+  const JOURNAL_ONLY = new Set([
+    "/index",
+    "/index/download",
+    "/route",
+    "/visited",
+    "/mine",
+    "/my-sectors",
+    "/own",
+    "/finder/status",
+    "/finder/download",
+  ]);
   app.use("/api/galaxy", (req, _res, next) => {
     if (!JOURNAL_ONLY.has(req.path)) touchGalaxyMemory();
-    if (NO_INDEX.has(req.path)) return next();
-    void Promise.all([tileIndexAsync(), loadSystemTraitsAsync()])
+    const tiles = NEEDS_TILES.has(req.path);
+    const traits = NEEDS_TRAITS.has(req.path);
+    if (!tiles && !traits) return next();
+    void Promise.all([tiles ? tileIndexAsync() : null, traits ? loadSystemTraitsAsync() : null])
       .catch(() => undefined)
       .then(() => next());
   });
@@ -230,8 +219,9 @@ export function registerGalaxyRoutes(
    * `?genera=stratum&species=…&mainStars=N&stars=…&planets=elw&features=terraformable`, each a comma
    * list. Layout: "EDXFLT01", u32 system count, u32 matched, then the bits.
    */
-  app.get("/api/galaxy/filter", (req, res) => {
-    const index = loadBioIndex();
+  app.get("/api/galaxy/filter", async (req, res) => {
+    // Read off the server's thread when not held (audit 2026-10-22): the synchronous loader stops every window.
+    const index = await loadBioIndexAsync();
     if (!index) return void noIndex(res);
     const list = (k: string) =>
       String(req.query[k] ?? "")
@@ -403,8 +393,8 @@ export function registerGalaxyRoutes(
   });
 
   /** Names by system ordinal, for the map's labels: `?i=1,2,3` (at most 400). */
-  app.get("/api/galaxy/names", (req, res) => {
-    const index = loadBioIndex();
+  app.get("/api/galaxy/names", async (req, res) => {
+    const index = await loadBioIndexAsync();
     if (!index) return void noIndex(res);
     const ids = String(req.query.i ?? "")
       .split(",")
@@ -417,8 +407,8 @@ export function registerGalaxyRoutes(
   });
 
   /** One system for the map's panel: `?i=<ordinal>`, or `?addr=<id64>` (a search hit, a journal system). */
-  app.get("/api/galaxy/system", (req, res) => {
-    const index = loadBioIndex();
+  app.get("/api/galaxy/system", async (req, res) => {
+    const index = await loadBioIndexAsync();
     if (!index) return void noIndex(res);
     let i = Number(req.query.i);
     if (req.query.addr != null) {
@@ -464,8 +454,8 @@ export function registerGalaxyRoutes(
    * N stops from the ship (G5.3): chosen by a greedy chain, ordered by 2-opt (5.8); `loop=1` returns
    * to the ship.
    */
-  app.get("/api/galaxy/next", (req, res) => {
-    const index = loadBioIndex();
+  app.get("/api/galaxy/next", async (req, res) => {
+    const index = await loadBioIndexAsync();
     if (!index) return void noIndex(res);
     const store = opts.getJournalStore?.() ?? null;
     const exclude = new Set(
@@ -488,255 +478,8 @@ export function registerGalaxyRoutes(
     );
   });
 
-  /*
-    One boxel (shared/boxel.ts): `?name=` any system in it (or the boxel with a trailing "-"), `?end=`
-    the last system number when known. Journals always; the galaxy index when this machine has it.
-  */
-  /*
-    The Boxels screen reads the galaxy index too: it keeps the map's memory alive like /api/galaxy does.
-    Without this the index was let go five idle minutes after the map closed and read again, whole, on the
-    next Boxels open — a stall of seconds that froze the app (owner, 2026-10-06: "opening Boxels makes the
-    app unresponsive").
-  */
-  app.use(["/api/boxel", "/api/boxels"], (_req, _res, next) => {
-    touchGalaxyMemory();
-    /*
-      And reads it without stopping the server's thread (owner, 2026-10-06: "the moment I open Boxels it
-      starts to lag … both launcher and in-app view"). The server runs in Electron's main process: the
-      index, tiles, sector names and traits read synchronously there were ~0.7 s, longer on a cold disk,
-      with every window frozen. Read off-thread and built in slices, the windows keep answering; the
-      handlers' synchronous calls then find it all in place.
-    */
-    void Promise.all([tileIndexAsync(), loadSystemTraitsAsync()])
-      .catch(() => undefined)
-      .then(() => next());
-  });
-  app.get("/api/boxel", (req, res) => {
-    const name = String(req.query.name ?? "").slice(0, 80);
-    const endRaw = Number(req.query.end);
-    const end =
-      String(req.query.end ?? "").trim() !== "" && Number.isFinite(endRaw) ? Math.floor(endRaw) : null;
-    const store = opts.getJournalStore?.() ?? null;
-    const byId = new Map(getCachedSpeciesDatabase().species.map((s) => [s.id, s.displayName]));
-    const dto = boxelSystems({
-      query: name,
-      end,
-      index: tileIndex(),
-      visited: store ? store.visitedSystems.entries() : [],
-      speciesName: (id) => byId.get(id) ?? id,
-      stats: store ? boxelStats(store) : undefined,
-    });
-    if (!dto) {
-      res
-        .status(400)
-        .json({ ok: false, error: "Not a boxel name: type a system such as Eol Prou AB-C d1-23." });
-      return;
-    }
-    res.json(dto);
-  });
-
-  /*
-    Saved boxels (server/savedBoxels.ts): the commander types a boxel's last system, the list keeps it,
-    and each read ticks off what the journals say he has flown.
-  */
-  // Spansh look-ups of whole boxels (server/boxelLookup.ts), kept 30 days beside the saved boxels.
-  const lookups = createBoxelLookups({
-    filePath: opts.savedBoxels
-      ? path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-boxel-lookups.json")
-      : null,
-    isPlant: (genus) => {
-      const g = genus.trim().toLowerCase();
-      return getCachedSpeciesDatabase().species.some((s) => {
-        const n = s.displayName.toLowerCase();
-        return n === g || n.startsWith(`${g} `) || n.endsWith(` ${g}`);
-      });
-    },
-  });
-  /*
-    Systems known to exist without being flown (auto-boxel detector, owner 2026-10-06): every route he
-    plotted (the NavRoute finder) and every system he targeted in the galaxy map (journals' FSDTarget,
-    Status.json's destination).
-  */
-  const sightings = (store: GameStateStore | null) => [
-    ...navRouteLog().systems,
-    ...(store ? [...store.targetedSystems.values()] : []),
-  ];
-  const savedList = () => {
-    const store = opts.getJournalStore?.() ?? null;
-    /*
-      A Spansh look-up that knows systems past a saved boxel's end extends it (owner, 2026-10-06: "if it
-      knows there are 17 systems, why do I have to click Extend"): they exist, as a route or a flight
-      would prove.
-    */
-    for (const b of opts.savedBoxels!.list([])) {
-      const looked = lookups.get(b.prefix);
-      const highest = looked ? Math.max(-1, ...Object.keys(looked.systems).map(Number)) : -1;
-      if (highest > b.end) opts.savedBoxels!.add(`${b.prefix}${highest}`);
-    }
-    return {
-      ok: true,
-      items: opts.savedBoxels!.list(
-        store ? store.visitedSystems.entries() : [],
-        store ? boxelStats(store) : undefined,
-        store?.currentSystem ?? null,
-        sightings(store),
-      ),
-      autoCopyNext: opts.savedBoxels!.autoCopyNext(),
-    };
-  };
-  app.get("/api/boxels", (_req, res) => {
-    if (!opts.savedBoxels)
-      return void res.status(501).json({ ok: false, error: "Not available in this build." });
-    res.json(savedList());
-  });
-  /*
-    `{ lastSystem }` keeps a boxel to that system. `{ system, end? }` (the Boxels screen's Current boxel
-    and Plan): any system of the boxel; with no end, up to the highest system the journals or the
-    galaxy index know (at least the one named), and a boxel already saved keeps its own end.
-  */
-  app.post("/api/boxels", (req, res) => {
-    if (!opts.savedBoxels)
-      return void res.status(501).json({ ok: false, error: "Not available in this build." });
-    let last = typeof req.body?.lastSystem === "string" ? req.body.lastSystem : "";
-    if (typeof req.body?.system === "string") {
-      const b = parseBoxel(req.body.system.slice(0, 80));
-      if (!b) {
-        res
-          .status(400)
-          .json({ ok: false, error: "Not a boxel name: type a system such as Eol Prou AB-C d1-23." });
-        return;
-      }
-      const endRaw = Number(req.body.end);
-      const asked =
-        req.body.end != null && req.body.end !== "" && Number.isFinite(endRaw) ? Math.floor(endRaw) : null;
-      const have = savedList().items.find((x) => x.prefix.toLowerCase() === b.prefix.toLowerCase());
-      if (have && asked == null) return void res.json({ ...savedList(), id: have.id });
-      const store = opts.getJournalStore?.() ?? null;
-      const auto = boxelSystems({
-        query: req.body.system,
-        end: asked,
-        index: tileIndex(),
-        visited: store ? store.visitedSystems.entries() : [],
-        speciesName: (id) => id,
-      });
-      last = `${b.prefix}${auto?.end ?? b.index ?? 0}`;
-    }
-    const added = opts.savedBoxels.add(last);
-    if (!added) {
-      res
-        .status(400)
-        .json({ ok: false, error: "Type the boxel's last system in full, such as Eol Prou AB-C d1-57." });
-      return;
-    }
-    res.json({ ...savedList(), id: added.id });
-  });
-  /*
-    The Boxels screen's table: `?ids=` the ticked saved boxels (comma-separated), every system of each,
-    with what the journals and the galaxy index say.
-  */
-  app.get("/api/boxels/table", (req, res) => {
-    if (!opts.savedBoxels)
-      return void res.status(501).json({ ok: false, error: "Not available in this build." });
-    const want = new Set(
-      String(req.query.ids ?? "")
-        .split(",")
-        .filter(Boolean),
-    );
-    const store = opts.getJournalStore?.() ?? null;
-    const byId = new Map(getCachedSpeciesDatabase().species.map((s) => [s.id, s.displayName]));
-    res.json({
-      ok: true,
-      ...boxelTable({
-        boxels: savedList().items.filter((b) => want.has(b.id)),
-        index: tileIndex(),
-        visited: store ? store.visitedSystems.entries() : [],
-        speciesName: (id) => byId.get(id) ?? id,
-        traits: loadSystemTraits(),
-        journal: store ? (addr) => boxelJournalFacts(store, addr) : undefined,
-        visitedAt: (addr) => store?.systemVisitedAt.get(addr) ?? null,
-        lookup: (prefix) => lookups.get(prefix),
-        routed: sightings(store),
-      }),
-    });
-  });
-  /*
-    Look a saved boxel up on Spansh (plan Q1): `POST /api/boxels/:id/lookup` starts it (one at a time,
-    pages five seconds apart), `GET /api/boxels/lookup` says how far it is, `DELETE` stops it.
-  */
-  app.post("/api/boxels/:id/lookup", (req, res) => {
-    if (!opts.savedBoxels)
-      return void res.status(501).json({ ok: false, error: "Not available in this build." });
-    const b = savedList().items.find((x) => x.id === String(req.params.id ?? ""));
-    if (!b) return void res.status(404).json({ ok: false, error: "No such saved boxel." });
-    const started = lookups.start(b.prefix);
-    res.status(started ? 200 : 409).json({
-      ok: started,
-      status: lookups.status(),
-      ...(started ? {} : { error: "A look-up is already running." }),
-    });
-  });
-  app.get("/api/boxels/lookup", (_req, res) => res.json({ ok: true, status: lookups.status() }));
-  app.delete("/api/boxels/lookup", (_req, res) => {
-    lookups.stop();
-    res.json({ ok: true, status: lookups.status() });
-  });
-  /*
-    Boxels he flew through (Previous): `?days=` the last visit within that many days (0 or none: all),
-    notable ones first.
-  */
-  app.get("/api/boxels/previous", (req, res) => {
-    const store = opts.getJournalStore?.() ?? null;
-    if (!store) return void res.json({ ok: true, items: [] });
-    const days = Math.max(0, Number(req.query.days) || 0);
-    const saved = new Set((opts.savedBoxels ? savedList().items : []).map((b) => b.prefix.toLowerCase()));
-    // A page at a time, newest first: `offset`, `limit` (default 40, at most 200), `q` to search.
-    const offset = Math.max(0, Math.floor(Number(req.query.offset) || 0));
-    const limit = Math.min(200, Math.max(1, Math.floor(Number(req.query.limit) || 40)));
-    const page = previousBoxelsPage({
-      visited: store.visitedSystems.entries(),
-      visitedAt: (addr) => store.systemVisitedAt.get(addr) ?? null,
-      journal: (addr) => boxelJournalFacts(store, addr),
-      sinceIso: days ? new Date(Date.now() - days * 86_400_000).toISOString() : null,
-      savedPrefixes: saved,
-      query: String(req.query.q ?? "").slice(0, 80),
-      offset,
-      limit,
-    });
-    res.json({ ok: true, ...page, offset });
-  });
-  // Copy the next system to fly after each jump into a saved boxel: `{ autoCopyNext: boolean }`.
-  app.post("/api/boxels/options", (req, res) => {
-    if (!opts.savedBoxels)
-      return void res.status(501).json({ ok: false, error: "Not available in this build." });
-    if (typeof req.body?.autoCopyNext === "boolean") opts.savedBoxels.setAutoCopyNext(req.body.autoCopyNext);
-    res.json(savedList());
-  });
-  // A correction on one system: `{ cutFrom: n }` drops n and everything after; `{ skip: n, on }`.
-  app.patch("/api/boxels/:id", (req, res) => {
-    if (!opts.savedBoxels)
-      return void res.status(501).json({ ok: false, error: "Not available in this build." });
-    const id = String(req.params.id ?? "");
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    let done = false;
-    if (typeof body.cutFrom === "number") done = opts.savedBoxels.cutFrom(id, body.cutFrom);
-    else if (typeof body.skip === "number")
-      done = opts.savedBoxels.setSkipped(id, body.skip, body.on !== false);
-    // The galaxy-map probe: `{ lastIs: n }` — he checked that n + 1 is not there, so n is the last.
-    else if (typeof body.lastIs === "number") done = opts.savedBoxels.confirmEnd(id, body.lastIs);
-    // The boxel run (server/boxelRun.ts): `{ run: true }` makes this boxel the run, `{ run: false }` ends it.
-    else if (typeof body.run === "boolean") done = opts.savedBoxels.setRun(body.run ? id : null);
-    if (!done) {
-      res.status(400).json({ ...savedList(), ok: false, error: "That system is not in this saved boxel." });
-      return;
-    }
-    res.json(savedList());
-  });
-  app.delete("/api/boxels/:id", (req, res) => {
-    if (!opts.savedBoxels)
-      return void res.status(501).json({ ok: false, error: "Not available in this build." });
-    const gone = opts.savedBoxels.remove(String(req.params.id ?? ""));
-    res.status(gone ? 200 : 404).json({ ...savedList(), ok: gone });
-  });
+  // The boxels (boxelRoutes.ts) and the discoveries, achievements and codex maps (discoveriesRoutes.ts) were here
+  // (split out, discuss item 30, 1.3.1); registered in the same order, from httpServer.ts.
 
   /** Regions are the client's; this finds sectors and systems by name: `?q=`. */
   app.get("/api/galaxy/find", (req, res) => {
@@ -795,9 +538,9 @@ export function registerGalaxyRoutes(
     The commander's own carrier and colonised systems, for the map's badges (owner, 2026-10-13; shared/ownAssets.ts):
     where each is from the journals' StarPos, else the boxel's centre from its address (within a boxel of it).
   */
-  app.get("/api/galaxy/own", (_req, res) => {
+  const ownAssets = () => {
     const store = opts.getJournalStore?.() ?? null;
-    if (!store) return void res.json({ carrier: null, colonies: [] });
+    if (!store) return { carrier: null, colonies: [] };
     const place = (s: { name: string; addr: number } | null) => {
       if (!s) return null;
       const p = store.systemPositions.get(s.addr);
@@ -806,11 +549,14 @@ export function registerGalaxyRoutes(
       const b = Number.isSafeInteger(s.addr) ? id64Boxel(s.addr) : null;
       return b ? { name: s.name, ...b.center, exact: false } : null;
     };
-    res.json({
+    return {
       carrier: place(ownCarrierNow(store.ownAssets)),
       colonies: store.ownAssets.colonies.map(place).filter((c) => c != null),
-    });
-  });
+    };
+  };
+  app.get("/api/galaxy/own", (_req, res) => res.json(ownAssets()));
+  // The map's badges follow a carrier jump or a new colony when this changes (R2: was a poll every minute).
+  ctx.watchTopic("galaxy-own", ownAssets);
 
   app.get("/api/galaxy/mine", (_req, res) => {
     if (!opts.getMySystems) return void res.status(404).json({ error: "no journal store behind this build" });
@@ -818,9 +564,11 @@ export function registerGalaxyRoutes(
   });
 
   /** One of them, body by body: `?addr=<SystemAddress>`. */
-  app.get("/api/galaxy/mine/system", (req, res) => {
+  app.get("/api/galaxy/mine/system", async (req, res) => {
     const addr = Number(req.query.addr);
     if (!Number.isFinite(addr)) return void res.status(400).json({ error: "addr must be a SystemAddress" });
+    // The middleware does not read the index for it, and getMySystem reads it synchronously: read it here first.
+    await loadBioIndexAsync();
     const dto = opts.getMySystem?.(addr) ?? null;
     if (!dto) return void res.status(404).json({ error: "not one of your systems" });
     res.json(dto);
@@ -840,6 +588,8 @@ export function registerGalaxyRoutes(
       return void res.status(404).json({ error: "no journal store behind this build" });
     res.json(opts.getSessionRoute());
   });
+  // The ship, the session's jumps and the plotted route (R2: the map asked every 15-30 s, the Next panel every 3 s).
+  if (opts.getSessionRoute) ctx.watchTopic("galaxy-route", opts.getSessionRoute);
 
   app.get("/api/galaxy/my-sectors", (_req, res) => {
     perfCount("http.commanderSectors");
@@ -850,12 +600,13 @@ export function registerGalaxyRoutes(
     res.json(opts.getCommanderSectors());
   });
 
-  app.get("/api/galaxy/species", (_req, res) => {
+  app.get("/api/galaxy/species", async (_req, res) => {
     perfCount("http.galaxySpecies");
     if (!opts.getGalaxySpecies) {
       res.status(404).json({ error: "no galaxy index in this build" });
       return;
     }
+    await loadBioIndexAsync();
     res.json(opts.getGalaxySpecies());
   });
 
@@ -924,7 +675,7 @@ export function registerGalaxyRoutes(
       });
   });
 
-  app.get("/api/galaxy/worth", (req, res) => {
+  app.get("/api/galaxy/worth", async (req, res) => {
     perfCount("http.galaxyWorth");
     if (!opts.searchGalaxyByValue) {
       res.status(404).json({ error: "no galaxy index in this build" });
@@ -947,6 +698,7 @@ export function registerGalaxyRoutes(
       return parts.length ? parts : undefined;
     };
     const tiers = Number(req.query.tiers ?? 0);
+    await loadBioIndexAsync();
     res.json(
       opts.searchGalaxyByValue(
         {
@@ -958,154 +710,5 @@ export function registerGalaxyRoutes(
         Number.isFinite(limit) ? limit : 200,
       ),
     );
-  });
-
-  app.get("/api/discoveries", (_req, res) => {
-    perfCount("http.discoveries");
-    if (!opts.getDiscoveries) {
-      res.status(404).json({ error: "discoveries not available in this build" });
-      return;
-    }
-    res.json(opts.getDiscoveries());
-  });
-
-  app.get("/api/backlog-map", (_req, res) => {
-    perfCount("http.backlogMap");
-    if (!opts.getBacklogMap) {
-      res.status(404).json({ error: "no journal store behind this build" });
-      return;
-    }
-    Promise.resolve(opts.getBacklogMap())
-      .then((dto) => res.json(dto))
-      .catch((e: unknown) => {
-        console.warn(`ED Exo Compare — backlog map failed: ${String(e)}`);
-        res.status(500).json({ error: "the backlog map failed" });
-      });
-  });
-
-  app.get("/api/achievements", (_req, res) => {
-    perfCount("http.achievements");
-    if (!opts.getAchievements) {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    res.json(opts.getAchievements());
-  });
-
-  app.get("/api/achievements/detail", (req, res) => {
-    const id = typeof req.query.id === "string" ? req.query.id : "";
-    const out = id && opts.getAchievementDetail ? opts.getAchievementDetail(id) : null;
-    if (!out) {
-      res.status(404).json({ error: "no such achievement" });
-      return;
-    }
-    res.json(out);
-  });
-
-  /** POST { id: string | null } — track one achievement, or none. */
-  app.post("/api/achievements/track", (req, res) => {
-    if (!opts.trackAchievement) {
-      res.status(501).json({ ok: false, error: "Not available" });
-      return;
-    }
-    const id = (req.body as { id?: unknown } | undefined)?.id;
-    if (id !== null && typeof id !== "string") {
-      res.status(400).json({ ok: false, error: 'JSON body must include "id": string or null.' });
-      return;
-    }
-    if (!opts.trackAchievement(id)) {
-      res.status(404).json({ ok: false, error: "no such achievement" });
-      return;
-    }
-    opts.scheduleBroadcast?.();
-    res.json({ ok: true });
-  });
-
-  app.get("/api/codex/regions", (_req, res) => {
-    perfCount("http.codexRegions");
-    res.json(codexMapRegions(getProjectRoot(), opts.getCodexMapLogged?.() ?? new Set()));
-  });
-
-  app.get("/api/codex/region", (req, res) => {
-    perfCount("http.codexRegion");
-    const name = typeof req.query.name === "string" ? req.query.name : "";
-    const kind = req.query.kind === "bodies" || req.query.kind === "bio" ? req.query.kind : null;
-    if (!name || !kind) {
-      res.status(400).json({ error: "name and kind (bodies|bio) are required" });
-      return;
-    }
-    const out = codexMapRegion(getProjectRoot(), opts.getCodexMapLogged?.() ?? new Set(), name, kind);
-    if (!out) {
-      res.status(404).json({ error: "no codex data for that region" });
-      return;
-    }
-    res.json(out);
-  });
-
-  app.get("/api/region-map", (_req, res) => {
-    perfCount("http.regionMap");
-    const file = path.join(getProjectRoot(), "data", "exomastery", "region-map.json");
-    if (!existsSync(file)) {
-      res.status(404).json({ error: "no region map vendored in this build" });
-      return;
-    }
-    res.setHeader("Cache-Control", "public, max-age=86400, immutable");
-    res.type("application/json").send(readFileSync(file, "utf8"));
-  });
-
-  app.get("/api/first-discovery-backlog", (_req, res) => {
-    perfCount("http.firstDiscoveryBacklog");
-    if (!opts.getFirstDiscoveryBacklog) {
-      res.status(404).json({ error: "no journal store behind this build" });
-      return;
-    }
-    Promise.resolve(opts.getFirstDiscoveryBacklog())
-      .then((dto) => res.json(dto))
-      .catch((e: unknown) => {
-        console.warn(`ED Exo Compare — first-discovery backlog failed: ${String(e)}`);
-        res.status(500).json({ error: "the first-discovery backlog failed" });
-      });
-  });
-
-  app.get("/api/sector-map", (_req, res) => {
-    perfCount("http.sectorMap");
-    const file = path.join(getProjectRoot(), "data", "exomastery", "sector-map.json");
-    if (!existsSync(file)) {
-      res.status(404).json({ error: "no sector map built yet — run: npm run feeder -- sector-map --write" });
-      return;
-    }
-    res.type("application/json").send(readFileSync(file, "utf8"));
-  });
-
-  /**
-   * One sector's systems (Phase 10 step 4).
-   *
-   * The file is 935 kB for 3,015 systems and would be far larger once the Spansh export lands, so
-   * the client never downloads it — it asks for the cell it just clicked. The file is parsed once
-   * and held; it changes only when the feeder runs, and re-reading 935 kB per hover would be silly.
-   *
-   * The cell key arrives as a query parameter rather than a path segment because it contains colons.
-   */
-  let sectorSystemsCache: { mtimeMs: number; cells: Record<string, unknown[]> } | null = null;
-  app.get("/api/sector-systems", (req, res) => {
-    perfCount("http.sectorSystems");
-    const cell = String(req.query.cell ?? "").trim();
-    if (!/^-?\d+:-?\d+:-?\d+$/.test(cell)) {
-      res.status(400).json({ error: "cell must look like x:y:z" });
-      return;
-    }
-    const file = path.join(getProjectRoot(), "data", "exomastery", "sector-systems.json");
-    if (!existsSync(file)) {
-      res
-        .status(404)
-        .json({ error: "no sector systems built yet — run: npm run feeder -- sector-map --write" });
-      return;
-    }
-    const mtimeMs = statSync(file).mtimeMs;
-    if (!sectorSystemsCache || sectorSystemsCache.mtimeMs !== mtimeMs) {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as { cells?: Record<string, unknown[]> };
-      sectorSystemsCache = { mtimeMs, cells: parsed.cells ?? {} };
-    }
-    res.json({ cell, systems: sectorSystemsCache.cells[cell] ?? [] });
   });
 }

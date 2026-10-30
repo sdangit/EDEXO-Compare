@@ -12,7 +12,9 @@
  * - the full range is the average of the top `TOP_SHARE` of the last `JUMP_RANGE_SAMPLES` long jumps
  *   (owner: "take top 30% of jump ranges (no boosts) and use those" — a jump is only as long as the
  *   next star on the route allows, 64 ly where the drive does 68);
- * - another ship, or a refit that changes the loadout's own range, starts over.
+ * - a refit that moves the loadout's own range scales the jumps flown by the same ratio (owner, 2026-10-28: "after
+ *   changing something on the ship, EDEXO requires you to do some jumps before it shows your jump range"); each
+ *   ship's jumps are kept while another ship is flown, for when it comes back.
  */
 
 export const JUMP_RANGE_SAMPLES = 40;
@@ -33,28 +35,75 @@ export interface JumpRangeState {
   long: number[];
   /** The last few unboosted jumps, long or short. */
   recent: number[];
+  /** The other ships' jumps, by `ShipID`, as they were when the commander left them. */
+  others?: Record<string, { loadoutLy: number | null; long: number[]; recent: number[] }>;
+}
+
+/** Other ships remembered; the ones left longest ago go first. */
+const OTHER_SHIPS = 12;
+/**
+ * The key of a ship in `others`: "s" and its ShipID. A bare number is an integer-like key, which objects list in
+ * numeric order whatever the order set, so the lowest ShipIDs went first instead of the ships left longest ago.
+ */
+const shipKey = (id: number | string) => `s${id}`;
+
+type OtherShip = NonNullable<JumpRangeState["others"]>[string];
+
+/** `others` from a saved cache: only well-formed entries (a bad one would break the next refit). */
+export function hydrateJumpRangeOthers(raw: unknown): NonNullable<JumpRangeState["others"]> {
+  const out: NonNullable<JumpRangeState["others"]> = {};
+  if (!raw || typeof raw !== "object") return out;
+  const nums = (v: unknown) => (Array.isArray(v) ? v.filter((d): d is number => typeof d === "number" && d > 0) : []);
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== "object") continue;
+    const e = v as Record<string, unknown>;
+    const entry: OtherShip = {
+      loadoutLy: typeof e.loadoutLy === "number" && e.loadoutLy > 0 ? e.loadoutLy : null,
+      long: nums(e.long),
+      recent: nums(e.recent),
+    };
+    if (entry.long.length) out[k.startsWith("s") ? k : shipKey(k)] = entry;
+  }
+  return out;
 }
 
 export function emptyJumpRange(): JumpRangeState {
-  return { shipId: null, loadoutLy: null, long: [], recent: [] };
+  return { shipId: null, loadoutLy: null, long: [], recent: [], others: {} };
 }
 
-/** A `Loadout`: another ship, or a refit that moved its own range by more than 2 %, starts over. */
+/**
+ * A `Loadout`. Another ship: this one's jumps are put by and that one's taken back, if it was flown before. A refit
+ * that moved the loadout's own range by more than 2 %: the jumps are scaled by the same ratio (the drive and the
+ * ship's mass set both alike), so the range is there at once and the next jumps refine it.
+ */
 export function jumpRangeLoadout(
   st: JumpRangeState,
   shipId: number | null,
   maxJumpRangeLy: number | null,
 ): void {
-  const refit =
-    st.loadoutLy != null &&
-    maxJumpRangeLy != null &&
-    Math.abs(maxJumpRangeLy - st.loadoutLy) > 0.02 * st.loadoutLy;
-  if ((shipId != null && shipId !== st.shipId) || refit) {
-    st.long = [];
-    st.recent = [];
+  if (shipId != null && shipId !== st.shipId) {
+    const others = (st.others ??= {});
+    if (st.shipId != null && st.long.length) {
+      delete others[shipKey(st.shipId)];
+      others[shipKey(st.shipId)] = { loadoutLy: st.loadoutLy, long: st.long, recent: st.recent };
+      const keys = Object.keys(others);
+      for (const k of keys.slice(0, Math.max(0, keys.length - OTHER_SHIPS))) delete others[k];
+    }
+    const back = others[shipKey(shipId)];
+    delete others[shipKey(shipId)];
+    st.shipId = shipId;
+    st.loadoutLy = back?.loadoutLy ?? null;
+    st.long = back?.long ?? [];
+    st.recent = back?.recent ?? [];
   }
   if (shipId != null) st.shipId = shipId;
-  if (maxJumpRangeLy != null) st.loadoutLy = maxJumpRangeLy;
+  if (maxJumpRangeLy == null) return;
+  if (st.loadoutLy != null && Math.abs(maxJumpRangeLy - st.loadoutLy) > 0.02 * st.loadoutLy) {
+    const f = maxJumpRangeLy / st.loadoutLy;
+    st.long = st.long.map((d) => d * f);
+    st.recent = st.recent.map((d) => d * f);
+  }
+  st.loadoutLy = maxJumpRangeLy;
 }
 
 /** An `FSDJump`'s distance. */

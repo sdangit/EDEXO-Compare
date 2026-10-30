@@ -12,7 +12,7 @@
 
   Tunables live in :root. Section markup comes from hud/ (one module per section); the page only supplies the shell.
 */
-@import url("tokens.css?v=5");
+@import url("tokens.css?v=6");
 :root {
   /* the palette comes from tokens.css (shared with the launcher and the app); these are HUD-only */
   --hud-bg: rgba(18, 9, 2, 0.42); /* the panel fill: mostly the game showing through */
@@ -340,6 +340,11 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
   color: var(--hud-hi);
   opacity: 0.62;
 }
+/* A note that stands in for a hidden row (Data value with ⊕ off): read first, so a size up. */
+.hud-note--lead {
+  font-size: 0.72rem;
+  opacity: 0.78;
+}
 .pay-est {
   color: var(--hud-text);
 }
@@ -666,6 +671,26 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
   box-shadow: var(--hud-glow);
   transition: width 0.4s ease;
 }
+/* A thin bar under a list row (Colonize: tons bought, tons delivered). */
+.hud-bar--thin {
+  height: 0.1875rem;
+  margin-top: 0.12rem;
+  margin-bottom: 0.18rem;
+}
+/* Finished (Colonize, owner 2026-10-22): green, last in its list, and only when "Show finished lines" is on. */
+.hud-bar__fill--done {
+  background: var(--live);
+  box-shadow: 0 0 6px rgba(123, 224, 123, 0.5);
+}
+.row--done .k,
+.row--done .v {
+  color: var(--live);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-bar__fill {
+    transition: none;
+  }
+}
 .hud-bar__ticks {
   position: absolute;
   inset: 0;
@@ -935,6 +960,16 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
 }
 .jump__neutron-next {
   color: var(--bio);
+}
+/* lucide's lightning and flask in the line (owner, 2026-10-28: no emoji). */
+.jump__ico {
+  width: 0.85rem;
+  height: 0.85rem;
+  vertical-align: -0.15rem;
+  margin-right: 0.15rem;
+}
+.jump__neutron-next .lucide-zap {
+  color: #8fd8ff;
 }
 .jump__fsd--warn {
   color: var(--bad);
@@ -1401,6 +1436,26 @@ body.phone .jump__body {
   margin-left: 0.5em;
   color: #f5b83d;
 }
+/* lucide's icons in the text (owner, 2026-10-28: no emoji): the mail, a record's medal, a notice's kind, the
+   phone's full-screen chip. */
+.hud-mail__ico,
+.hud-medal,
+.notice__ico {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+}
+.hud-mail__ico {
+  margin-right: 0.2em;
+}
+.hud-medal {
+  color: #f5b83d;
+}
+.phone-chip__ico {
+  width: 1.1rem;
+  height: 1.1rem;
+  vertical-align: middle;
+}
 
 /* "Unknown plant" rows in the candidate list (shared/unknownPlants.ts). */
 li.unknown-plant .name {
@@ -1465,13 +1520,14 @@ html.hud-type--elite {
   --hud-elite-shadow: 0 0 3px #000, 0 0 7px rgba(0, 0, 0, 0.85), 1px 1px 1px #000;
 }
 html.hud-type--elite .shell {
-  /* The far edge goes into the screen, so nothing grows past the window (origin from theme.js). */
-  transform: perspective(60rem) rotateY(var(--hud-tilt, 0deg));
+  /* The far edge goes into the screen, so nothing grows past the window (origin from theme.js). The depth follows
+     the panel's height (hud/main.tsx trackTiltDepth), so every panel turns at the same angle. */
+  transform: perspective(var(--hud-tilt-depth, 60rem)) rotateY(var(--hud-tilt, 0deg));
   transform-origin: var(--hud-tilt-origin, left) center;
   padding: 0.2rem 0.5rem 0.4rem;
 }
 html.hud-type--elite .shell.shell--off {
-  transform: perspective(60rem) rotateY(var(--hud-tilt, 0deg)) scale(0.97);
+  transform: perspective(var(--hud-tilt-depth, 60rem)) rotateY(var(--hud-tilt, 0deg)) scale(0.97);
 }
 /* Slant: skewed, not turned — the same width border to border; room above and below for the lift. */
 html.hud-type--elite.hud-tilt--slant .shell {
@@ -1610,4 +1666,78 @@ html.hud-type--elite .row--scan:not(.row--taken) .lbl::before {
   background: transparent;
   border-color: var(--hud);
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+}
+
+/* Ship (sections/ship.tsx, discuss item 32): a drawn outline, each part coloured by its health. */
+.ship-view {
+  display: block;
+  width: 100%;
+  max-width: 15rem;
+  margin: 0.2rem auto 0.3rem;
+}
+.ship-hull {
+  fill: rgba(255, 138, 31, 0.06);
+  stroke: var(--hud);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.ship-part {
+  fill: var(--hud-dim);
+  stroke: rgba(0, 0, 0, 0.6);
+  stroke-width: 0.6;
+}
+.ship-hull.ship--warn {
+  stroke: var(--warn);
+}
+.ship-hull.ship--bad {
+  stroke: var(--danger);
+}
+.ship-part.ship--ok {
+  fill: var(--hud);
+}
+.ship-part.ship--warn {
+  fill: var(--warn);
+}
+.ship-part.ship--bad {
+  fill: var(--danger);
+}
+.ship-part.ship--unknown {
+  fill: transparent;
+  stroke: var(--hud-dim);
+}
+.ship-hull-label {
+  fill: var(--hud-hi);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.ship-row--warn .v {
+  color: var(--warn);
+}
+.ship-row--bad .v,
+.ship-row--bad .k {
+  color: var(--danger);
+}
+/* The internals as one block under the core modules: present, not louder than them. */
+.ship-part.ship-block {
+  fill-opacity: 0.28;
+  stroke-opacity: 0.8;
+}
+/* The ship's vehicles (1.3.1, sections/vehicleOutlines.tsx): wheels and legs dim, the body coloured by its hull. */
+.ship-veh-detail {
+  fill: var(--hud-dim);
+  stroke: rgba(0, 0, 0, 0.6);
+  stroke-width: 0.6;
+}
+.ship-veh-icon {
+  width: 1.35em;
+  height: 1.35em;
+  margin-right: 0.35em;
+  vertical-align: -0.35em;
+  overflow: visible;
+}
+.ship-veh-state {
+  margin-left: 0.45em;
+  opacity: 0.7;
+  text-transform: none;
 }

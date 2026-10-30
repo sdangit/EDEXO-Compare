@@ -4,18 +4,18 @@
 import type { UnknownPlantSlot } from "@shared/unknownPlants";
 import { nextTempUnit, usePressUnit, useTempUnit } from "./useUnits";
 import { codexFirstTitle, codexMarkTitle } from "./codexMark";
-import { ArrivalTrip } from "@shared/systemTriage";
+import { ArrivalTrip, bodyExpectedValue, type TriageRow } from "@shared/systemTriage";
 import { fmtCrRangeShort, fmtCrShort, fmtLsExact } from "@shared/format";
 import { FootfallContext } from "./footfallContext";
 import { RowContext, LiveRun } from "./rowContext";
 import { settledMultiplier } from "@shared/footfallValue";
 import { readableAtmosphereLead } from "@shared/atmosphereLabel";
 import { footfallCertainty } from "@shared/footfallValue";
-import { useCallback, memo, Suspense, useMemo, useState } from "react";
+import { Fragment, useCallback, memo, Suspense, useMemo, useState } from "react";
 import { ExoPayoutRangePanel, payoutHeadline } from "./ExoPayoutRangePanel";
 import { FoldPanel } from "./ui/Fold";
 import { SnapshotButton } from "./SnapshotButton";
-import type { BodyComputed, PlanetScan, SpeciesMatch } from "@shared/types";
+import type { BodyComputed, OrganicGenusLock, PlanetScan, SpeciesMatch } from "@shared/types";
 import {
   atmospherePillStyle,
   formatPressurePill,
@@ -41,6 +41,9 @@ import { VolcanismFact } from "./VolcanismFact";
 import { JumponiumFact } from "./JumponiumFact";
 import type { JumponiumDTO } from "@shared/jumponium";
 export { GlanceGenera } from "./BodyGlance";
+
+/** One empty list for a body with no on-foot locks, so the rows' context value keeps its identity. */
+const NO_LOCKS: readonly OrganicGenusLock[] = [];
 
 /*
   The game's DSS names some genera by one of their species: every Sinuous Tubers body comes back "Roseum Sinuous
@@ -237,6 +240,16 @@ export const BodyPane = memo(function BodyPane({
   const unknownSlots = body.unknownPlants ?? [];
   const unlikelyGroups = useMemo(() => groupedSortedMatches(unlikelyMatches, genusOrder), [unlikelyMatches, genusOrder]);
 
+  // "Is this DSS worth it" (1.2.19): the body's expected value from the listed chances, beside the best case.
+  const expected = useMemo(() => bodyExpectedValue(body), [body]);
+
+  /*
+    What the species rows read through context, as a value that holds still (audit 2026-10-22). A fresh object each
+    render made every memoised GenusMatchGroup and its rows redraw on any render of this pane, undoing the memo above.
+  */
+  const organicLocks = body.state.organicGenusLocks;
+  const rowCtx = useMemo(() => ({ locks: organicLocks ?? NO_LOCKS, live: liveRun }), [organicLocks, liveRun]);
+
   // The body's first-footfall answer, shared with every species card below (WEBUI-REDESIGN 1.2).
   const bodyFootfall = body.exoPayoutRange
     ? footfallCertainty({
@@ -247,7 +260,7 @@ export const BodyPane = memo(function BodyPane({
 
   return (
     <FootfallContext.Provider value={bodyFootfall}>
-      <RowContext.Provider value={{ locks: body.state.organicGenusLocks ?? [], live: liveRun }}>
+      <RowContext.Provider value={rowCtx}>
         <div className={`body-pane${compactCandidateView ? " body-pane--rows" : ""}`}>
           {/* The glance bar (WEBUI-REDESIGN 5.1 / 5.2): what you look at on approach, and it stays put while
           the rest scrolls — body, price, candidates vs signals, DSS, distance, footfall. */}
@@ -267,6 +280,14 @@ export const BodyPane = memo(function BodyPane({
                   );
                 })()
               : null}
+            {expected && expected.expectedCredits > 0 ? (
+              <span className="glance-item" title={expectedValueTitle(expected, !!body.state.dssComplete)}>
+                ≈{fmtCrShort(expected.expectedCredits)} <small>exp</small>
+                {expected.risk.mapFirst && !body.state.dssComplete ? (
+                  <span className="price-tag price-tag--map-first">DSS first</span>
+                ) : null}
+              </span>
+            ) : null}
             <span className="glance-item">
               {likelyMatches.length} <small>cand</small> / {body.state.biologicalSignals ?? "?"}{" "}
               <small>bio</small>
@@ -341,7 +362,15 @@ export const BodyPane = memo(function BodyPane({
                 </div>
                 <div className="fact" style={Number.isFinite(gEarth) ? gravHeatStyle(gEarth) : undefined}>
                   <span className="fact-k">Gravity</span>
-                  <span className="fact-v">{gravLabel}</span>
+                  {/* A value that wraps breaks at the "≈", never inside "2.452 g" or "24.04 m/s²". */}
+                  <span className="fact-v">
+                    {gravLabel.split(" ≈ ").map((part, i) => (
+                      <Fragment key={i}>
+                        {i ? " " : null}
+                        <span className="fact-v__part">{i ? `≈ ${part}` : part}</span>
+                      </Fragment>
+                    ))}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -384,12 +413,14 @@ export const BodyPane = memo(function BodyPane({
                 >
                   <span className="fact-k">From arrival</span>
                   <span className="fact-v">
-                    {fromArrivalDisplay}
+                    <span className="fact-v__part">{fromArrivalDisplay}</span>
                     {trip && trip.rank != null && trip.ranked > 1 ? (
-                      <small>
+                      <>
                         {" "}
-                        · {tripRankLabel(trip.rank)} of {trip.ranked}
-                      </small>
+                        <small>
+                          · {tripRankLabel(trip.rank)} of {trip.ranked}
+                        </small>
+                      </>
                     ) : null}
                   </span>
                 </div>
@@ -766,6 +797,7 @@ export const BodyPane = memo(function BodyPane({
                                 }
                                 hostStarTypes={body.speciesMatchContext?.hostStarClasses}
                                 compactCandidateView={compactCandidateView}
+                                alwaysShowGenus
                               />
                             ))}
                           </div>
@@ -833,4 +865,25 @@ export function UnknownPlantCards({ slots }: { slots: readonly UnknownPlantSlot[
       ))}
     </div>
   );
+}
+
+/** The glance bar's expected-value hover: what the number is, and whether a DSS would settle most of it. */
+export function expectedValueTitle(row: TriageRow, mapped: boolean): string {
+  const scored = row.candidates.filter((c) => c.probability != null).length;
+  const lines = [
+    `Expected value ≈ ${fmtCrShort(row.expectedCredits)} CR: each listed species' chance here × its price` +
+      (row.multiplier === 5 ? " × 5 for first footfall" : "") +
+      `, added up over ${scored} of ${row.candidates.length} listed species.`,
+    "What the body is likely worth; the price range beside it is the best and worst case.",
+  ];
+  if (row.coverage < 1) lines.push(`${row.candidates.length - scored} listed species have no chance yet and add nothing.`);
+  if (row.risk.mapFirst && !mapped && row.risk.topSpecies) {
+    lines.push(
+      `${Math.round(row.risk.concentration * 100)} % of it rests on ${row.risk.topSpecies}, which is less likely than not: ` +
+        "a DSS shows whether its genus is there before you land.",
+    );
+  } else if (!mapped) {
+    lines.push("A DSS names the genera and narrows this.");
+  }
+  return lines.join("\n");
 }

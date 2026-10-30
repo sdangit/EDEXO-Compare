@@ -4,7 +4,7 @@
  * where no neutron star helps, waypoints in order or optimised, and the FSD's wear from the journal.
  */
 import { describe, expect, it } from "vitest";
-import { optimiseOrder, planNeutronRoute } from "../src/server/neutronRoute.js";
+import { optimiseOrder, planLeg, planNeutronRoute, rangeAt } from "../src/server/neutronRoute.js";
 import type { NeutronStar } from "../src/server/neutronIndex.js";
 import {
   DEFAULT_WEAR,
@@ -14,6 +14,7 @@ import {
   fsdWearRepair,
   hydrateFsdWear,
   newFsdWear,
+  superchargeFor,
   superchargeForShip,
 } from "../src/shared/fsdWear.js";
 import { parseLivePlan } from "../src/server/neutronLive.js";
@@ -47,6 +48,88 @@ describe("neutron route", () => {
     expect(r.jumps).toBe(11);
     expect(r.hops.at(-1)!.name).toBe("B");
     expect(r.unsafeLegs).toEqual([]);
+  });
+
+  it("keeps the neutron stars in a supercharge's reach when it looks further out (a 905 ly hop, 2026-10-28)", async () => {
+    // A Caspian: 93 ly, ×6 = 558 ly a supercharge. One neutron star in reach every 550 ly, and a crowd further out
+    // (gain ~900 ly each) that filled the 32 neighbours once the search widened: hops of 1 supercharge + 4 jumps.
+    const chain = line(0, 5500, 550).stars;
+    const crowd: NeutronStar[] = [];
+    for (let k = 0; k < 40; k++)
+      for (let x = 900; x < 5500; x += 550)
+        crowd.push({ i: 1000 + crowd.length, x: x + (k % 5), y: 20 + k, z: 0, scoopLs: null });
+    const stars = [...chain, ...crowd];
+    const idx = {
+      stars,
+      within: (p: { x: number; y: number; z: number }, r: number) =>
+        stars.filter((s) => Math.hypot(s.x - p.x, s.y - p.y, s.z - p.z) <= r),
+      nameOf: (i: number) => `N${i}`,
+    };
+    const r = await planNeutronRoute(idx, [A, { name: "B", x: 5600, y: 0, z: 0 }], {
+      rangeLy: 93,
+      boost: 6,
+      jumpsPerTank: 100,
+      jumpsNow: 100,
+    });
+    const overReach = r.hops.filter((h) => h.kind === "neutron" && h.boosted && h.jumps > 1);
+    expect(overReach).toEqual([]);
+    expect(r.jumps).toBeLessThanOrEqual(11); // a supercharge a neutron star along the chain, then the end
+  });
+
+  it("reads the range by the fuel aboard between its entries", () => {
+    const ship = { rangeLy: 50, rangeByFuel: [1.2, 1.1, 1] };
+    expect(rangeAt(ship, 6, 6)).toBeCloseTo(50);
+    expect(rangeAt(ship, 3, 6)).toBeCloseTo(55);
+    expect(rangeAt(ship, 0, 6)).toBeCloseTo(60);
+    expect(rangeAt(ship, 9, 6)).toBeCloseTo(50);
+    expect(rangeAt({ rangeLy: 50 }, 1, 6)).toBe(50);
+  });
+
+  it("jumps further on a lighter tank, and scoops to half where that is what reaches (Spansh's way, 2026-10-28)", async () => {
+    // Range 50 full (a supercharge 200 ly), 55 on half a tank or less (220 ly); neutron stars every 210 ly, each
+    // with a scoopable star. Full tank: every hop is a supercharge and a normal jump. Lighter: one supercharge.
+    const idx = line(0, 2100, 210, 1);
+    const ship = { rangeLy: 50, jumpsPerTank: 6, jumpsNow: 3, halfTank: true };
+    const byFuel = [1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.08, 1.06, 1.04, 1.02, 1, 1, 1, 1, 1, 1];
+    const B = { name: "B", x: 2150, y: 0, z: 0 };
+    const fixed = await planNeutronRoute(idx, [A, B], ship);
+    const lighter = await planNeutronRoute(idx, [A, B], { ...ship, rangeByFuel: byFuel });
+    expect(lighter.jumps).toBeLessThan(fixed.jumps);
+    expect(lighter.hops.filter((h) => h.kind === "neutron" && h.jumps > 1)).toEqual([]);
+    // Every refuel it makes is to half: a full tank would not reach the next neutron star in one supercharge.
+    const refuels = lighter.hops.filter((h) => h.refuel);
+    expect(refuels.length).toBeGreaterThan(0);
+    expect(refuels.every((h) => h.refuelHalf)).toBe(true);
+  });
+
+  it("never plans more jumps with half tanks allowed than without (2026-10-28 test round: 94 for 93)", async () => {
+    // Neutron stars every 205 ly, a scoopable star on every third: half a tank sometimes reaches, sometimes not.
+    const idx = line(0, 4100, 205, 3);
+    const byFuel = [1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.08, 1.06, 1.04, 1.02, 1, 1, 1, 1, 1, 1];
+    const ship = { rangeLy: 50, jumpsPerTank: 5, jumpsNow: 5, rangeByFuel: byFuel };
+    const B = { name: "B", x: 4150, y: 0, z: 0 };
+    const full = await planNeutronRoute(idx, [A, B], ship, 200);
+    const half = await planNeutronRoute(idx, [A, B], { ...ship, halfTank: true }, 200);
+    expect(half.jumps).toBeLessThanOrEqual(full.jumps);
+  });
+
+  it("says each hop's range, so a hop past the full tank's ×4 reads as the lighter tank's (2026-10-28 test round)", async () => {
+    const idx = line(0, 2100, 210, 1);
+    const byFuel = [1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.08, 1.06, 1.04, 1.02, 1, 1, 1, 1, 1, 1];
+    const r = await planNeutronRoute(idx, [A, { name: "B", x: 2150, y: 0, z: 0 }], {
+      rangeLy: 50,
+      jumpsPerTank: 6,
+      jumpsNow: 3,
+      halfTank: true,
+      rangeByFuel: byFuel,
+    });
+    const single = r.hops.filter((h) => h.boosted && h.jumps === 1);
+    expect(single.some((h) => h.distanceLy > 200)).toBe(true); // past 50 ly × 4
+    for (const h of single) {
+      expect(h.rangeLy).toBeGreaterThanOrEqual(50);
+      // Within the range it says it was planned with, give or take the rounding to whole light years.
+      expect(h.distanceLy).toBeLessThanOrEqual(h.rangeLy! * 4 + 0.5);
+    }
   });
 
   it("goes by a neutron star with a scoopable star before the tank runs dry, and says to scoop there", async () => {
@@ -123,6 +206,39 @@ describe("neutron route", () => {
     ];
     expect(optimiseOrder(pts).map((p) => p.name)).toEqual(["start", "near", "far", "end"]);
   });
+
+  /*
+    Owner, 2026-10-28: "should be the fastest route, A* or similar". The fast first pass (weighted A*) is a few jumps
+    off the fewest; the refining passes look for fewer in the time they get, and never hand back more.
+  */
+  it("refines the first route towards the fewest jumps, never to more", async () => {
+    const field = (seed: number) => {
+      let s = seed >>> 0;
+      const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+      const stars: NeutronStar[] = Array.from({ length: 1500 }, (_, i) => ({
+        i,
+        x: rnd() * 4000,
+        y: (rnd() - 0.5) * 600,
+        z: (rnd() - 0.5) * 600,
+        scoopLs: rnd() < 0.4 ? 500 : null,
+      }));
+      return {
+        within: (p: { x: number; y: number; z: number }, r: number) =>
+          stars.filter((n) => Math.hypot(n.x - p.x, n.y - p.y, n.z - p.z) <= r),
+      };
+    };
+    const ship = { rangeLy: 50, boost: 4, jumpsPerTank: 6, jumpsNow: 6 };
+    const from = { pos: { x: 0, y: 0, z: 0 }, star: null };
+    const to = { x: 4000, y: 0, z: 0 };
+    const jumps = (leg: { nodes: { jumps: number }[] } | null) => leg!.nodes.reduce((a, n) => a + n.jumps, 0);
+    for (const seed of [1, 5, 8]) {
+      const first = jumps(await planLeg(field(seed), from, to, ship, 6, 0));
+      const refined = jumps(await planLeg(field(seed), from, to, ship, 6, 5000));
+      expect(refined).toBeLessThan(first);
+    }
+    // Seed 5: 27 jumps from the first pass, 25 refined.
+    expect(jumps(await planLeg(field(5), from, to, ship, 6, 5000))).toBe(25);
+  });
 });
 
 describe("FSD wear from the journal", () => {
@@ -174,18 +290,39 @@ describe("FSD wear from the journal", () => {
 
   /*
     Owner, 2026-10-15: "detects ship from LoadGame Ship ... auto pick 4x, if ship is not recognized (game update) keep at
-    4x but remember the option". The ship type picks it, not the drive module.
+    4x but remember the option". Since 2026-10-20 the drive decides: the Mk II SCO is sold on its own, and the Anaconda
+    Mk II (4.4.2.0) has a size 8 slot. The ship type only while no drive is known.
   */
-  it("picks the supercharge from the ship type: ×6 the Caspian, ×4 every other ship, ×4 and unknown for a new type", () => {
+  it("picks the supercharge from the ship type: ×6 the Caspian, ×4 every other ship, unknown for a new type", () => {
     expect(superchargeForShip("Mandalay")).toBe(4);
     expect(superchargeForShip("PantherMkII")).toBe(4);
+    expect(superchargeForShip("AnacondaMkII")).toBe(4);
     expect(superchargeForShip("Explorer_NX")).toBe(6);
     expect(superchargeForShip("NewShip_2027")).toBeNull();
     expect(superchargeForShip(null)).toBeNull();
+  });
+
+  it("the drive decides over the ship type: ×6 with the Mk II SCO in any ship, ×4 with any other drive", () => {
+    const mk2 = "int_hyperdrive_overcharge_size8_class5_overchargebooster_mkii";
+    expect(superchargeFor("anacondamkii", mk2)).toBe(6);
+    expect(superchargeFor("newship_2027", mk2)).toBe(6);
+    // A Caspian refitted with an ordinary size 8 drive supercharges like any other ship.
+    expect(superchargeFor("explorer_nx", "int_hyperdrive_size8_class3")).toBe(4);
+    expect(superchargeFor("newship_2027", "int_hyperdrive_overcharge_size7_class5")).toBe(4);
+    // No drive known: the ship type, else nothing.
+    expect(superchargeFor("explorer_nx", null)).toBe(6);
+    expect(superchargeFor("newship_2027", null)).toBeNull();
+
     const st = newFsdWear();
     fsdWearLoadout(st, loadout(1, 3, "int_hyperdrive_size5_class5", "mandalay"));
     expect(fsdWearEstimate(st)).toMatchObject({ boostFactor: 4, shipKnown: true, ship: "mandalay" });
-    fsdWearLoadout(st, loadout(1, 4, "int_hyperdrive_size7_class5", "newship_2027"));
+    fsdWearLoadout(st, loadout(1, 4, mk2, "anacondamkii"));
+    expect(fsdWearEstimate(st)).toMatchObject({ boostFactor: 6, shipKnown: true, ship: "anacondamkii" });
+    // A new type with an ordinary drive is known by its drive now: ×4, not the commander's remembered pick.
+    fsdWearLoadout(st, loadout(1, 5, "int_hyperdrive_size7_class5", "newship_2027"));
+    expect(fsdWearEstimate(st)).toMatchObject({ boostFactor: 4, shipKnown: true });
+    // A Loadout with no drive in it and a type the app does not know: neither says.
+    fsdWearLoadout(st, { event: "Loadout", ShipID: 6, Ship: "newship_2028", Modules: [] });
     expect(fsdWearEstimate(st)).toMatchObject({ boostFactor: 4, shipKnown: false });
   });
 

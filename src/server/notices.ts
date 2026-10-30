@@ -21,6 +21,7 @@
  * Kept in `edexo-notices.json` beside the user settings: the unread list, the ids already announced
  * (so the same body never comes back after being read), the records, and the settings.
  */
+import { rareColourPhrase, type ColourRarity } from "../shared/rareColour.js";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import type { ExplorationScanRecord } from "../shared/types.js";
 import { BODY_FEATURES, bodyFeatures, directParent, featureRecordFromScan, inVoidCross } from "../shared/bodyFeatures.js";
@@ -99,6 +100,16 @@ export interface CodexFirstFind {
   /** The colours that would be firsts; empty when the colour is unknown. */
   colours: string[];
   region: string;
+}
+
+/** A candidate whose colour is logged in few systems galaxy-wide (1.2.19, rare colours). */
+export interface RareColourFind extends ColourRarity {
+  bodyKey: string;
+  systemAddress: number;
+  system: string;
+  body: string;
+  species: string;
+  speciesId: string;
 }
 
 export interface NearbyNsp {
@@ -187,6 +198,25 @@ function scanSubject(r: {
   return null;
 }
 
+/** EDAstro's record holder and the scan name the same body (case and spacing aside). */
+const sameBody = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
+/**
+ * EDAstro publishes radii rounded (the neutron star record: 13,335.87 m from a solar-radius figure), the journal to the
+ * metre and beyond: within this share of the record it is the same size, not a new record (a tester, 2026-10-28:
+ * "matched the galactic record but didn't beat it", announced as beyond at "13 km vs 13 km").
+ */
+const GALACTIC_TIE = 1e-5;
+/** A personal record against EDAstro's galactic one: past it, level with it (or the holder itself), or short of it. */
+export function versusGalactic(
+  radius: number,
+  bodyName: string,
+  g: { radius: number; body: string },
+  which: "largest" | "smallest",
+): "beyond" | "ties" | "short" {
+  if (sameBody(g.body, bodyName) || Math.abs(radius - g.radius) <= g.radius * GALACTIC_TIE) return "ties";
+  return (which === "largest" ? radius > g.radius : radius < g.radius) ? "beyond" : "short";
+}
+
 export interface NoticesService {
   prefs(): NotifyPrefsDTO;
   setPrefs(raw: unknown): NotifyPrefsDTO;
@@ -211,6 +241,8 @@ export interface NoticesService {
   announceAchievement(a: { id: string; step: number; title: string; text: string }, at: string): boolean;
   /** A gas giant to photograph for the nudge research (server/gggResearch.ts; the developer's PC only). */
   announceGggResearch(n: { bodyKey: string; system: string; systemAddress: number; body: string; title: string; text: string }, at: string): boolean;
+  /** A Community Goal on Frontier's list (server/communityGoals.ts): once per goal, ever. True when it was added. */
+  announceCommunityGoal(g: { id: string; title: string; system: string; text: string }, at: string): boolean;
   /**
    * Candidates nobody has logged in their region ([CODEX FIRST]), from the snapshot of the system the
    * commander is in. Each species, colour and body is announced once.
@@ -221,6 +253,12 @@ export interface NoticesService {
    * announced again if the candidate comes back. True when the list changed.
    */
   announceCodexFirst(finds: readonly CodexFirstFind[], at: string, evaluated?: ReadonlySet<string>): boolean;
+  /**
+   * Candidates whose colour is logged in few systems galaxy-wide (1.2.19), from the snapshot of the system the
+   * commander is in: once per body, species and colour, withdrawn like a codex first when the candidate leaves the
+   * list. True when the list changed.
+   */
+  announceRareColours(finds: readonly RareColourFind[], at: string, evaluated?: ReadonlySet<string>): boolean;
   snapshot(systemAddress: number | null): NoticesSnapshotDTO;
   /** Call with each live journal line **before** the store applies it. True when a notice was added. */
   observe(line: Line, ctx: NoticesContext): boolean;
@@ -230,6 +268,10 @@ export interface NoticesService {
   jumpLy(ctx: Pick<NoticesContext, "loadoutJumpLy" | "fullJumpLy">): number | null;
   /** Every type's records, the commander's and EDAstro's (Statistics → Records). */
   records(ctx: NoticesContext): RecordRowDTO[];
+}
+
+function rareColourId(f: RareColourFind): string {
+  return `rarecolour:${f.bodyKey}:${f.speciesId}:${f.colour.toLowerCase()}`;
 }
 
 function codexFirstId(f: CodexFirstFind): string {
@@ -380,6 +422,20 @@ export function createNoticesService(opts: {
     } catch {
       /* best effort: the list is a convenience, the journal is the record */
     }
+  }
+
+  /**
+   * A per-body notice (id `prefix…`) whose body was looked at again (`evaluated`) and is no longer among `keep` leaves
+   * the bell, read or not, and may come back. True when one left.
+   */
+  function withdrawStale(prefix: string, evaluated: ReadonlySet<string>, keep: ReadonlySet<string>): boolean {
+    const before = state.items.length;
+    state.items = state.items.filter((n) => {
+      const gone = n.id.startsWith(prefix) && n.bodyKey != null && evaluated.has(n.bodyKey) && !keep.has(n.id);
+      if (gone) seen.delete(n.id);
+      return !gone;
+    });
+    return state.items.length !== before;
   }
 
   function add(n: NoticeDTO): boolean {
@@ -552,18 +608,25 @@ export function createNoticesService(opts: {
           state.records.push(mark);
           // EDAstro's galactic record, when downloaded: how this one compares.
           const g = ctx.galacticRecord?.(k)?.[which] ?? null;
-          const beatsGalaxy = g != null && (which === "largest" ? s.radius > g.radius : s.radius < g.radius);
+          const vs = g ? versusGalactic(s.radius, fullName, g, which) : null;
+          const label = `${which} ${recordTypeLabel(s.subject, s.type)}`;
           added =
             add({
               ...base,
               id: `record:${which}:${k}:${bodyKey}`,
               kind: "record",
-              title: beatsGalaxy
-                ? `Beyond EDAstro's galactic record: ${which} ${recordTypeLabel(s.subject, s.type)}`
-                : `Record: ${which} ${recordTypeLabel(s.subject, s.type)}`,
+              title:
+                vs === "beyond"
+                  ? `Beyond EDAstro's galactic record: ${label}`
+                  : vs === "ties"
+                    ? `Ties EDAstro's galactic record: ${label}`
+                    : `Your record: ${label}`,
               text:
                 `${body} in ${system} — ${formatRadius(mark.radius, mark.subject)} (was ${formatRadius(mark.previous, mark.subject)})` +
-                (g ? ` · galactic ${formatRadius(g.radius, mark.subject)}` : ""),
+                (g
+                  ? ` · galactic ${formatRadius(g.radius, mark.subject)}` +
+                    (vs === "ties" ? ` (${g.body}${sameBody(g.body, fullName) ? ", this body" : ", the same to EDAstro's precision"})` : "")
+                  : ""),
             }) || added;
         }
       }
@@ -728,16 +791,7 @@ export function createNoticesService(opts: {
     announceCodexFirst(finds, at, evaluated) {
       if (!state.prefs.codexFirst) return false;
       let added = false;
-      if (evaluated?.size) {
-        const keep = new Set(finds.map(codexFirstId));
-        const before = state.items.length;
-        state.items = state.items.filter((n) => {
-          const gone = n.kind === "codex" && n.id.startsWith("codexfirst:") && n.bodyKey != null && evaluated.has(n.bodyKey) && !keep.has(n.id);
-          if (gone) seen.delete(n.id);
-          return !gone;
-        });
-        added = state.items.length !== before;
-      }
+      if (evaluated?.size) added = withdrawStale("codexfirst:", evaluated, new Set(finds.map(codexFirstId)));
       for (const f of finds) {
         const what = f.colours.length ? `${f.species} (${f.colours.join(" or ")})` : f.species;
         added =
@@ -747,6 +801,27 @@ export function createNoticesService(opts: {
             kind: "codex",
             title: `Codex first possible: ${what}`,
             text: `${f.body} in ${f.system} — nobody has logged it in ${f.region} yet (EDSM)`,
+            system: f.system,
+            systemAddress: f.systemAddress,
+            body: f.body,
+            bodyKey: f.bodyKey,
+          }) || added;
+      }
+      if (added) save();
+      return added;
+    },
+    announceRareColours(finds, at, evaluated) {
+      if (!state.prefs.rareColours) return false;
+      let added = false;
+      if (evaluated?.size) added = withdrawStale("rarecolour:", evaluated, new Set(finds.map(rareColourId)));
+      for (const f of finds) {
+        added =
+          add({
+            id: rareColourId(f),
+            at,
+            kind: "codex",
+            title: `Rare colour possible: ${f.species} (${f.colour})`,
+            text: `${f.body} in ${f.system} — ${rareColourPhrase(f)} (EDAstro)`,
             system: f.system,
             systemAddress: f.systemAddress,
             body: f.body,
@@ -781,6 +856,22 @@ export function createNoticesService(opts: {
         title: a.title,
         text: a.text,
         system: "",
+        systemAddress: null,
+        body: null,
+        bodyKey: null,
+      });
+      if (added) save();
+      return added;
+    },
+    announceCommunityGoal(g, at) {
+      if (!state.prefs.communityGoals) return false;
+      const added = add({
+        id: `cg:${g.id}`,
+        at,
+        kind: "cg",
+        title: `Community Goal: ${g.title}`,
+        text: g.text,
+        system: g.system,
         systemAddress: null,
         body: null,
         bodyKey: null,

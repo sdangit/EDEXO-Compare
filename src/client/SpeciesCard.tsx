@@ -1,10 +1,11 @@
 /**
  * The full species card and its sub-blocks, split out of App.tsx (7.3).
  */
-import { achievementMarkTitle, codexFirstTitle, codexMarkTitle } from "./codexMark";
+import { achievementMarkTitle, codexFirstTitle, codexMarkTitle, rareColourOf, rareColourTitle } from "./codexMark";
 import { STREAMER_MODE } from "./streamerMode";
 import { speciesPhotoVariant } from "./speciesPhotoVariant";
 import { fmtCrExact, fmtCrShort } from "@shared/format";
+import { ModalHead } from "./ui/ModalHead";
 import { useModal } from "./ui/useModal";
 import { useFootfallCertainty } from "./footfallContext";
 import { settledMultiplier } from "@shared/footfallValue";
@@ -15,6 +16,7 @@ import { WhyChanceStrip } from "./WhyChanceStrip";
 import { ChanceWhyList } from "./ChanceWhyList";
 import { useToast } from "./ui/feedback";
 import { memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Flag } from "lucide-react";
 import type {
   BodyComputed,
   EstimatedSurfaceTempBand,
@@ -262,7 +264,9 @@ export const SpeciesCard = memo(function SpeciesCard({
         .filter(Boolean)
         .join(" — ")}
     >
+      {/* Keyed by the photo: a failed one hid itself and its fallback stayed shown for the next (1.2.19 review). */}
       <img
+        key={heroSrc}
         src={heroSrc}
         alt=""
         className={compact ? "species-img species-img--compact" : "species-img species-img--hero"}
@@ -274,7 +278,7 @@ export const SpeciesCard = memo(function SpeciesCard({
             (ph as HTMLElement).style.display = "flex";
         }}
       />
-      <div className="species-img-ph species-img-ph-fallback" style={{ display: "none" }}>
+      <div key={`ph-${heroSrc}`} className="species-img-ph species-img-ph-fallback" style={{ display: "none" }}>
         Image failed to load
       </div>
     </button>
@@ -316,7 +320,7 @@ export const SpeciesCard = memo(function SpeciesCard({
           className="species-compact-payout-done species-compact-payout-done--others"
           title="Logged on this body by other commanders (Spansh). Not from your journal."
         >
-          Logged by other commanders
+          [OTHER CMDR]
         </span>
       ) : m.loggedBy === "you" ? (
         <span
@@ -446,6 +450,15 @@ export const SpeciesCard = memo(function SpeciesCard({
             [CODEX FIRST]
           </span>
         ) : null}
+        {rareColourOf(m).length ? (
+          <span
+            className="species-codex-mark species-codex-mark--rare"
+            title={rareColourTitle(m)}
+            aria-label="A colour logged in few systems galaxy-wide"
+          >
+            [RARE]
+          </span>
+        ) : null}
         {m.lowChanceWhy ? (
           <Tooltip text={m.lowChanceWhy}>
             <span className="species-codex-mark species-codex-mark--why" aria-label={m.lowChanceWhy}>
@@ -515,7 +528,7 @@ export const SpeciesCard = memo(function SpeciesCard({
             title={`Logged ${m.confirmedColour}, predicted ${m.colourMismatchPredicted} — recorded in the miss log (edexo-outliers.jsonl).`}
           >
             {" "}
-            ⚑
+            <Flag className="species-colour-miss__ico" aria-hidden="true" />
           </span>
         ) : null}
         {m.unlikely ? (
@@ -750,19 +763,14 @@ export const SpeciesCard = memo(function SpeciesCard({
                 aria-labelledby={`other-match-${e.id}`}
                 onClick={(ev) => ev.stopPropagation()}
               >
-                <div className="modal-head">
-                  <h3 id={`other-match-${e.id}`} className="other-matching-details-modal-title">
-                    Other matching details — {e.displayName}
-                  </h3>
-                  <button
-                    type="button"
-                    className="modal-close"
-                    onClick={() => setOtherMatchModalOpen(false)}
-                    aria-label="Close"
-                  >
-                    ×
-                  </button>
-                </div>
+                <ModalHead
+                  title={`Other matching details — ${e.displayName}`}
+                  titleId={`other-match-${e.id}`}
+                  titleClassName="other-matching-details-modal-title"
+                  onClose={() => setOtherMatchModalOpen(false)}
+                  helpTitle="What these details show"
+                  help={<OtherMatchHelp />}
+                />
                 <div className="modal-body other-matching-details-modal-body">
                   <OtherMatchDetailCardsGrid cards={otherDetailCards} />
                 </div>
@@ -787,3 +795,21 @@ export const SpeciesCard = memo(function SpeciesCard({
     </article>
   );
 });
+
+/** Behind the "?" beside the × of Other matching details (owner, 2026-10-23). */
+function OtherMatchHelp() {
+  return (
+    <>
+      <p>
+        This body set against the species' exomastery profile, one field per tile: the profile's most common
+        value (or, for the host star, the most common star among the profile's bodies) above this body's own
+        value from your journal scans.
+      </p>
+      <p>
+        The profile is built by the data feeder from EDSM sample data. The tile's colour says how far this body
+        is from the typical value; hover a tile for the full reading. Tiles marked Context are the match's own
+        notes: a gate it checked, or where an imported reading came from.
+      </p>
+    </>
+  );
+}

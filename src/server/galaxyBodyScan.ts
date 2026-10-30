@@ -76,7 +76,7 @@ import {
   type BioBodySystem,
 } from "./bioBodies.js";
 import { runDemotionPasses } from "./demotionPasses.js";
-import { loadBioIndex } from "./bioIndex.js";
+import { loadBioIndexAsync } from "./bioIndex.js";
 import { clearsGravityOdds, gravityBiologyOdds } from "./gravityBiologyOdds.js";
 import {
   speciesMatchesCriteria,
@@ -515,12 +515,6 @@ export function galaxyRegions(): GalaxyRegionsDTO {
   });
 }
 
-/** Test seam. */
-export function clearGalaxyRegionsCache(): void {
-  regionsCache = null;
-  regionNamesCache = null;
-}
-
 /**
  * A galaxy-wide-looking sample for the map: one system per sector cell.
  *
@@ -563,7 +557,8 @@ export async function galaxyBodyScan(query: GalaxyBodyScanQuery): Promise<Galaxy
 
   const prices = getCachedPriceIndex();
   const catalogue = loadSpatialCatalogue(getProjectRoot());
-  const index = loadBioIndex();
+  // Read off the server's thread when not held (audit 2026-10-22): the synchronous loader stops every window.
+  const index = await loadBioIndexAsync();
 
   /** Systems already ruled in or out by the codex index, so one lookup serves all of a system's bodies. */
   const systemWalked = new Map<number, boolean>();

@@ -18,16 +18,18 @@
  *   main -> child   { type: "start", mode, argv }       start the server
  *                   { type: "call", id, method, args }  a runtime method; replied to with "reply"
  *                   { type: "hudReply", id, result | error }
- *   child -> main   { type: "started", baseUrl, layoutPath, gameRunning, backupRunning, linuxTrayHost }
+ *   child -> main   { type: "started", baseUrl, layoutPath, gameRunning, backupRunning, linuxTrayHost, webRoot, csp }
  *                   { type: "failed", message }         the server could not start
- *                   { type: "ready" }                   the journal is read (runtime.ready)
+ *                   { type: "ready" }                   the server listens and the journal boot begins (runtime.ready)
+ *                   { type: "booted" }                  the journal boot is over (runtime.booted)
  *                   { type: "reply", id, result | error }
  *                   { type: "event", name, value }      boxelNext, gameRunning, backupRunning
  *                   { type: "hud", id, method, arg }    a HUD bridge call for main's windows
  *                   { type: "dialog", title, message }  a message box only main can show
  */
 import { setHudBridge, type HudBridge } from "./hudBridge.js";
-import { resolveHudLayoutPath, reapplySpeciesDataDirDiscoveryFromDisk } from "./paths.js";
+import { getProjectRoot, getWebRoot, resolveHudLayoutPath, reapplySpeciesDataDirDiscoveryFromDisk } from "./paths.js";
+import { CONTENT_SECURITY_POLICY } from "./csp.js";
 import { startEdexoFromElectronMode, type EdexoRuntime } from "./edexoBootstrap.js";
 import { linuxProbes } from "./linuxProbes.js";
 
@@ -38,22 +40,76 @@ interface ParentPort {
   postMessage(msg: unknown): void;
 }
 
-/** The port to the main process, present only when started as an Electron utility process. */
+/** The port to the main process: Electron's utility-process port, or stdin/stdout for another shell. */
 function parentPort(): ParentPort | null {
+  if (process.env.EDEXO_SERVER_CHILD === "stdio") return stdioPort();
   return (process as unknown as { parentPort?: ParentPort }).parentPort ?? null;
 }
 
-/** True in the utility process electron/serverChild.cjs starts. */
-export function isServerChild(): boolean {
-  return process.env.EDEXO_SERVER_CHILD === "1";
+/** Marks the lines on stdout that are messages; anything else a library prints there is not one. */
+export const STDIO_MESSAGE_PREFIX = "@edexo ";
+
+/**
+ * The same messages over stdin and stdout, one JSON object per line (Tauri test shell, docs/plan-25102026-tauri-1.4.0.md
+ * phase 0). The server's own console output goes to stderr in this mode, so stdout carries only messages; a line read
+ * that is not JSON is ignored. stdin closing means the shell has gone: the server stops as on "shutdown".
+ */
+export function stdioPort(
+  input: NodeJS.ReadableStream = process.stdin,
+  write: (line: string) => void = (line) => void process.stdout.write(line),
+): ParentPort {
+  if (input === process.stdin) {
+    for (const k of ["log", "info", "debug"] as const) console[k] = console.error;
+  }
+  const listeners: ((e: { data: unknown }) => void)[] = [];
+  let buf = "";
+  const deliver = (data: unknown) => {
+    for (const cb of listeners) cb({ data });
+  };
+  input.setEncoding?.("utf8");
+  input.on("data", (chunk: string | Buffer) => {
+    buf += String(chunk);
+    let i: number;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line) continue;
+      try {
+        deliver(JSON.parse(line));
+      } catch {
+        /* not a message */
+      }
+    }
+  });
+  input.on("end", () => deliver({ type: "shutdown" }));
+  return {
+    on: (_event, cb) => void listeners.push(cb),
+    postMessage: (msg) => write(STDIO_MESSAGE_PREFIX + JSON.stringify(msg) + "\n"),
+  };
 }
 
-/** A message box for the main process to show (the utility process has no `dialog`). */
-export function postDialogToMain(title: string, message: string): boolean {
-  const port = parentPort();
-  if (!port) return false;
-  port.postMessage({ type: "dialog", title, message });
-  return true;
+/**
+ * Calls `onGone` once the process `ppid` no longer exists: a shell that started the server over stdio and was killed
+ * (the owner ended the Tauri test shell in Task Manager and its server stayed, 2026-10-26). stdin closing and the
+ * shell's Job object should already end it; this does not depend on either.
+ */
+export function watchParent(onGone: () => void, ppid: number = process.ppid, everyMs = 2000): NodeJS.Timeout {
+  const t = setInterval(() => {
+    try {
+      process.kill(ppid, 0);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ESRCH") return;
+      clearInterval(t);
+      onGone();
+    }
+  }, everyMs);
+  t.unref();
+  return t;
+}
+
+/** True in the utility process electron/serverChild.cjs starts, or under a shell that talks over stdio. */
+export function isServerChild(): boolean {
+  return process.env.EDEXO_SERVER_CHILD === "1" || process.env.EDEXO_SERVER_CHILD === "stdio";
 }
 
 /** The runtime methods main may call. Anything else is refused, not looked up by name. */
@@ -74,12 +130,19 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function runServerChild(): void {
   const port = parentPort();
   if (!port) {
-    console.error("[edexo-compare] EDEXO_SERVER_CHILD is set, but this is not an Electron utility process.");
+    console.error("[edexo-compare] EDEXO_SERVER_CHILD is set, but this is not an Electron utility process (set it to \"stdio\" for another shell).");
     process.exit(1);
   }
   const post = (m: Msg) => port.postMessage(m);
   let runtime: EdexoRuntime | null = null;
   let shuttingDown = false;
+  // Started over stdio: stop when that shell is gone, and do not wait more than 10 s for a clean stop then.
+  if (process.env.EDEXO_SERVER_CHILD === "stdio") {
+    watchParent(() => {
+      setTimeout(() => process.exit(0), 10_000);
+      void shutdown();
+    });
+  }
 
   // HUD bridge calls go to main's windows and come back as hudReply.
   let hudSeq = 0;
@@ -101,6 +164,7 @@ export function runServerChild(): void {
     getLayout: hudCall("getLayout"),
     setLayout: hudCall("setLayout"),
     toggleVisibility: hudCall("toggleVisibility"),
+    switchCommander: hudCall("switchCommander"),
   };
 
   async function start(mode: "server" | "client", argv: string[]): Promise<void> {
@@ -128,11 +192,15 @@ export function runServerChild(): void {
       gameRunning: runtime.gameRunning(),
       backupRunning: runtime.backupRunning(),
       linuxTrayHost: trayHost,
+      // For main's static shell (electron/staticShell.cjs): the folder and the policy this server serves pages with.
+      webRoot: getWebRoot(getProjectRoot()),
+      csp: CONTENT_SECURITY_POLICY,
     });
     void runtime.ready.then(
       () => post({ type: "ready" }),
       () => {},
     );
+    void runtime.booted.then(() => post({ type: "booted" }));
     runtime.onBoxelNext((name) => post({ type: "event", name: "boxelNext", value: name }));
     runtime.onGameRunning((running) => post({ type: "event", name: "gameRunning", value: running }));
     // Main asks "is a backup running?" inside its quit handlers and cannot wait for an answer there,

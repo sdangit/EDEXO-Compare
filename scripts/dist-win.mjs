@@ -76,7 +76,7 @@ cpSync(join("dist", "web"), join(staging, "web"), { recursive: true });
 copyDataTree(join(staging, "data"));
 mergeDataOverlays(join(staging, "data"));
 
-const readme = `ED Exo Compare — Windows Electron build (single portable + unpacked folder)
+const readme = `EDEXO — Windows Electron build (single portable + unpacked folder)
 
 Output: dist/electron-out/
 - EDExoCompare.exe — portable launcher (journal + HUD). Default: binds 0.0.0.0:7111 (LAN + this PC).
@@ -114,9 +114,9 @@ try {
 function installPortableTemplate() {
   const libPkg = require.resolve("app-builder-lib/package.json");
   const libVersion = require(libPkg).version;
-  if (libVersion !== "26.8.1") {
+  if (libVersion !== "26.18.0") {
     console.error(
-      `[dist:win] app-builder-lib is ${libVersion}, scripts/nsis/portable.nsi is based on 26.8.1: ` +
+      `[dist:win] app-builder-lib is ${libVersion}, scripts/nsis/portable.nsi is based on 26.18.0: ` +
         "diff it against templates/nsis/portable.nsi of the new version, update it and this check.",
     );
     process.exit(1);
@@ -125,6 +125,15 @@ function installPortableTemplate() {
   console.info("[dist:win] portable launcher script: scripts/nsis/portable.nsi");
 }
 installPortableTemplate();
+
+// The portable exe's splash (discuss item 16): build/ is generated, so it is made here every time.
+{
+  const r = spawnSync(process.execPath, [join("scripts", "make-splash.mjs")], { stdio: "inherit" });
+  if (r.status !== 0) {
+    console.error("[dist:win] could not make the portable splash");
+    process.exit(1);
+  }
+}
 
 function runBuilder(label) {
   console.info(

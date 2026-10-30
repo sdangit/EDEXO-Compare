@@ -10,7 +10,7 @@ import { downloadNeutrons, loadNeutronIndex, neutronsStatus, probeNeutronsReleas
 import { applyJumponium, optimiseOrder, planNeutronRoute } from "../neutronRoute.js";
 import { jumponiumView, recipeFor } from "../../shared/jumponium.js";
 import { parseLiveHops, parseLivePlan } from "../neutronLive.js";
-import type { HttpServerOptions, RouteContext } from "../httpServer.js";
+import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
 
 type Waypoint = { name: string; x: number; y: number; z: number };
 
@@ -27,7 +27,7 @@ export function planBoost(asked: unknown, current: number | null): number {
 export function registerNeutronRoutes(
   app: express.Express,
   opts: HttpServerOptions,
-  _ctx: RouteContext,
+  ctx: RouteContext,
 ): void {
   /** What the journals say about the ship: range, jumps a full tank and the fuel aboard allow, the FSD's health. */
   const ship = () => {
@@ -60,6 +60,9 @@ export function registerNeutronRoutes(
     };
   };
   app.get("/api/neutron/live", (_req, res) => res.json(liveState()));
+  // The Neutron drawer follows the route being flown and the ship's range from these (R2: was every 4-5 s).
+  ctx.watchTopic("neutron-live", liveState);
+  ctx.watchTopic("neutron-status", () => ({ ...neutronsStatus(), ship: ship() }));
   app.post("/api/neutron/live", (req, res) => {
     const live = opts.neutronLive;
     if (!live) return void res.status(501).json({ error: "Not available in this build." });
@@ -113,6 +116,9 @@ export function registerNeutronRoutes(
     try {
       const route = await planNeutronRoute(index, ordered, {
         rangeLy,
+        // How the range grows as the tank empties: this ship's, also for a range typed in (it scales it).
+        rangeByFuel: s?.rangeByFuel ?? null,
+        halfTank: body.halfTank === true,
         jumpsPerTank,
         jumpsNow: Math.min(jumpsPerTank, Math.max(0, jumpsNow ?? jumpsPerTank)),
         boost,

@@ -27,6 +27,7 @@ import { hudStore } from "./store";
 import { Panel, RELEVANT_HOLD_MS } from "./Panel";
 import type { HudSection } from "./parts";
 import type { HudExoLive, HudSnapshot } from "./types";
+import { HUD_SECTION_KEYS } from "@shared/hudSections";
 import { achievement } from "./sections/achievement";
 import { candidates } from "./sections/candidates";
 import { datavalue } from "./sections/datavalue";
@@ -35,6 +36,9 @@ import { fss } from "./sections/fss";
 import { jump, starKind } from "./sections/jump";
 import { notable } from "./sections/notable";
 import { notices } from "./sections/notices";
+import { colonize } from "./sections/colonize";
+import { ship } from "./sections/ship";
+import { tiltDepthPx } from "./tilt";
 
 export const SECTIONS: Record<string, HudSection> = {
   jump,
@@ -45,17 +49,11 @@ export const SECTIONS: Record<string, HudSection> = {
   achievement,
   notable,
   notices,
+  colonize,
+  ship,
 };
-export const ORDER = [
-  "jump",
-  "fss",
-  "candidates",
-  "distance",
-  "datavalue",
-  "achievement",
-  "notable",
-  "notices",
-];
+// The one list of section names (shared/hudSections.ts), which the server's prefs check and the CLI read too.
+export const ORDER: string[] = [...HUD_SECTION_KEYS];
 export { RELEVANT_HOLD_MS };
 
 type ElectronHud = {
@@ -66,6 +64,14 @@ type ElectronHud = {
 };
 const electron = (): ElectronHud | undefined =>
   (window as unknown as { edexoElectron?: ElectronHud }).edexoElectron;
+
+/** The Elite Style's turn at the same angle on every panel: the depth follows the panel's height (hud/tilt.ts). */
+function trackTiltDepth(shell: HTMLElement | null): void {
+  if (!shell) return;
+  const set = () => document.documentElement.style.setProperty("--hud-tilt-depth", tiltDepthPx(shell.offsetHeight) + "px");
+  set();
+  if (typeof ResizeObserver === "function") new ResizeObserver(set).observe(shell);
+}
 
 /* ============================================================== HUD object ================== */
 HUD.SECTIONS = ORDER.slice();
@@ -163,7 +169,10 @@ function mountPhoneBar(onPick: (next: string[]) => void): (list: string[]) => vo
   fs.className = "phone-chip phone-chip--fs";
   fs.setAttribute("aria-label", "Full screen");
   fs.title = "Full screen (tap again, or the back button, to leave). iPhone: use Add to Home Screen.";
-  fs.textContent = "⛶";
+  // lucide's maximize (owner, 2026-10-28: no emoji), as markup: this chip is built without React.
+  fs.innerHTML =
+    '<svg class="phone-chip__ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
   const canFs = !!(de.requestFullscreen || de.webkitRequestFullscreen);
   if (!canFs) fs.classList.add("phone-chip--dim");
   fs.addEventListener("click", () => {
@@ -388,6 +397,7 @@ HUD.mount = function (names: string[] | null | undefined, opts?: { noTimers?: bo
     /* the snapshot mirror still arrives; no free move outside the app */
   }
   if (single) document.title = SECTIONS[list[0]!]!.title;
+  trackTiltDepth(shell);
 
   /*
     Tell the host window how tall this overlay actually is. The window is transparent, so height it is not using

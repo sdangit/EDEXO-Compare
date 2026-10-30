@@ -5,6 +5,7 @@
  * again, until "Clear read"; the server keeps them, so the phone and this window agree.
  */
 import { useCallback, useEffect, useState } from "react";
+import { NoticeIcon } from "./noticeIcons";
 import { memoOnSnapSlice, type SnapSlice } from "./snapSlice";
 import type { NoticeDTO } from "@shared/notices";
 import { Popover } from "./ui/Popover";
@@ -21,17 +22,6 @@ function ago(iso: string): string {
   if (h < 48) return `${h} h ago`;
   return `${Math.round(h / 24)} days ago`;
 }
-
-const NOTICE_ICON: Record<NoticeDTO["kind"], string> = {
-  notable: "★",
-  record: "🏅",
-  nsp: "✦",
-  poi: "◈",
-  carrier: "▣",
-  codex: "◆",
-  achievement: "🏆",
-  jumponium: "⚗",
-};
 
 async function post(path: string, body: unknown): Promise<boolean> {
   try {
@@ -97,7 +87,7 @@ export const NoticesBell = memoOnSnapSlice(BELL_FIELDS, function NoticesBell({
       const here = n.systemAddress === snap.currentSystemAddress;
       void (async () => {
         await post("/api/ui/view-system", { systemAddress: here ? null : n.systemAddress });
-        if (n.bodyKey) await post("/api/ui/selected-body", { bodyKey: n.bodyKey });
+        if (n.bodyKey) await post("/api/ui/selected-body", { bodyKey: n.bodyKey, focus: true });
       })();
       if (!n.read) setRead([n.id], true);
       setOpen(false);
@@ -108,7 +98,7 @@ export const NoticesBell = memoOnSnapSlice(BELL_FIELDS, function NoticesBell({
   const row = (n: NoticeDTO) => (
     <div key={n.id} className={`exo-data-alert notice notice--${n.kind}${n.read ? " notice--read" : ""}`} role="listitem">
       <span className={`exo-data-alert__icon notice__icon notice__icon--${n.kind}`} aria-hidden>
-        {NOTICE_ICON[n.kind]}
+        <NoticeIcon kind={n.kind} />
       </span>
       <div className="exo-data-alert__text">
         <div className="exo-data-alert__meta">
@@ -127,6 +117,16 @@ export const NoticesBell = memoOnSnapSlice(BELL_FIELDS, function NoticesBell({
             onClick={() => show(n)}
           >
             Show
+          </button>
+        ) : null}
+        {n.kind === "cg" ? (
+          <button
+            type="button"
+            className="exo-data-alert__btn"
+            title={`Copy ${n.system} to paste into the galaxy map`}
+            onClick={() => void navigator.clipboard?.writeText(n.system).catch(() => {})}
+          >
+            Copy system
           </button>
         ) : null}
         <button

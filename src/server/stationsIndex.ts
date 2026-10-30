@@ -386,6 +386,92 @@ export class StationsIndex {
     for (let i = first; i < first + count; i++) if (this.padAt(i) > 0) out.push(this.row(i, bestS, bestD));
     return out;
   }
+
+  /*
+    The systems by name: a hash of each lowercased name, sorted, with its record number beside it (audit 2026-10-22).
+    A Map of 137 k lowercased names held 12 MB for the life of the index; these two arrays hold 1.1 MB, and a
+    look-up checks the few records with its hash against the name itself, lowest record first.
+  */
+  private nameHashes: Uint32Array | null = null;
+  private nameRecords: Uint32Array | null = null;
+
+  private systemNameLower(s: number): string {
+    return this.str(this.buf.readUInt32LE(this.sysAt + s * SYS + 12)).toLowerCase();
+  }
+
+  /**
+   * A system by name, any case (Colonize, 1.3.0: coordinates and station facts before asking EDSM or Spansh): its
+   * record number, or -1; the first record when two share a name. The hashes are built on the first call, one pass
+   * over the system records.
+   */
+  systemIndex(name: string): number {
+    if (!this.nameHashes || !this.nameRecords) {
+      const n = this.systemCount;
+      const hashes = new Uint32Array(n);
+      for (let s = 0; s < n; s++) hashes[s] = nameHash(this.systemNameLower(s));
+      const order = new Uint32Array(n);
+      for (let s = 0; s < n; s++) order[s] = s;
+      // By hash, then by record, so the first record with a name is met first.
+      order.sort((a, b) => hashes[a]! - hashes[b]! || a - b);
+      const sorted = new Uint32Array(n);
+      for (let i = 0; i < n; i++) sorted[i] = hashes[order[i]!]!;
+      this.nameHashes = sorted;
+      this.nameRecords = order;
+    }
+    const want = name.trim().toLowerCase();
+    const h = nameHash(want);
+    const hashes = this.nameHashes;
+    let lo = 0;
+    let hi = hashes.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (hashes[mid]! < h) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < hashes.length && hashes[i] === h; i++) {
+      const s = this.nameRecords[i]!;
+      if (this.systemNameLower(s) === want) return s;
+    }
+    return -1;
+  }
+
+  /** A system's coordinates and name as the dump spells it, by name in any case; null when not in the index. */
+  system(name: string): { name: string; x: number; y: number; z: number } | null {
+    const s = this.systemIndex(name);
+    if (s < 0) return null;
+    const so = this.sysAt + s * SYS;
+    return {
+      name: this.str(this.buf.readUInt32LE(so + 12)),
+      x: this.buf.readFloatLE(so),
+      y: this.buf.readFloatLE(so + 4),
+      z: this.buf.readFloatLE(so + 8),
+    };
+  }
+
+  /** One station by its system's and its own name, any case: type, pad, distance from the arrival star. */
+  station(systemName: string, stationName: string): StationRow | null {
+    const s = this.systemIndex(systemName);
+    if (s < 0) return null;
+    const so = this.sysAt + s * SYS;
+    const first = this.buf.readUInt32LE(so + 16);
+    const count = this.buf.readUInt16LE(so + 20);
+    const want = stationName.trim().toLowerCase();
+    for (let i = first; i < first + count; i++) {
+      const raw = this.str(this.buf.readUInt32LE(this.stAt + i * ST + 16));
+      if (raw.toLowerCase() === want || displayStationName(raw).toLowerCase() === want) return this.row(i, s, 0);
+    }
+    return null;
+  }
+}
+
+/** FNV-1a over the UTF-16 code units: the station index's name look-up ({@link StationsIndex.systemIndex}). */
+function nameHash(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
 }
 
 function userGalaxyDir(): string {
@@ -400,20 +486,22 @@ export function stationsFilePath(projectRoot = getProjectRoot()): string {
 }
 
 let cached: StationsIndex | null = null;
-let cachedFrom = "";
 
+/*
+  Held as read, without looking for the file again (audit 2026-10-22): Colonize asks once per seller row, and that
+  was one or two existence checks on disk each time. A download clears it before the new file goes in, and the
+  map's idle release lets it go, so the next call finds the file again.
+*/
 export function loadStationsIndex(): StationsIndex | null {
+  if (cached) return cached;
   const file = stationsFilePath();
-  if (cached && cachedFrom === file) return cached;
   if (!existsSync(file)) return null;
   cached = new StationsIndex(readFileSync(file));
-  cachedFrom = file;
   return cached;
 }
 
 export function clearStationsIndex(): void {
   cached = null;
-  cachedFrom = "";
 }
 
 export interface StationsStatus {
@@ -466,9 +554,12 @@ export function stationsStatus(): StationsStatus {
   };
 }
 
-/** Ask the release what it holds (a few hundred bytes), at most every ten minutes. Quiet on failure. */
-export async function probeStationsRelease(fetchImpl: typeof fetch = fetch): Promise<void> {
-  if (Date.now() - releaseAskedAt < 600_000) return;
+/**
+ * Ask the release what it holds (a few hundred bytes), at most every ten minutes unless `force` (the auto refresh
+ * asks on its own schedule). Quiet on failure.
+ */
+export async function probeStationsRelease(fetchImpl: typeof fetch = fetch, force = false): Promise<void> {
+  if (!force && Date.now() - releaseAskedAt < 600_000) return;
   releaseAskedAt = Date.now();
   try {
     const r = await fetchImpl(`${GALAXY_INDEX_BASE_URL}/${STATIONS_META_REMOTE}`, {
@@ -482,6 +573,12 @@ export async function probeStationsRelease(fetchImpl: typeof fetch = fetch): Pro
   } catch {
     /* the button shows no size */
   }
+}
+
+/** The release holds other data than the file here (another dump, or another count): a download would bring it. */
+export function stationsReleaseIsNewer(s: StationsStatus = stationsStatus()): boolean {
+  if (!s.present || !s.release) return false;
+  return (s.release.dump != null && s.release.dump !== s.dump) || s.release.stations !== s.stations;
 }
 
 /** Download and unpack the index beside the settings; a `.part` until whole, so a cut download is never read. */

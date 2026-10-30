@@ -9,6 +9,12 @@
  * and addresses are shown as text, never as markup, so nothing from a page reaches the app's own page.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { Lock, Shield, TriangleAlert } from "lucide-react";
+import { IconKey } from "./ui/icons";
+import { UnlockLoginsChip } from "./BrowserMasterPassword";
+import { BrowserPrivacyPanel } from "./BrowserPrivacyPanel";
+import { onBrowserUrlRequest, takePendingBrowserUrl } from "./tabs/browserOpen";
+import type { InaraPageRead } from "./colonize/inaraBrowser";
 import "./styles/browser.css";
 
 interface BrowserTab {
@@ -25,8 +31,14 @@ interface BrowserTab {
   secure: boolean;
   startPage: boolean;
   error: { code: number; text: string; url: string; httpFallback: string | null } | null;
+  /** A login was just used on this page: save it? Origin and username only, never the password. */
+  passwordPrompt: { origin: string; username: string; update: boolean } | null;
+  /** Usernames saved for this page's exact origin, while it shows a password field (the key button). */
+  logins: string[];
+  /** Logins saved for this origin that the master password still locks (1.2.19). */
+  loginsLocked: number;
 }
-interface BrowserState {
+export interface BrowserState {
   tabs: BrowserTab[];
   active: number | null;
   blocker: {
@@ -44,14 +56,27 @@ interface BrowserState {
   engines: { key: string; label: string }[];
   engine: string;
   customSearch: string | null;
+  keepCache: boolean;
+  rememberPasswords: boolean;
+  passwords: {
+    available: boolean;
+    reason: string | null;
+    saved: { origin: string; username: string }[];
+    /** Saved logins, readable or locked; master password state (1.2.19). */
+    savedCount: number;
+    master: { set: boolean; unlocked: boolean };
+    never: string[];
+  };
 }
+export type WithState = { ok?: boolean; error?: string; state: BrowserState };
 type Rect = { x: number; y: number; width: number; height: number };
-interface BrowserBridge {
+export interface BrowserBridge {
   start(): Promise<BrowserState>;
   stop(): Promise<unknown>;
   state(): Promise<BrowserState>;
   downloadLists(): Promise<BrowserState>;
   bounds(rect: Rect | null): Promise<unknown>;
+  snapshot(): Promise<{ dataUrl: string | null }>;
   open(text?: string): Promise<{ id?: number; error?: string }>;
   close(id: number): Promise<unknown>;
   select(id: number): Promise<unknown>;
@@ -69,7 +94,27 @@ interface BrowserBridge {
   addLink(name: string, url: string): Promise<{ ok: boolean; state: BrowserState }>;
   removeLink(url: string): Promise<{ ok: boolean; state: BrowserState }>;
   setEngine(key: string, custom?: string): Promise<{ ok: boolean; state: BrowserState }>;
-  on(cb: (m: { type: "state"; state: BrowserState } | { type: "event"; event: string }) => void): () => void;
+  setKeepCache(on: boolean): Promise<WithState>;
+  setRememberPasswords(on: boolean): Promise<WithState>;
+  passwordAnswer(id: number, answer: "save" | "never" | "later"): Promise<WithState>;
+  passwordFill(id: number, username?: string): Promise<{ ok?: boolean; error?: string }>;
+  passwordDelete(origin: string, username: string): Promise<WithState>;
+  passwordDeleteAll(): Promise<WithState>;
+  passwordNeverRemove(origin: string): Promise<WithState>;
+  masterUnlock(password: string): Promise<WithState>;
+  masterLock(): Promise<WithState>;
+  masterSet(password: string, current?: string): Promise<WithState>;
+  masterRemove(current: string): Promise<WithState>;
+  /** Colonize's Inara links: the commodity search in a tab whose page offers "EDEXO — Read" (1.3.0, C5). */
+  openInara?(url: string): Promise<{ id?: number; error?: string }>;
+  inaraResult?(id: number, ok: boolean, text: string): Promise<unknown>;
+  on(
+    cb: (
+      m:
+        | { type: "state"; state: BrowserState }
+        | { type: "event"; event: string; data?: { id: number; read: InaraPageRead } },
+    ) => void,
+  ): () => void;
 }
 
 const bridge = (): BrowserBridge | null =>
@@ -87,11 +132,24 @@ export function BrowserScreen() {
   const [address, setAddress] = useState("");
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // The ⋯ menu shows its main list or the Privacy & Security view (owner, 2026-10-17).
+  const [menuView, setMenuView] = useState<"main" | "privacy">("main");
   const [linkName, setLinkName] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
-  const [customSearch, setCustomSearch] = useState("");
+  // null until typed in: the box shows the saved address, and Use sends what the box shows.
+  const [customSearch, setCustomSearch] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [keyMenu, setKeyMenu] = useState(false);
+  const [pwNote, setPwNote] = useState<string | null>(null);
+  // The other app's window took the browser (Compare and Colonize can both have a Browser tab).
+  const [elsewhere, setElsewhere] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  /*
+    While a menu covers the page: a still of it in its place (owner, 2026-10-17: the page vanished behind every menu).
+    `still` is shown; the ref holds it for place(), "" while one is being taken, "none" when there is no picture.
+  */
+  const [still, setStill] = useState<string | null>(null);
+  const stillRef = useRef<string | null>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const sentRef = useRef<string>("");
@@ -99,11 +157,44 @@ export function BrowserScreen() {
   const tab = st?.tabs.find((t) => t.id === st.active) ?? null;
   const pageShown = !!tab && !tab.startPage && !tab.error;
 
+  /*
+    An address another screen asked for (Colonize's Inara links, tabs/browserOpen.ts): opened in a new page once
+    the browser is ready, so a first run still waiting for its blocklists opens it when they are in.
+  */
+  const ready = !!st?.blocker.ready;
+  const readyRef = useRef(false);
+  readyRef.current = ready;
+  const openPending = useCallback(() => {
+    if (!api || !readyRef.current) return;
+    const url = takePendingBrowserUrl();
+    if (url) void (api.openInara ? api.openInara(url) : api.open(url)).catch(() => {});
+  }, [api]);
+  useEffect(() => {
+    if (ready) openPending();
+  }, [ready, openPending]);
+  useEffect(() => onBrowserUrlRequest(openPending), [openPending]);
+
+
   useEffect(() => {
     if (!api) return;
     const off = api.on((m) => {
       if (m.type === "state") setSt(m.state);
       else if (m.event === "focusAddress") addressRef.current?.focus();
+      else if (m.event === "elsewhere") setElsewhere(true);
+      // The window that had the pages let them go: this one, still showing its Browser tab, takes them back.
+      else if (m.event === "free") bringHereRef.current();
+      else if (m.event === "inaraRead" && m.data) {
+        // An Inara pop-up's "EDEXO — Read": the sellers saved, and the answer in the pop-up and on the note bar.
+        // The reader is Colonize code, loaded on the first Read only (audit 2026-10-22), not with the Browser tab.
+        const { id, read } = m.data;
+        void import("./colonize/inaraBrowser")
+          .then((ib) => ib.importInaraRead(read))
+          .catch((e: unknown) => ({ ok: false, text: e instanceof Error ? e.message : String(e) }))
+          .then((r) => {
+            setPwNote(r.text);
+            void api.inaraResult?.(id, r.ok, r.text);
+          });
+      }
     });
     sentRef.current = "";
     void api
@@ -146,8 +237,8 @@ export function BrowserScreen() {
           q.top < r.bottom
         );
       });
-    const rect =
-      pageShown && visible && !covered
+    const box =
+      pageShown && visible
         ? {
             x: Math.round(r.left),
             y: Math.round(r.top),
@@ -155,12 +246,48 @@ export function BrowserScreen() {
             height: Math.round(r.height),
           }
         : null;
+    if (box && covered && stillRef.current == null) {
+      // A menu just opened over the page: the page stays until its picture is ready, then the picture takes its place.
+      stillRef.current = "";
+      void api
+        .snapshot()
+        .catch(() => ({ dataUrl: null }))
+        .then((s) => {
+          if (stillRef.current !== "") return;
+          stillRef.current = s.dataUrl ?? "none";
+          setStill(s.dataUrl);
+          place();
+        });
+      return;
+    }
+    if (box && covered && stillRef.current === "") return;
+    const rect = box && !covered ? box : null;
     // The app's page changes many times a second in flight: only a different box goes to the main process.
     const key = JSON.stringify(rect);
-    if (key === sentRef.current) return;
-    sentRef.current = key;
-    void api.bounds(rect);
+    if (key !== sentRef.current) {
+      sentRef.current = key;
+      void api.bounds(rect);
+    }
+    // The menu closed (or the page went): the live page is back, the picture goes.
+    if (!covered && stillRef.current != null) {
+      stillRef.current = null;
+      setStill(null);
+    }
   }, [api, pageShown]);
+
+  /** "Bring it here", and the same when the other window lets the pages go (a "free" event) while this one waits. */
+  const elsewhereRef = useRef(elsewhere);
+  elsewhereRef.current = elsewhere;
+  const bringHereRef = useRef(() => {});
+  bringHereRef.current = () => {
+    if (!api || !elsewhereRef.current) return;
+    void api.start().then((s) => {
+      setSt(s);
+      setElsewhere(false);
+      sentRef.current = "";
+      place();
+    });
+  };
   useLayoutEffect(() => {
     place();
     const el = boxRef.current;
@@ -188,7 +315,7 @@ export function BrowserScreen() {
       document.removeEventListener("visibilitychange", place);
     };
     // Once more when the toolbar replaces the blocklists' gate: the box exists from then on.
-  }, [place, menuOpen, st?.blocker.ready]);
+  }, [place, menuOpen, keyMenu, st?.blocker.ready]);
 
   // Ctrl+T / Ctrl+W / Ctrl+L on the toolbar: this browser's tabs, not the app's (TabHost closes app tabs on Ctrl+W).
   useEffect(() => {
@@ -206,6 +333,20 @@ export function BrowserScreen() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [api, st]);
+
+  // Escape closes the ⋯ menu and the key button's list, like any menu (owner, 2026-10-18).
+  useEffect(() => {
+    if (!menuOpen && !keyMenu) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      setMenuOpen(false);
+      setKeyMenu(false);
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [menuOpen, keyMenu]);
 
   if (!api)
     return (
@@ -277,6 +418,19 @@ export function BrowserScreen() {
     if (text && st.active != null) void api.go(st.active, text);
   };
   const lastDownload = st.downloads[0];
+  const prompt = tab?.passwordPrompt ?? null;
+  const fill = (username?: string) => {
+    setKeyMenu(false);
+    if (!tab) return;
+    void api.passwordFill(tab.id, username).then((r) => setPwNote(r.error ?? null));
+  };
+  const answer = (a: "save" | "never" | "later") => {
+    if (!tab) return;
+    void api.passwordAnswer(tab.id, a).then((r) => {
+      setSt(r.state);
+      setPwNote(r.error ?? null);
+    });
+  };
 
   return (
     <div className="ebr">
@@ -317,7 +471,8 @@ export function BrowserScreen() {
           +
         </button>
       </div>
-      <form className="ebr-bar" onSubmit={go}>
+      {/* Only the address is a form (1.2.19): a toolbar-wide form made Enter anywhere in its menus navigate. */}
+      <div className="ebr-bar">
         <button
           type="button"
           aria-label="Back"
@@ -350,28 +505,36 @@ export function BrowserScreen() {
           title={tab && !tab.startPage ? (tab.secure ? "HTTPS" : "Not encrypted (plain HTTP)") : ""}
           aria-hidden="true"
         >
-          {tab && !tab.startPage ? (tab.secure ? "🔒" : "⚠") : ""}
+          {tab && !tab.startPage ? (
+            tab.secure ? (
+              <Lock className="ebr-ico" />
+            ) : (
+              <TriangleAlert className="ebr-ico" />
+            )
+          ) : null}
         </span>
-        <input
-          ref={addressRef}
-          className="ebr-address"
-          value={address}
-          spellCheck={false}
-          placeholder="Search or type an address"
-          aria-label="Address"
-          onFocus={(e) => {
-            setEditing(true);
-            e.currentTarget.select();
-          }}
-          onBlur={() => setEditing(false)}
-          onChange={(e) => setAddress(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              setEditing(false);
-              e.currentTarget.blur();
-            }
-          }}
-        />
+        <form className="ebr-address-form" onSubmit={go}>
+          <input
+            ref={addressRef}
+            className="ebr-address"
+            value={address}
+            spellCheck={false}
+            placeholder="Search or type an address"
+            aria-label="Address"
+            onFocus={(e) => {
+              setEditing(true);
+              e.currentTarget.select();
+            }}
+            onBlur={() => setEditing(false)}
+            onChange={(e) => setAddress(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setEditing(false);
+                e.currentTarget.blur();
+              }
+            }}
+          />
+        </form>
         {tab && tab.domain && !tab.startPage ? (
           <>
             <button
@@ -384,7 +547,7 @@ export function BrowserScreen() {
               }
               onClick={() => void api.siteBlocking(tab.id, !tab.blocking)}
             >
-              🛡 {tab.blocking ? tab.blocked : "off"}
+              <Shield className="ebr-ico" aria-hidden="true" /> {tab.blocking ? tab.blocked : "off"}
             </button>
             <button
               type="button"
@@ -400,82 +563,178 @@ export function BrowserScreen() {
             </button>
           </>
         ) : null}
+        {tab && !tab.startPage && tab.logins.length ? (
+          <div className="ebr-more">
+            <button
+              type="button"
+              className="ebr-chip is-on"
+              aria-label="Fill a saved password"
+              aria-expanded={tab.logins.length > 1 ? keyMenu : undefined}
+              title={
+                tab.logins.length > 1
+                  ? "Fill a saved password"
+                  : `Fill the saved password${tab.logins[0] ? ` for ${tab.logins[0]}` : ""}`
+              }
+              onClick={() => (tab.logins.length > 1 ? setKeyMenu(!keyMenu) : fill(tab.logins[0]))}
+            >
+              {/* A word beside the key (owner, 2026-10-16: the bare icon went unnoticed). */}
+              <IconKey className="ebr-key-icon" /> {tab.logins.length > 1 ? "Logins ▾" : "Fill login"}
+            </button>
+            {keyMenu && tab.logins.length > 1 ? (
+              <div className="ebr-menu" role="menu" onMouseLeave={() => setKeyMenu(false)}>
+                {tab.logins.map((u) => (
+                  <button key={u} type="button" role="menuitem" onClick={() => fill(u)}>
+                    {u || "(no username)"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {tab && !tab.startPage && !tab.logins.length && tab.loginsLocked > 0 ? (
+          <UnlockLoginsChip
+            count={tab.loginsLocked}
+            unlock={(password) =>
+              api.masterUnlock(password).then((r) => {
+                setSt(r.state);
+                return r;
+              })
+            }
+          />
+        ) : null}
         <div className="ebr-more">
           <button
             type="button"
             aria-label="More"
             aria-expanded={menuOpen}
-            onClick={() => setMenuOpen(!menuOpen)}
+            onClick={() => {
+              setMenuView("main");
+              setMenuOpen(!menuOpen);
+            }}
           >
             ⋯
           </button>
           {menuOpen ? (
-            <div className="ebr-menu" role="menu" onMouseLeave={() => setMenuOpen(false)}>
-              {tab?.domain && !tab.startPage ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void api.forgetSite(tab.id);
-                  }}
-                >
-                  Forget {tab.domain} (its cookies, storage and settings)
-                </button>
-              ) : null}
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setMenuOpen(false);
-                  void api.clearAll();
-                }}
-              >
-                Clear everything now (every site, remembered ones too)
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={b.busy != null}
-                onClick={() => {
-                  setMenuOpen(false);
-                  void api.downloadLists().then(setSt);
-                }}
-              >
-                Update the blocklists{b.fetchedAt ? ` (from ${b.fetchedAt.slice(0, 10)})` : ""}
-              </button>
-              <div className="ebr-menu__sub">Search with</div>
-              {st.engines.map((e) => (
-                <button
-                  key={e.key}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={st.engine === e.key}
-                  onClick={() => void api.setEngine(e.key).then((r) => setSt(r.state))}
-                >
-                  {st.engine === e.key ? "● " : "○ "}
-                  {e.label}
-                </button>
-              ))}
-              <div className="ebr-menu__custom">
-                <input
-                  value={customSearch || st.customSearch || ""}
-                  onChange={(e) => setCustomSearch(e.target.value)}
-                  placeholder="Custom: https://…?q=%s"
-                  aria-label="Custom search address, %s for the words"
-                />
-                <button
-                  type="button"
-                  onClick={() => void api.setEngine("custom", customSearch).then((r) => setSt(r.state))}
-                >
-                  {st.engine === "custom" ? "● Use" : "Use"}
-                </button>
-              </div>
+            <div
+              className="ebr-menu"
+              role="menu"
+              onMouseLeave={() => {
+                if (menuView === "main") setMenuOpen(false);
+              }}
+            >
+              {menuView === "privacy" ? (
+                <BrowserPrivacyPanel st={st} api={api} setSt={setSt} onBack={() => setMenuView("main")} />
+              ) : (
+                <>
+                  {tab?.domain && !tab.startPage ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void api.forgetSite(tab.id);
+                      }}
+                    >
+                      Forget {tab.domain} (its cookies, storage and settings)
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void api.clearAll();
+                    }}
+                  >
+                    Clear everything now (every site, remembered ones too)
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={b.busy != null}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void api.downloadLists().then(setSt);
+                    }}
+                  >
+                    Update the blocklists{b.fetchedAt ? ` (from ${b.fetchedAt.slice(0, 10)})` : ""}
+                  </button>
+                  <div className="ebr-menu__sub">Search with</div>
+                  {st.engines.map((e) => (
+                    <button
+                      key={e.key}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={st.engine === e.key}
+                      onClick={() => void api.setEngine(e.key).then((r) => setSt(r.state))}
+                    >
+                      {st.engine === e.key ? "● " : "○ "}
+                      {e.label}
+                    </button>
+                  ))}
+                  <form
+                    className="ebr-menu__custom"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void api.setEngine("custom", customSearch ?? st.customSearch ?? "").then((r) => setSt(r.state));
+                    }}
+                  >
+                    <input
+                      value={customSearch ?? st.customSearch ?? ""}
+                      onChange={(e) => setCustomSearch(e.target.value)}
+                      placeholder="Custom: https://…?q=%s"
+                      aria-label="Custom search address, %s for the words"
+                    />
+                    <button type="submit">{st.engine === "custom" ? "● Use" : "Use"}</button>
+                  </form>
+                  <button type="button" role="menuitem" onClick={() => setMenuView("privacy")}>
+                    Privacy &amp; Security ›
+                  </button>
+                </>
+              )}
             </div>
           ) : null}
         </div>
-      </form>
+      </div>
+      {prompt ? (
+        <div className="ebr-pwbar" role="status">
+          <span>
+            {prompt.update ? "Update" : "Save"} the password for {prompt.origin}?
+            {prompt.username ? <span className="dim"> ({prompt.username})</span> : null}
+          </span>
+          <button type="button" className="is-main" onClick={() => answer("save")}>
+            {prompt.update ? "Update" : "Save"}
+          </button>
+          <button type="button" onClick={() => answer("never")}>
+            Never for this site
+          </button>
+          <button type="button" onClick={() => answer("later")}>
+            Not now
+          </button>
+        </div>
+      ) : pwNote ? (
+        <div className="ebr-pwbar" role="status">
+          <span>{pwNote}</span>
+          <button type="button" onClick={() => setPwNote(null)}>
+            OK
+          </button>
+        </div>
+      ) : null}
       <div className="ebr-box" ref={boxRef}>
+        {elsewhere ? (
+          <div className="ebr-page ebr-page--elsewhere">
+            <h2>The browser is open in the other EDEXO window</h2>
+            <p className="dim">One browser serves Compare and Colonize; its pages show in one window at a time.</p>
+            <button
+              type="button"
+              className="btn-confirm-go"
+              onClick={() => bringHereRef.current()}
+            >
+              Bring it here
+            </button>
+          </div>
+        ) : null}
+        {still ? <img className="ebr-still" src={still} alt="" aria-hidden="true" /> : null}
         {tab?.error ? (
           <div className="ebr-page ebr-page--error">
             <h2>This page could not be loaded</h2>

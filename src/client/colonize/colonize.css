@@ -1,0 +1,645 @@
+/*
+ * Colonize (1.3.0) on Compare's parts (C4, owner 2026-10-22: "the same quality and feel"). The panels are Compare's
+ * fold panels, the buttons and tabs Compare's, the number boxes Compare's fact tiles (views/ui.tsx); this file holds
+ * Colonize's layout and the few pieces Compare has no part for, drawn in Compare's language: square, chamfered,
+ * uppercase labels, hairline rules. Cockpit rule: orange = normal, blue (--ok) = done / information, yellow (--warn) =
+ * caution, red (--danger) = warning.
+ */
+.cz {
+  color: var(--text);
+}
+.cz :focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.cz a:not([class]) {
+  color: var(--accent-bright);
+  text-underline-offset: 3px;
+}
+.cz a:not([class]):hover {
+  color: var(--text);
+}
+.cz-dim {
+  color: var(--text-faint);
+}
+.cz-soft {
+  color: var(--text-dim);
+}
+.cz-hi {
+  color: var(--accent-bright);
+}
+/* A material delivered in full: last in its list, green (owner, 2026-10-22; Compare's --live). */
+.cz-mat--done,
+.cz-mat--done .cz-num {
+  color: var(--live, #7be07b);
+}
+.cz-ok {
+  color: var(--ok);
+}
+.cz-warn {
+  color: var(--warn);
+}
+.cz-own {
+  color: var(--accent-bright);
+}
+.cz-small {
+  font-size: var(--fs-sm);
+}
+.cz-num {
+  font-variant-numeric: tabular-nums;
+}
+.cz-strong {
+  font-weight: 700;
+}
+.cz-big {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  line-height: 1.2;
+}
+/* Compare's label: small, uppercase, spaced. */
+.cz-label {
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.cz-lead {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+/*
+  A panel head with a one-note aside could not wrap (fold.css keeps the title on one line, and Compare's narrow-head
+  wrap needs two aside children): at phone width "NEXT TRIP · 1 OF 80" plus its note pushed the page sideways. The
+  note now drops under the title only when the two do not fit side by side, so a desktop column keeps one line
+  (audit 2026-10-22). Every .fold is an inline-size container (bridge.css).
+*/
+.fold-head:has(.cz-aside-note) {
+  flex-wrap: wrap;
+  row-gap: 0.3rem;
+}
+.fold-head:has(.cz-aside-note) .fold-aside {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+@container (max-width: 24rem) {
+  .fold-head .cz-aside-note {
+    white-space: normal;
+  }
+}
+.cz-aside-note {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ---- the tray (HeaderBar trayContent) and the sub-tabs ------------------------------------------------------- */
+.cz.cz--in-shell {
+  display: block;
+}
+.cz.cz-tray {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  padding: 0.5rem 0 0.15rem;
+}
+.cz-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+/* Compare's tray cards (DATA VALUE, D-SCAN): a framed box, the label in orange caps, the value bold. */
+.cz-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.6rem;
+  padding: 0 0.85rem;
+  font: inherit;
+  color: var(--text);
+  background: rgba(var(--shade-glass-rgb), 0.85);
+  border: 1px solid var(--accent-dim);
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+  white-space: nowrap;
+}
+button.cz-chip {
+  cursor: pointer;
+}
+button.cz-chip:hover {
+  border-color: var(--accent);
+}
+.cz-chip__k {
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.cz-chip__v {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+}
+.cz-chip__s {
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+.cz-chip--info {
+  border-color: rgba(79, 208, 255, 0.55);
+  background: rgba(79, 208, 255, 0.06);
+}
+.cz-chip--info .cz-chip__k {
+  color: var(--ok);
+}
+.cz-chip--off {
+  border-color: rgba(var(--peach-rgb), 0.2);
+}
+.cz-chip--off .cz-chip__k,
+.cz-chip--off .cz-chip__v {
+  color: var(--text-faint);
+}
+.cz-chip .cz-input {
+  width: 5.5rem;
+}
+.cz-head__right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.cz-tabs,
+.cz-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.cz-tabs {
+  margin: 0.9rem 0 0.75rem;
+}
+/* Compare's tab chips: framed when off, the orange fill when on. */
+.cz-tabs .tab,
+.cz-kinds .tab {
+  margin: 0;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 1rem;
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: rgba(var(--shade-glass-rgb), 0.85);
+  border: 1px solid var(--accent-dim);
+}
+.cz-tabs .tab.on,
+.cz-kinds .tab.on {
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent) 60%, var(--accent-deep));
+  color: var(--ink, #07060a);
+  border-color: var(--accent-bright);
+}
+.cz-tabs .tab:not(.on):hover,
+.cz-kinds .tab:not(.on):hover {
+  border-color: var(--accent);
+  color: var(--accent-bright);
+}
+.cz-tab__count {
+  padding: 0 0.35rem;
+  border: 1px solid currentColor;
+  font-size: var(--fs-2xs);
+}
+
+/* ---- layout --------------------------------------------------------------------------------------------------- */
+.cz-main {
+  box-sizing: border-box;
+}
+.cz-main--note {
+  margin-bottom: 0.75rem;
+}
+.cz-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-start;
+}
+/*
+  The Plan tab: sites on the left on a wide window; once the two columns wrap (half a screen beside the game), the plan
+  goes on top and the sites under it, as on the phone view (audit 2026-10-22). wrap-reverse stacks the second line
+  above the first; with it the cross axis starts at the bottom, so flex-end keeps the columns' tops aligned.
+*/
+.cz-cols--plan {
+  flex-wrap: wrap-reverse;
+  align-items: flex-end;
+}
+.cz-side {
+  flex: 1 1 320px;
+  max-width: 26rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+.cz-side--wide {
+  max-width: 28rem;
+}
+.cz-wide {
+  flex: 999 1 560px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.cz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.cz-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.cz-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.cz-pad {
+  margin: 0;
+  padding: 0.85rem 1rem;
+}
+
+/* ---- panels: Compare's fold panel (views/ui.tsx Panel) ---------------------------------------------------------- */
+.cz .cz-panel {
+  margin: 0;
+}
+.cz .cz-panel--hot {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(var(--shade-rgb), 0.55), var(--panel) 45%);
+}
+.cz .cz-panel--info {
+  border-color: rgba(79, 208, 255, 0.6);
+  background: linear-gradient(180deg, rgba(79, 208, 255, 0.07), var(--panel) 45%);
+}
+.cz .cz-panel--info .fold-title {
+  color: var(--ok);
+  text-shadow: 0 0 8px rgba(79, 208, 255, 0.3);
+}
+.cz .cz-panel--info .fold-chevron {
+  border-color: var(--ok);
+}
+.cz .cz-panel--flush > .fold-body > .fold-inner {
+  padding: 0;
+}
+.cz .cz-panel--quiet .fold-title {
+  color: var(--text-faint);
+  text-shadow: none;
+}
+.cz-fact--hot {
+  color: var(--accent-bright);
+  border-color: var(--accent-dim);
+}
+
+/* ---- notes: Compare's banners, square ------------------------------------------------------------------------- */
+.cz-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 0;
+  padding: 0.7rem 1rem;
+  border: 1px solid;
+}
+.cz-note--warn {
+  background: rgba(255, 210, 63, 0.06);
+  border-color: rgba(255, 210, 63, 0.55);
+  color: var(--warn-soft);
+}
+.cz-note--bad {
+  background: rgba(255, 90, 60, 0.08);
+  border-color: rgba(255, 90, 60, 0.55);
+  color: var(--danger-faint);
+}
+.cz-note--info {
+  background: rgba(79, 208, 255, 0.06);
+  border-color: rgba(79, 208, 255, 0.5);
+  color: var(--ok-soft);
+}
+.cz-note__text {
+  flex: 1 1 300px;
+}
+.cz-note__tag {
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--warn);
+}
+
+/* ---- controls: Compare's buttons (btn-top-neutral, btn-confirm-go, btn-top-toggle) plus two tones ------------- */
+.cz .btn-top-neutral,
+.cz .btn-confirm-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-decoration: none;
+}
+.cz .btn-top-neutral:disabled,
+.cz .btn-confirm-go:disabled,
+.cz .btn-top-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+  filter: none;
+}
+.cz .cz-btn--warn {
+  color: var(--warn-soft);
+  border-color: rgba(255, 210, 63, 0.6);
+  box-shadow: none;
+}
+.cz .cz-btn--bad {
+  color: var(--danger-soft);
+  border-color: rgba(255, 90, 60, 0.6);
+  box-shadow: none;
+}
+/* The small text action, like Compare's "Copy" beside a panel title. */
+.cz-link {
+  padding: 0.2rem 0.3rem;
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.cz-link:hover {
+  color: var(--accent-bright);
+}
+.cz-link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* On / off like Compare's candidate toggles: off is the outline; on is filled with a lit dot. */
+.cz .btn-top-toggle--on {
+  background: var(--accent-a22);
+  color: var(--accent-bright);
+  border-color: var(--accent);
+}
+.cz .btn-top-toggle--on::before {
+  content: "\25CF\00A0";
+  color: var(--accent-bright);
+}
+.cz-x {
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  justify-content: center;
+}
+.cz-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+}
+.cz-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.cz-input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent-dim);
+  padding: 0.35rem 0.6rem;
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+}
+.cz-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 12px var(--accent-a12);
+}
+.cz-input--big {
+  flex: 1;
+  padding: 0.55rem 0.8rem;
+  font-size: var(--fs-lg);
+  border-color: var(--accent);
+}
+
+/* ---- sites ---------------------------------------------------------------------------------------------------- */
+
+.cz-site__name {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+}
+.cz-bar {
+  height: 6px;
+  background: var(--accent-a12);
+}
+.cz-bar__fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent-bright));
+}
+.cz-bar__fill--done {
+  background: var(--ok);
+}
+.cz-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.cz-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.cz-li {
+  padding: 0.3rem 0.5rem;
+}
+.cz-li--hot {
+  background: linear-gradient(90deg, rgba(var(--shade-row-rgb), 0.95), rgba(var(--shade-row-2-rgb), 0.35));
+}
+/* A fold inside a panel: Compare's chevron and an uppercase label, no frame of its own. */
+.cz-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  border-top: 1px solid var(--accent-a15);
+  cursor: pointer;
+  list-style: none;
+}
+.cz-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.cz-fold > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--accent);
+  border-bottom: 1.5px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform var(--fold-ms, 260ms) var(--fold-ease, ease);
+}
+.cz-fold[open] > summary::before {
+  transform: rotate(45deg);
+}
+.cz-fold[open] > summary {
+  margin-bottom: 0.5rem;
+}
+
+/* ---- cards inside a panel (carriers, trade party, wing) ------------------------------------------------------ */
+.cz-card {
+  padding: 0.7rem 0.85rem;
+  background: rgba(var(--shade-glass-rgb), 0.75);
+  border: 1px solid rgba(var(--peach-rgb), 0.18);
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+.cz-card--on {
+  border-color: rgba(79, 208, 255, 0.55);
+  background: rgba(79, 208, 255, 0.05);
+}
+.cz-member {
+  margin: 0;
+  border-left-width: 3px;
+}
+.cz-member form .ui-select {
+  width: auto;
+  min-width: 12rem;
+}
+/* Forget saved sellers: the words take the row, the button keeps to the right. */
+.cz-panel--quiet .cz-row > span:first-child {
+  flex: 1 1 12rem;
+}
+
+/* ---- tables --------------------------------------------------------------------------------------------------- */
+
+/* ---- the next trip and the trips after it --------------------------------------------------------------------- */
+
+.cz-trip__to {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ---- the phone and streamer views (PhoneView.tsx): Compare's app bar, cut down ------------------------------- */
+/* Compare's wordmark, kept at every width (Compare's own drops it under 1000 px for the search). */
+.cz-mark {
+  font-size: var(--fs-md);
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  color: var(--accent-bright);
+  text-shadow: 0 0 10px var(--accent-glow);
+  white-space: nowrap;
+}
+.cz-mark b {
+  margin-left: 0.35em;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-shadow: none;
+}
+.cz--phone .cz-head,
+.cz--stream .cz-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--accent-dim);
+  background: linear-gradient(180deg, rgba(var(--shade-rgb), 0.5), rgba(var(--tint-14-11-10), 0.92) 70%);
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+}
+.cz--phone .cz-main,
+.cz--stream .cz-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.cz--phone .cz-side,
+.cz--stream .cz-side {
+  max-width: none;
+}
+@media (max-width: 640px) {
+  .cz--phone.app-shell {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+  .cz-chip {
+    min-height: 2.3rem;
+  }
+}
+
+/* The streamer view (`&view=stream`): nothing to click, the backdrop optional, two columns when wide. */
+html[data-streamer] .cz {
+  pointer-events: none;
+  user-select: none;
+}
+html[data-streamer-bg="transparent"] .cz,
+html[data-streamer-bg="transparent"] .cz-head {
+  background: transparent;
+}
+@media (min-width: 1100px) {
+  .cz--stream .cz-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr);
+    align-items: start;
+  }
+  .cz--stream .cz-main > .cz-side {
+    grid-column: 2;
+    grid-row: 1 / span 4;
+  }
+}
+
+/* useFlip wrapper (Trips): no box of its own. */
+.cz-flip {
+  display: contents;
+}
+
+/* A site's own plan rules (SiteRules.tsx, discuss item 1): one wrapping row in the site's details. */
+.cz-site-rules {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.cz-site-rules > .cz-label {
+  flex-basis: 100%;
+}
+/* Follow on the HUD (discuss item 9): small, under the site's name. */
+.cz-follow {
+  margin-top: 6px;
+  font-size: 0.7rem;
+}
+/* The Haul plan's line naming the sites whose own rules tightened it. */
+.cz-filters__note {
+  flex-basis: 100%;
+  margin: 0;
+}
+.cz-site-rules .cz-field {
+  white-space: nowrap;
+}

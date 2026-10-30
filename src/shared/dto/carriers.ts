@@ -16,10 +16,14 @@ export interface CarrierRowDTO {
   region: string;
   /** Null when the app has not seen the commander jump yet, which is a real state on a cold start. */
   distanceLy: number | null;
+  /** Where it was seen, for the galaxy map's fly-to; null for a DSSA carrier the big file lacks. */
+  x?: number | null;
+  y?: number | null;
+  z?: number | null;
   lastSeenDays: number | null;
   dwellDays: number | null;
-  /** Raw EDAstro service keys; `carrierServices.ts` turns them into names. */
-  services: string[];
+  /** Raw EDAstro service keys; `carrierServices.ts` turns them into names. Shared between rows on the server. */
+  services: readonly string[];
   /**
    * Set when this carrier is part of the Deep Space Support Array — 101 curated, deliberately parked
    * service carriers. Null for the other ~90,000, which is almost all of them.

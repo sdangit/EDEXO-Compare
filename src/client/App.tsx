@@ -6,8 +6,8 @@ import { isBool, usePersistedState } from "./usePersistedState";
 import { NOTABLE_QUICK_EVENT } from "./HeaderBar";
 import { UI_COMMAND_EVENT, useLiveSnapshot } from "./useLiveSnapshot";
 import { useToast } from "./ui/feedback";
-import { arrivalTripRanks } from "@shared/systemTriage";
-import { useCallback, lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { arrivalTripRanks, type ArrivalTrip } from "@shared/systemTriage";
+import { useCallback, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { JournalBootScreen } from "./JournalBootScreen";
 import type { EncyclopediaSpawnCompare } from "./EncyclopediaModal";
 import { EliteTipRotator } from "./EliteTipRotator";
@@ -29,6 +29,8 @@ import { CopySystemButton } from "./CopySystemButton";
 import { LifelessEmblem } from "./LifelessEmblem";
 import { setSnapshotStamp } from "./panelSnapshot";
 import { ModalLoading } from "./SharedModals";
+import { AppLegalFooter } from "./AppLegalFooter";
+import { STREAMER_MODE } from "./streamerMode";
 
 /*
  * React first, above the `lazy()` calls below.
@@ -164,40 +166,6 @@ function BioEmptyState({ snap }: { snap: AppSnapshot }) {
     </div>
   );
 }
-
-/** Memo: static, and the app shell re-renders on every push. */
-const AppLegalFooter = memo(function AppLegalFooter() {
-  /*
-    The privacy policy and terms ship with the app (public/legal/) and are served by its own server
-    (owner, 2026-09-29): they were on edexo.bahuckel.com, served from this PC, and went dead (530) with
-    it. Same-origin links work offline, over the LAN and on a phone, and always match this version.
-  */
-  return (
-    <footer className="app-legal-footer">
-      <p className="app-legal-footer-note dim">
-        ED Exo Compare is owned and operated by Bahuckel™. Independent fan software using local Elite
-        Dangerous journal data — not affiliated with Frontier Developments. <em>Elite Dangerous</em> and
-        related marks belong to Frontier; all rights reserved by their owners.
-      </p>
-      <div className="app-legal-footer-links">
-        <a href="/legal/privacy.html" target="_blank" rel="noopener noreferrer">
-          Privacy Policy
-        </a>
-        <span className="app-legal-footer-sep dim">·</span>
-        <a href="/legal/terms.html" target="_blank" rel="noopener noreferrer">
-          Terms of Service
-        </a>
-        <span className="app-legal-footer-sep dim">·</span>
-        {/*
-          The project's page on the owner's site.
-        */}
-        <a href="https://bahuckel.com/projects/edexo-compare" target="_blank" rel="noopener noreferrer">
-          bahuckel.com/projects/edexo-compare
-        </a>
-      </div>
-    </footer>
-  );
-});
 
 /** One empty list for every render that has no snapshot yet, so its identity holds still. */
 const NO_BODIES: BodyComputed[] = [];
@@ -346,6 +314,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    // The streamer view shows the streamer's choice (below) and never sets it: its own pick moved the overlays.
+    if (STREAMER_MODE) return;
     const key = selectedBodyKey;
     const t = window.setTimeout(() => {
       void fetch("/api/ui/selected-body", {
@@ -356,6 +326,15 @@ export function App() {
     }, 160);
     return () => window.clearTimeout(t);
   }, [selectedBodyKey]);
+
+  /*
+    The streamer view follows the body tab the streamer opens in Compare (owner, 2026-10-27: "I click on something,
+    the view does not follow"): the server holds the app's choice and sends it with every snapshot.
+  */
+  const streamerBodyKey = STREAMER_MODE ? (snapshot?.uiSelectedBodyKey ?? null) : null;
+  useEffect(() => {
+    if (streamerBodyKey) setSelectedBodyKey(streamerBodyKey);
+  }, [streamerBodyKey]);
 
   useEffect(() => {
     const key = snapshot?.uiAutoSelectBodyKey ?? null;
@@ -386,6 +365,20 @@ export function App() {
   const liveRun = useMemo(
     () => (liveKey ? { speciesDisplay: liveSpecies!, sampleCount: liveCount! } : null),
     [liveKey, liveSpecies, liveCount],
+  );
+  /*
+    The selected body's trip line, the same way (audit 2026-10-22): `arrivalTripRanks` makes new objects for every
+    body whenever any body in the system changes, so `memo(BodyPane)` redrew the selected body's candidates for each
+    FSS hit or sibling DSS elsewhere.
+  */
+  const tripEntry = selected ? (tripRanks.get(selected.state.key) ?? null) : null;
+  const tripKnown = tripEntry !== null;
+  const tripLs = tripEntry?.distanceLs ?? null;
+  const tripRank = tripEntry?.rank ?? null;
+  const tripRanked = tripEntry?.ranked ?? 0;
+  const trip = useMemo<ArrivalTrip | null>(
+    () => (tripKnown ? { distanceLs: tripLs, rank: tripRank, ranked: tripRanked } : null),
+    [tripKnown, tripLs, tripRank, tripRanked],
   );
 
   /** Memoized: a fresh object literal here would defeat <HeaderBar>'s memo on every render. */
@@ -546,7 +539,7 @@ export function App() {
               key={selected.state.key}
               body={selected}
               liveRun={liveRun}
-              trip={tripRanks.get(selected.state.key) ?? null}
+              trip={trip}
               includeBacteriumInSearch={snapshot.includeBacteriumInSearch === true}
               onToggleIncludeBacterium={toggleIncludeBacteriumInSearch}
               jumponium={snapshot.jumponium ?? null}

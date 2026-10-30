@@ -417,7 +417,7 @@
 ------------------------------------------------------------------------------------------------ */
 .options-lan {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 0.3rem 0.6rem;
   align-items: center;
   margin: 0.35rem 0 0;
@@ -582,4 +582,23 @@
   border: 1px solid var(--accent-a22);
   padding: 0.2rem 0.4rem;
   width: 11rem;
+}
+
+/* Errors in the Options panels (1.2.19 review: the classes had no rule here, so errors read as plain text). */
+.options-error,
+.msg.err {
+  color: #ffb38a;
+}
+
+/* Options › Old copies: one line a file, the path wraps, the size beside it. */
+.options-old-copies {
+  margin: 0 0 0.6rem;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.25rem;
+  font-size: var(--fs-sm);
+}
+.options-old-copies code {
+  overflow-wrap: anywhere;
 }

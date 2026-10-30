@@ -1,4 +1,7 @@
 import { HUD, ls } from "./core";
+import { PRESETS } from "./presets";
+
+export { PRESETS };
 
 /* ============================================================== colour theme ================= */
 /*
@@ -8,18 +11,6 @@ import { HUD, ls } from "./core";
 */
 type Rgb = [number, number, number];
 
-export const PRESETS: Record<string, { accent: string; text: string }> = {
-  orange: { accent: "#ff8a1f", text: "#ffe6cf" },
-  amber: { accent: "#ffb020", text: "#fff0cc" },
-  red: { accent: "#ff4a3a", text: "#ffd9d4" },
-  magenta: { accent: "#ff4fd8", text: "#ffd6f5" },
-  purple: { accent: "#b46bff", text: "#e9d9ff" },
-  blue: { accent: "#4fa8ff", text: "#d6e9ff" },
-  cyan: { accent: "#3fe0e0", text: "#d2fbfb" },
-  green: { accent: "#5fe07a", text: "#d9f8de" },
-  lime: { accent: "#c8f04a", text: "#f1fbd2" },
-  white: { accent: "#e8e8f0", text: "#ffffff" },
-};
 export function hexRgb(h: unknown): Rgb | null {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(h || "").trim());
   if (!m) return null;
@@ -74,6 +65,12 @@ export function serverPref(key: string): string | null {
       return str(p.credit);
     case "edexoHudNextBoxel":
       return bool(p.nextBoxel);
+    case "edexoHudCzNeeds":
+      return bool(p.czNeeds);
+    case "edexoHudCzSites":
+      return bool(p.czSites);
+    case "edexoHudCzFinished":
+      return bool(p.czFinished);
     case "edexoHudTilt":
       return numStr(p.tilt);
     case "edexoHudTiltMode":
@@ -130,7 +127,7 @@ export function readOpacity(): number {
   return clampNum(pref("edexoHudOpacity", "0.45"), 0.1, 1, 0.45);
 }
 /*
-  "HUD Overlay by EDEXO-Compare" (owner, 2026-10-09/10): off unless chosen, at the top or the bottom of the
+  "HUD Overlay by EDEXO" (owner, 2026-10-09/10; "by EDEXO-Compare" until 1.3.0): off unless chosen, at the top or the bottom of the
   panel, shown "like the other titles": a section of its own with a section title and nothing under it, so
   every HUD type draws it as it draws theirs. The panel (Panel.tsx) places it from this.
 */

@@ -18,23 +18,11 @@ import { fmtLyAway } from "@shared/format";
 import { isBool, isNum, isStrArr, usePersistedState } from "../usePersistedState";
 import { CopySystemButton } from "../CopySystemButton";
 import { LoadingNote } from "../ui/Loading";
+import { pctLabel, type JumpRow } from "./jumpRow";
+import { tabListKeyDown } from "../ui/Tabs";
 import { G3D_HELP, MenuHead } from "./G3dMenu";
 import { LabCrafting } from "./LabCrafting";
 
-export interface JumpRow {
-  id: string;
-  system: string;
-  body: string;
-  x: number;
-  y: number;
-  z: number;
-  type: string | null;
-  gravityG: number | null;
-  distLs: number | null;
-  pct: Partial<Record<JumpElement, number>>;
-  own: boolean;
-  distLy: number;
-}
 
 interface NearReply {
   bodies: JumpRow[];
@@ -61,7 +49,6 @@ const MAX_LS = [0, 1000, 5000, 20000];
 const RANGES = [100, 250, 500, 1000, 2500];
 const isLevel = (v: unknown): v is "any" | "rich" | "top" => v === "any" || v === "rich" || v === "top";
 
-const pctLabel = (v: number) => (v >= 10 ? v.toFixed(1) : v.toFixed(2));
 
 export function JumponiumDrawer({
   onRows,
@@ -196,13 +183,15 @@ export function JumponiumDrawer({
       data-testid="g3d-jumponium"
     >
       <MenuHead title="Laboratory" help={G3D_HELP.jumponium} />
-      <div className="lab-tabs" role="tablist" aria-label="What to make">
+      {/* The app's keyboard for an option strip (ui/Tabs.tsx, audit 2026-10-22): one Tab stop, arrows choose. */}
+      <div className="lab-tabs" role="tablist" aria-label="What to make" onKeyDown={(ev) => tabListKeyDown(ev, { follow: true })}>
         {(["fsd", "afm"] as const).map((k) => (
           <button
             key={k}
             type="button"
             role="tab"
             aria-selected={kind === k}
+            tabIndex={kind === k ? 0 : -1}
             className={`lab-tab${kind === k ? " lab-tab--on" : ""}`}
             onClick={() => setKind(k)}
           >
@@ -454,10 +443,4 @@ export function JumponiumDrawer({
   );
 }
 
-/** "Po 1.12 % · Y 2.30 %": a body's elements, carbon left out, for the map's hover and card. */
-export function jumpLine(r: Pick<JumpRow, "pct">): string {
-  return (Object.entries(r.pct) as [JumpElement, number][])
-    .filter(([k]) => !jumpElement(k).common)
-    .map(([k, v]) => `${jumpElement(k).symbol} ${pctLabel(v)} %`)
-    .join(" · ");
-}
+export { jumpLine, type JumpRow } from "./jumpRow";

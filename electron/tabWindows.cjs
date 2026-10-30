@@ -13,6 +13,9 @@
     detached window closes itself;
   - detached windows are remembered (window-state.json `tabWindows` + their bounds) and come back
     with the app window; closing the app window closes them.
+  - Colonize's window (1.3.0, owner 2026-10-22: tabs move between Compare and Colonize) is in the registry as
+    "colonize": tabs drag between it, the app window and the detached windows. It has its own home tab, and closing
+    it leaves the others alone.
 */
 
 const DETACHED = { w: 1180, h: 780 };
@@ -82,6 +85,19 @@ function createTabWindows(d) {
     });
   }
 
+  /** Colonize's window (`?screen=colonize`): a window with a home tab of its own, like the app window. */
+  function attachColonize(win) {
+    windows.set("colonize", win);
+    win.on("focus", () => focused("colonize"));
+    win.on("closed", () => {
+      if (windows.get("colonize") !== win) return;
+      focusOrder = focusOrder.filter((k) => k !== "colonize");
+      windows.delete("colonize");
+      registry.delete("colonize");
+      broadcast();
+    });
+  }
+
   /** A detached window: `key` names its tabs' storage; `open` is the tab it is made for (a drag-out). */
   function openDetached(key, opts = {}) {
     const base = d.baseUrl();
@@ -100,7 +116,7 @@ function createTabWindows(d) {
       minHeight: 420,
       backgroundColor: "#050507",
       autoHideMenuBar: true,
-      title: "ED Exo Compare",
+      title: "EDEXO Compare",
       icon: d.icon,
       ...(custom
         ? {
@@ -198,6 +214,7 @@ function createTabWindows(d) {
 
   return {
     attachMain,
+    attachColonize,
     /**
      * A key bind's command for the app window's page (owner 2026-10-07), straight over IPC: through the
      * server and the socket it queued behind the game-state messages the page was still reading, 2-3 s.
@@ -217,7 +234,8 @@ function createTabWindows(d) {
     /** The window the screen-tab keys act on. */
     focusedKey() {
       const steps = (k) => (k === "main" ? 1 : 0) + (registry.get(k)?.length ?? 0);
-      const open = [...windows.keys()].filter((k) => live(windows.get(k)));
+      // Colonize takes its keys from the socket (useLiveSnapshot.ts), as before it joined the registry.
+      const open = [...windows.keys()].filter((k) => k !== "colonize" && live(windows.get(k)));
       const many = open.filter((k) => steps(k) >= 2);
       if (!many.length) return "main";
       return focusOrder.find((k) => many.includes(k)) ?? (many.includes("main") ? "main" : many[0]);

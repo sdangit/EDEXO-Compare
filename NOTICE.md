@@ -1,31 +1,36 @@
 # Notice, credits and third-party material
 
-EDEXO-Compare is MIT licensed. **The MIT licence covers the source code and the data this project
-produced itself. It does not cover the species photographs, and it does not cover Elite Dangerous
-game content.** See "Species photographs" below, which is the part still being resolved.
+EDEXO's source code (EDEXO-Compare until 1.3.0) is licensed under the PolyForm Noncommercial License 1.0.0 with two additional
+permissions (streams and videos; donations without paywalls), since 1.3.0 — see [LICENSE](LICENSE); releases up to
+1.2.20 were MIT and stay so. The data is CC BY-NC-SA 3.0 ([`data/LICENSE-DATA.txt`](data/LICENSE-DATA.txt)).
+**Neither covers the species photographs, and neither covers Elite Dangerous game content.** See "Species
+photographs" below, which is the part still being resolved.
 
 ---
 
 ## Standing on other people's work
 
-This project would not exist without five communities, none of which are affiliated with it and none
+This project would not exist without these communities, none of which are affiliated with it and none
 of which have endorsed it.
 
 ### Spansh — [spansh.co.uk](https://spansh.co.uk)
 
-The reason this project was started. Spansh's exobiology search showed that "which species can live
-on this body" is a question data can answer, and its route exports are the corpus every prediction in
-this app is measured against — 47,983 confirmed sightings across 13,789 bodies at the time of
-writing. Every calibration figure quoted in the README traces back to a Spansh export. The list of
+Where this project started. Spansh's Exomastery planning dumps showed that "which species can live on
+this body" is a question data can answer; they were the project's first data and, for its first months,
+its only data. The species profiles the ranking model reads are still built from Spansh exports, and the
+genus chances (`data/exomastery/genus-prior.json`) are counted from the DSS genus lists of the 2.8 million
+bio bodies in Spansh's galaxy dump. (Since October 2026 the predictions are measured against a year of
+EDDN finds, below.) The list of
 systems Frontier populated, which the app ships to tell the Bubble from player colonies, comes from
 Spansh's system search (`is_colonised`); `scripts/build-developer-systems.mjs` rebuilds it. The galaxy
 map's star and body filters read `data/galaxy/system-traits.bin.gz`, each system's star classes and
 planet types from Spansh's galaxy dump (`scripts/build-system-traits.ts`; downloaded with the galaxy
 index from the `galaxy-index` release). Since 1.2.16 the galaxy map's stations (`stations.bin`, from Spansh's
 `galaxy_stations.json.gz`: names, types, pads, services) and the neutron route planner's neutron stars
-(`neutrons.bin`, from Spansh's galaxy dump, each with its nearest scoopable star) and the jumponium bodies
-(`jumponium.bin`: the top 1 % of landable bodies for each FSD injection material, from the materials in Spansh's
-galaxy dump) are built from Spansh's dumps too and downloaded from the same release.
+(`neutrons.bin`, from Spansh's galaxy dump, each with its nearest scoopable star) and the Laboratory bodies
+(`laboratory.bin`: the top 1 % of landable bodies for each of the thirteen FSD injection and AFM refill
+elements, from the materials in Spansh's galaxy dump) are built from Spansh's dumps too and downloaded from the
+same release.
 
 ### EDSM — [edsm.net](https://edsm.net)
 
@@ -63,9 +68,14 @@ licence ([`data/LICENSE-DATA.txt`](data/LICENSE-DATA.txt)). The EDAstro-derived 
 - `data/exomastery/genus-body-split.json` — per Sinuous Tubers and Brain Tree species, counts of
   planet type, volcanism, temperature band and atmosphere on the Spansh galaxy dump's bodies where
   EDSM's and EDAstro's codex log exactly one species of the genus in the system;
+- `data/codex/variant-region-systems.json` (from 1.2.19) — per biological colour variant, how many systems
+  have it logged, galaxy-wide and per region, counted from EDAstro's `codex-data.csv`;
+- `data/codex/variant-sites/*.json.gz` (from 1.2.19, one file per region) — per region and colour variant, systems EDAstro's
+  `codex-data.csv` lists for it (names and coordinates): all of them for the rarer ones, else one per 1,000 ly cube
+  where it is logged most;
 - `data/exomastery/genus-prior.json` — how often each genus is found on bodies of each planet type,
-  signal count, atmosphere, temperature band, host star class and volcanism, counted from the DSS
-  genus lists in the Spansh galaxy dump.
+  signal count, atmosphere, temperature band, pressure band, gravity band, host star class and volcanism,
+  counted from the DSS genus lists in the Spansh galaxy dump.
 
 Releases 1.1.0 to 1.2.7 shipped these under the MIT notice by mistake; they were always under
 CC BY-NC-SA 3.0. Data the app downloads from EDAstro on the user's machine (phenomena, carriers,
@@ -84,18 +94,23 @@ A day-by-day archive of the messages EDDN relays, kept since 2017 and free to do
 run by CMDR Bravada Cadelanne ([EDCodex entry](https://edcodex.info/?m=tools&entry=491)). No licence or
 terms are stated for it. This project uses it for research: a year of scans, codex entries, FSS body
 signals and organic scans (2025-10 to 2026-10) to check the green gas giant catalogue and the species
-predictions against other commanders' finds, with each body's conditions. Anything derived from it
+predictions against other commanders' finds, with each body's conditions. The app also ships
+tables measured on it: `data/exomastery/eddn-temperature-range.json` (the temperatures each species really
+reaches), `colour-star-never.json` (colour stars a species is never found under), `measured-exclusions.json`
+(conditions a species is never found in), `outlier-register.json` and the Encyclopedia's bands
+(`species-bands.json`). Anything derived from it
 that this project ships is part of the project's data and is under the data licence (CC BY-NC-SA 3.0,
 [`data/LICENSE-DATA.txt`](data/LICENSE-DATA.txt)), unless CMDR Bravada Cadelanne states other terms,
 in which case theirs apply. Thank you for keeping it running.
 
 ### Canonn Research Group — [canonn.science](https://canonn.science)
 
-The community's accumulated knowledge of where exobiology grows: the genus and species conditions,
-the gravity and temperature limits, the atmosphere and volcanism requirements. Where this app's own
-observations disagree with the published conditions, the observation wins — but the published
-conditions are where every gate started, and being able to disagree with something is a debt to
-whoever wrote it down first.
+The app can send your discoveries to Canonn's research archive, off unless you switch it on. This
+project did not start from Canonn — it started from Spansh's dumps, and its developer came across Canonn
+much later — and its species rules do not come from Canonn's published conditions. Two things of
+Canonn's were used afterwards as a check: its Bioforge figures, against the Bacterium tela rule, and its
+codex reference list, when the colour variants' names were rebuilt from the game's own codex in
+September 2026. Thank you for both.
 
 ### ED-DSN — [ed-dsn.net](https://ed-dsn.net)
 
@@ -112,14 +127,36 @@ Credited by link to the network rather than by commander name, at ED-DSN's reque
 photographs were taken on an expedition years ago and a significant number of those commanders can no
 longer be reached, so naming some and not others would be worse than naming none.
 
+### Ship outlines — the HUD's Ship section
+
+The ships seen from above (`src/shared/shipOutlines.ts`) are simplified silhouettes traced from other
+people's drawings, and where each module sits comes from the same places:
+
+- **ED Ship Chart** by Simon Janich (version 2.3, 2017, the to-scale chart of every ship from above,
+  posted on the Frontier forums; its ship images are Frontier's, used there with Frontier's
+  permission): the outlines of the 31 ships it shows.
+- **Elite Dangerous Ship Anatomy (EDSA)** — [siriuscorp.cc/edsa](https://siriuscorp.cc/edsa/), first
+  published at teall.info: the outlines of twelve newer ships, and where the hardpoints, utility
+  mounts and core modules sit on 43 ships.
+- **[coriolis-data](https://github.com/EDCD/coriolis-data)** (EDCD) and **[Inara](https://inara.cz)**:
+  the slot layout of the six newest ships, whose outlines were traced from pictures and whose module
+  positions are estimated.
+
+The ships' vehicles (`src/shared/vehicleOutlines.ts`, from 1.3.1): the six ship-launched fighters are
+traced from the **EDSA** blueprints as well; the SRV Scarab is measured on a fan-made blueprint's top
+view (elite-dangerous-blog.co.uk), and the SRV Scorpion on the game's own radar icon; the Rhino and the
+Nomad have no top view anywhere and are approximated from a screenshot.
+
+Only the outline and a set of points are kept; no image from any of them ships with the app.
+
 ---
 
 ## Species photographs
 
-`data/species/<genus>/<genus>_photos/` holds 180 images of Elite Dangerous exobiology (each also
-present as a cropped card and thumbnail, so 540 files). **150 of them were contributed by commanders
-of the Bahuckel clan and by the Stellar Exobiologists Guild**; the remaining 30 are sourced from the ED-DSN community, are **not covered by
-this project's MIT licence** and are not this project's to sublicense.
+`data/species/<genus>/<genus>_photos/` holds 184 images of Elite Dangerous exobiology (each also
+present as a cropped card and thumbnail, so 552 files). **157 of them were contributed by commanders
+of the Bahuckel clan and by the Stellar Exobiologists Guild**; the remaining 27 are sourced from the ED-DSN community, are **not covered by
+this project's licences** and are not this project's to sublicense.
 
 ### Telling them apart, in the app and on disk
 
@@ -130,7 +167,7 @@ There is no unlabelled image.
 | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`Photo by Bahuckel — CMDR <name>`**                          | Contributed. That commander took it themselves, in their own game, and gave it to this project knowingly — either the project owner's own, or a commander who photographed a species for the project or offered an existing shot in support of it. |
 | **`Photo by Stellar Exobiologists Guild`**                     | Contributed by the guild, whose commanders took them in their own game and gave them to this project knowingly.                                                                                                                                    |
-| **`Photo from: https://ed-dsn.net/ and its respective owner`** | Sourced from the ED-DSN community. Not this project's, not MIT, and here with ED-DSN's agreement while replacements are photographed.                                                                                                              |
+| **`Photo from: https://ed-dsn.net/ and its respective owner`** | Sourced from the ED-DSN community. Not this project's, not under its licences, and here with ED-DSN's agreement while replacements are photographed.                                                                                                              |
 
 A named commander under an image is therefore a positive statement about where it came from and that
 its author agreed to it being here. The ED-DSN line is the standing default, applied to anything not
@@ -141,7 +178,7 @@ commander against each file:
 
 | commander                                     | images |
 | --------------------------------------------- | ------ |
-| Bahuckel — CMDR FALrenica (the project owner) | 139    |
+| Bahuckel — CMDR FALrenica (the project owner) | 146    |
 | Bahuckel — CMDR PhoEniXDFA                    | 6      |
 | Stellar Exobiologists Guild                   | 5      |
 

@@ -1,7 +1,10 @@
 import type { NspOutlookDTO } from "../nspOutlook.js";
+import type { ShipDamageState } from "../shipDamage.js";
+import type { ColonizeHudDTO } from "../colonize/hud.js";
 import type { JournalHistoryPreset } from "../journalHistoryPreset.js";
 import type { TriageTiming } from "../systemTriage.js";
 import type {
+  CommandersDTO,
   HudPrefsDTO,
   JournalBootProgressDTO,
   PhotoStampPrefs,
@@ -56,6 +59,8 @@ export interface AppSnapshot {
   lanUrls: string[];
   /** Journal `LoadGame.Commander`; null until a LoadGame line is merged. */
   commanderName: string | null;
+  /** Whose data this is and who the game is playing (per-commander profiles, 1.3.1); absent from older servers. */
+  commanders?: CommandersDTO;
   currentSystem: string | null;
   currentSystemAddress: number | null;
   /**
@@ -105,6 +110,10 @@ export interface AppSnapshot {
    * using `price-list.json`, with 5× total on first-footfall bodies (1× base payout + 4× first-footfall bonus).
    */
   organicDataValueCredits: number;
+  /** The HUD's Colonize section (1.3.0, colonize/hudSummary.ts): null while Colonize is not running or nothing is built. */
+  colonizeHud?: ColonizeHudDTO | null;
+  /** The ship's damage part by part, for the HUD's Ship section (shared/shipDamage.ts); null before a Loadout. */
+  shipDamage?: ShipDamageState | null;
   /** Rows included in `organicDataValueCredits` (pending sales). */
   organicPendingSampleCount: number;
   /** Per-sample breakdown for the data value modal (unsold completes in journal). */
@@ -187,6 +196,8 @@ export interface AppSnapshot {
   pranavAntalBonus?: boolean;
   /** Exploration figures are after a fleet carrier's 25 % (Data value toggle). */
   sellAtFleetCarrier?: boolean;
+  /** Options → Developer tools → Data feeder (off by default, 1.2.20). */
+  feederEnabled?: boolean;
   /** ...and the carrier is the commander's own: 15 % instead of 25 % (Data value toggle). */
   fleetCarrierIsOwn?: boolean;
   /** Estimated CR from all merged `Scan` rows (MattG-style formulas; belts excluded). */

@@ -8,13 +8,14 @@ import { parseSpanshRouteFile, summariseSpanshRouteFile } from "../../feeder/spa
 import { isLoopbackAddress, localOnly } from "../lanAuth.js";
 import { isEdsmCatchUpScope } from "../edsmCatchUp.js";
 
-import type { HttpServerOptions, RouteContext } from "../httpServer.js";
+import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
+import { APP_VIEWS, isAppView } from "../appViews.js";
 import { setUiMirror, uiMirror } from "../uiMirror.js";
 
 export function registerSettingsRoutes(
   app: express.Express,
   opts: HttpServerOptions,
-  _ctx: RouteContext,
+  ctx: RouteContext,
 ): void {
   app.post("/api/settings/journal-directory", localOnly, async (req, res) => {
     if (typeof opts.setJournalDirectory !== "function") {
@@ -317,6 +318,7 @@ export function registerSettingsRoutes(
 
   /** The Data value window's "Selling at a fleet carrier (−25 %)" (owner, 2026-10-03). */
   boolSetting("/api/settings/fleet-carrier-sale", () => opts.setSellAtFleetCarrier);
+  boolSetting("/api/settings/feeder", () => opts.setFeederEnabled);
 
   /** ...and "My own carrier (−15 %)" under it (owner, 2026-10-04). */
   boolSetting("/api/settings/fleet-carrier-own", () => opts.setFleetCarrierIsOwn);
@@ -626,7 +628,11 @@ export function registerSettingsRoutes(
     // The client applies the selection optimistically; the broadcast exists only so the overlay
     // windows follow along. Skip it when nothing changed — this fires on every tab click.
     const changed = opts.setUiSelectedBodyKey(raw);
-    if (changed !== false) opts.scheduleBroadcast?.();
+    // `focus`: a notice's or bookmark's Show — the main window's tab strip follows only the one-shot auto-select, so
+    // the body is queued there too (1.2.19 review: Show switched the system but opened another tab).
+    const focus = req.body?.focus === true && typeof raw === "string";
+    if (focus) opts.focusUiBody?.(raw);
+    if (changed !== false || focus) opts.scheduleBroadcast?.();
     res.json({ ok: true });
   });
 
@@ -662,6 +668,8 @@ export function registerSettingsRoutes(
     res.setHeader("Cache-Control", "no-store");
     res.json(uiMirror());
   });
+  // The streamer view redraws when the streamer changes a setting (R2: it asked every second).
+  ctx.watchTopic("ui-mirror", () => uiMirror().rev);
   app.post("/api/ui/mirror", (req, res) => {
     if (!isLoopbackAddress(req.socket.remoteAddress)) {
       res
@@ -670,6 +678,7 @@ export function registerSettingsRoutes(
       return;
     }
     res.json({ ok: true, rev: setUiMirror(req.body?.values).rev });
+    ctx.topicsMayHaveChanged();
   });
 
   app.post("/api/ui/open-external", (req, res) => {
@@ -684,9 +693,11 @@ export function registerSettingsRoutes(
       });
       return;
     }
-    const view = req.body?.view;
-    if (view !== "app" && view !== "phone" && view !== "stream") {
-      res.status(400).json({ ok: false, error: 'Send JSON { "view": "app" | "phone" | "stream" }.' });
+    const view: unknown = req.body?.view;
+    if (!isAppView(view)) {
+      res
+        .status(400)
+        .json({ ok: false, error: `Send JSON { "view": ${APP_VIEWS.map((v) => `"${v}"`).join(" | ")} }.` });
       return;
     }
     res.json(opts.openAppView(view));

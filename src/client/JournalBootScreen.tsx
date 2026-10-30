@@ -13,12 +13,14 @@ export function JournalBootScreen({ boot, connected }: { boot: JournalBootProgre
             <span className="journal-boot__orb-ring" />
             <span className="journal-boot__orb-core" />
           </div>
-          <h1 className="journal-boot__title">ED Exo Compare</h1>
+          <h1 className="journal-boot__title">EDEXO</h1>
           <p className="journal-boot__subtitle">Loading journal data</p>
         </div>
 
         <div
           className="journal-boot__meter"
+          // A progress bar needs a name to be read out (axe aria-progressbar-name, audit 2026-10-22).
+          aria-label="Loading journal data"
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={pct}

@@ -15,7 +15,8 @@ const settingsPath = join(dir, "settings.json");
 
 vi.mock("../src/server/paths.js", async () => {
   const actual = await vi.importActual<typeof import("../src/server/paths.js")>("../src/server/paths.js");
-  return { ...actual, resolveUserSettingsJsonPath: () => settingsPath };
+  // The commander's folder since 1.3.1 (per-commander profiles); with no commander it is the settings' folder.
+  return { ...actual, resolveUserSettingsJsonPath: () => settingsPath, resolveCommanderDataDir: () => dir };
 });
 
 const {
@@ -102,8 +103,9 @@ describe("what gets marked", () => {
   it("marks the thin end of the corpus and leaves the well-fed alone", () => {
     const out = computeCollectionFocus([], db, root, DEFAULT_COLLECTION_FOCUS);
     expect(out.size).toBeGreaterThan(0);
-    // Fluctus rests on a handful of bodies; aurasus on thousands.
-    expect(out.has("fonticulua_fonticulua_fluctus")).toBe(true);
+    // Araneamus rests on a few dozen bodies; aurasus on thousands. (Fluctus was the example until its profile was
+    // rebuilt from the EDDN year in 1.2.20: 21 -> 333 bodies, past the floor.)
+    expect(out.has("stratum_stratum_araneamus")).toBe(true);
     expect(out.has("bacterium_bacterium_aurasus")).toBe(false);
     for (const r of out.values()) expect(r.corpusBodies).toBeLessThan(DEFAULT_COLLECTION_FOCUS.corpusFloor);
   });
@@ -111,11 +113,11 @@ describe("what gets marked", () => {
   it("drops a species once you have confirmed it enough times", () => {
     const cfg = { ...DEFAULT_COLLECTION_FOCUS, targetScans: 2 };
     const before = computeCollectionFocus([], db, root, cfg);
-    expect(before.has("fonticulua_fonticulua_fluctus")).toBe(true);
+    expect(before.has("stratum_stratum_araneamus")).toBe(true);
 
-    const b = () => bodyWith([{ genus: "Fonticulua", species: "Fonticulua Fluctus" }]);
+    const b = () => bodyWith([{ genus: "Stratum", species: "Stratum Araneamus" }]);
     const after = computeCollectionFocus([b(), b()], db, root, cfg);
-    expect(after.has("fonticulua_fonticulua_fluctus")).toBe(false);
+    expect(after.has("stratum_stratum_araneamus")).toBe(false);
   });
 
   it("honours a species you have told it to stop asking about", () => {

@@ -103,15 +103,299 @@ test("app: the Privacy Policy and Terms open from the footer, served by the app 
     await expect(tab.locator("link[rel=stylesheet]")).toHaveCount(1);
     await tab.close();
   }
+  // The owner's Ko-fi, last in the row.
+  await expect(page.locator(".app-legal-footer-links a").last()).toHaveText("Buy me a coffee");
+  await expect(page.locator(".app-legal-footer-links a").last()).toHaveAttribute("href", "https://ko-fi.com/bahuckel");
   expect(errors).toEqual([]);
 });
 
 test("launcher: renders with the live strip", async ({ page }) => {
   const errors = watchErrors(page);
   await page.goto("/launcher.html");
-  await expect(page.getByText("Open exobiology UI")).toBeVisible();
+  await expect(page.getByText("Open Compare", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Buy me a coffee" })).toHaveAttribute("href", "https://ko-fi.com/bahuckel");
   await page.waitForTimeout(1500);
   await page.screenshot({ path: `${OUT}/launcher.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+/*
+  Per-commander profiles (1.3.1, owner 2026-10-25): two commanders in the journals, the app showing Alpha while the
+  game plays Bravo. The fixture journal has one commander, so the server's answers are given two here.
+*/
+const TWO_COMMANDERS = {
+  active: { fid: "F111", name: "Alpha" },
+  game: { fid: "F222", name: "Bravo" },
+  list: [
+    { fid: "F222", name: "Bravo", files: 3 },
+    { fid: "F111", name: "Alpha", files: 9 },
+  ],
+  canSwitch: false,
+};
+
+test("commanders: the launcher's dropdown lists them and says why a switch cannot happen here", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.route("**/api/status", async (route) => {
+    const r = await route.fetch();
+    await route.fulfill({ response: r, json: { ...(await r.json()), commanders: TWO_COMMANDERS } });
+  });
+  // The dev server cannot start itself again: the answer a console build gives.
+  await page.route("**/api/commanders/switch", (route) =>
+    route.fulfill({
+      status: 501,
+      json: { ok: false, error: "This server cannot start itself again. Start it with EDEXO_COMMANDER=F222 to show CMDR Bravo." },
+    }),
+  );
+  await page.goto("/launcher.html");
+  const select = page.locator("#cmdrSelect");
+  await expect(select).toBeVisible();
+  await expect(select.locator("option")).toHaveText(["CMDR Bravo", "CMDR Alpha"]);
+  await expect(select).toHaveValue("F111");
+  await expect(page.locator("#cmdrNote")).toHaveText("The game is playing CMDR Bravo.");
+  await select.selectOption("F222");
+  await expect(page.locator("#cmdrNote")).toContainText("EDEXO_COMMANDER=F222");
+  await expect(select).toHaveValue("F111");
+  await expect(select).toBeEnabled();
+  // The first-run card (a fresh test profile) off the picture.
+  const done = page.locator("#wzDone");
+  if (await done.isVisible()) await done.click();
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${OUT}/launcher-commanders.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("commanders: one commander, no dropdown", async ({ page }) => {
+  await page.goto("/launcher.html");
+  await expect(page.getByText("Open Compare", { exact: true })).toBeVisible();
+  await page.waitForTimeout(3000);
+  await expect(page.locator("#cmdrPick")).toBeHidden();
+});
+
+test("commanders: the app says the game plays another commander, asks once, and Keep is kept", async ({ page }) => {
+  const errors = watchErrors(page);
+  // Compare's own channel is plain /ws.
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((m) => {
+      try {
+        const j = JSON.parse(String(m)) as { type?: string; payload?: Record<string, unknown> };
+        if (j.type === "state" && j.payload) j.payload.commanders = { ...TWO_COMMANDERS, canSwitch: true };
+        ws.send(JSON.stringify(j));
+      } catch {
+        ws.send(m);
+      }
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".appbar-cmdr-other")).toContainText("Logged in as another commander");
+  await expect(page.locator(".appbar-cmdr-switch")).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Another commander in the game" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("This window shows CMDR Alpha. The game is playing CMDR Bravo.");
+  await page.screenshot({ path: `${OUT}/commander-switch-prompt.png` });
+  await dialog.getByRole("button", { name: "Keep CMDR Alpha" }).click();
+  await expect(dialog).toBeHidden();
+  await page.reload();
+  await expect(page.locator(".appbar-cmdr-other")).toContainText("Logged in as another commander");
+  await page.waitForTimeout(1500);
+  await expect(page.getByRole("dialog", { name: "Another commander in the game" })).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
+test("colonize: the window opens on the plan, every tab draws, and the launcher offers it", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/launcher.html");
+  await expect(page.getByText("Open Colonize")).toBeVisible();
+  await page.goto("/?screen=colonize");
+  await expect(page.getByRole("link", { name: "Buy me a coffee" })).toHaveAttribute("href", "https://ko-fi.com/bahuckel");
+  // The fixture journal has no construction site: the plan says how to get one.
+  await expect(page.getByRole("heading", { name: "Your sites" })).toBeVisible();
+  await expect(page.getByText("none building")).toBeVisible();
+  await page.screenshot({ path: `${OUT}/colonize-plan.png`, fullPage: true });
+  for (const [tab, text] of [
+    ["Search", "A comma means"],
+    ["Sources", "Trade party"],
+    ["Wing", "Who hauls what"],
+  ] as const) {
+    await page.getByRole("tab", { name: tab }).click();
+    await expect(page.getByText(text).first()).toBeVisible();
+  }
+  // Inara (C5): its commodity search, a plain link where there is no EDEXO Browser (a system browser like this one).
+  await page.getByRole("tab", { name: "Sources" }).click();
+  await expect(page.getByRole("link", { name: "Open Inara's commodity search" })).toHaveAttribute(
+    "href",
+    /^https:\/\/inara\.cz\/elite\/commodities\/\?/,
+  );
+  await expect(page.getByRole("link", { name: "Open Inara's commodity search" })).toHaveAttribute("target", "_blank");
+  // Search reads only what is saved: a fresh profile has nothing, and says so.
+  await page.getByRole("tab", { name: "Search" }).click();
+  await page.getByRole("searchbox").fill("Steel");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(page.getByText("Nothing in your journal or the saved sellers matches")).toBeVisible();
+  await page.screenshot({ path: `${OUT}/colonize-search.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("colonize: Compare's shell — its app bar, and Compare's screens as tabs kept apart from Compare's", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/?screen=colonize");
+  await page.evaluate(() => localStorage.removeItem("edexo.colonize.tabs"));
+  await page.reload();
+  await expect(page.locator(".appbar-wordmark")).toContainText("Colonize");
+  await expect(page.getByRole("heading", { name: "Your sites" })).toBeVisible();
+  await page.getByRole("button", { name: "Open a screen in a tab" }).click();
+  await expect(page.getByRole("menuitem", { name: "System map" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: /^Encyclopedia/ }).click();
+  await expect(page.locator(".tab-strip__tab", { hasText: "Encyclopedia" })).toBeVisible();
+  // Compare's Encyclopedia itself, working inside Colonize.
+  await expect(page.locator(".encyclopedia-panel").getByText(/Aleoida|Bacterium|Stratum/).first()).toBeVisible({ timeout: 30_000 });
+  const tabs = await page.evaluate(() => [localStorage.getItem("edexo.colonize.tabs"), localStorage.getItem("edexo.tabs")]);
+  expect(JSON.parse(tabs[0] ?? "{}").tabs).toContain("encyclopedia");
+  expect(JSON.parse(tabs[1] ?? "{\"tabs\":[]}").tabs ?? []).not.toContain("encyclopedia");
+  await page.screenshot({ path: `${OUT}/colonize-shell-tab.png` });
+  // Back home: the Colonize tab.
+  await page.locator(".tab-strip__tab", { hasText: "Colonize" }).first().click();
+  await expect(page.getByRole("heading", { name: "Your sites" })).toBeVisible();
+  // "Find colony sites" opens the galaxy map in a tab on its finder drawer, not a new window (owner, 2026-10-23).
+  const popups: string[] = [];
+  page.context().on("page", (p) => popups.push(p.url()));
+  await page.getByRole("link", { name: /Find colony sites/ }).first().click();
+  await expect(page.locator(".tab-strip__tab", { hasText: "Galaxy" })).toBeVisible();
+  await expect(page.getByTestId("g3d-finder")).toBeVisible({ timeout: 60_000 });
+  expect(popups).toEqual([]);
+  await page.locator(".tab-strip__tab", { hasText: "Colonize" }).first().click();
+  await expect(page.getByRole("heading", { name: "Your sites" })).toBeVisible();
+  // Its tray is a full row under the app bar, and the footer sits at the window's bottom (owner, 2026-10-22).
+  const widths = await page.evaluate(() => [
+    document.querySelector(".header-tray--app")?.getBoundingClientRect().width ?? 0,
+    document.querySelector(".top > .appbar")?.getBoundingClientRect().width ?? 0,
+  ]);
+  expect(widths[0]).toBeGreaterThan(widths[1] - 2);
+  for (const w of [1280, 1600]) {
+    await page.setViewportSize({ width: w, height: 1400 });
+    const gap = await page.evaluate(() => {
+      const f = document.querySelector(".app-legal-footer")!.getBoundingClientRect();
+      return Math.max(innerHeight, document.documentElement.scrollHeight) - (f.bottom + scrollY);
+    });
+    expect(gap, `footer gap at ${w}px`).toBeLessThan(40);
+  }
+  // Options: what applies to Colonize, none of Compare's exobiology.
+  await openFromMenu(page, "Options");
+  await expect(page.locator(".options-group-head", { hasText: "Look" })).toBeVisible();
+  await expect(page.locator(".options-group-head", { hasText: "Exobiology" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reset exobiology…" })).toHaveCount(0);
+  await expect(page.getByText("System map + and ++ marks")).toHaveCount(0);
+  await page.getByRole("button", { name: "Close" }).first().click();
+  expect(errors).toEqual([]);
+});
+
+test("colonize: its own launcher menu, remembered apart from Compare's, and a streamer view", async ({ page, request }) => {
+  const errors = watchErrors(page);
+  await page.goto("/launcher.html");
+  await page.evaluate(() => {
+    localStorage.setItem("edexo.launcher.wizardDone", "1");
+    localStorage.removeItem("edexo.launcher.colonizeOpenMode");
+  });
+  await page.reload();
+  const done = page.getByRole("button", { name: "Done", exact: true });
+  if (await done.isVisible().catch(() => false)) await done.click();
+  // Choosing opens it (owner, 2026-10-22): the server's "open in the browser" is answered here, so no browser opens.
+  const opened: string[] = [];
+  await page.route("**/api/ui/open-external", async (r) => {
+    opened.push(String((r.request().postDataJSON() as { view?: string }).view));
+    await r.fulfill({ json: { ok: true } });
+  });
+  // One order in both menus: the app window (the default) first, then the browser.
+  for (const menu of ["#mainUiMenu button[data-open-mode]", "#colonizeMenu button[data-colonize-mode]"]) {
+    await expect(page.locator(menu).first()).toContainText("App window");
+    await expect(page.locator(menu).nth(1)).toContainText("In your browser");
+  }
+  await expect(page.locator("#btnColonizeSub")).toContainText("in an app window");
+  await page.locator("#btnColonizeMenu").click();
+  await page.locator('#colonizeMenu button[data-colonize-mode="phone"]').click();
+  await expect(page.locator("#btnColonizeSub")).toContainText("Phone view");
+  await expect.poll(() => opened).toEqual(["colonize-phone"]);
+  // Compare's choice is untouched, and the server remembers each.
+  await expect(page.locator("#btnMainUiSub")).not.toContainText("Phone view");
+  await expect.poll(async () => (await (await request.get("/api/launcher/open-mode?app=colonize")).json()).mode).toBe("phone");
+  expect((await (await request.get("/api/launcher/open-mode")).json()).mode).not.toBe("phone");
+  // Put it back for the other tests.
+  await page.locator("#btnColonizeMenu").click();
+  await page.locator('#colonizeMenu button[data-colonize-mode="browser"]').click();
+  await expect.poll(() => opened).toEqual(["colonize-phone", "colonize"]);
+
+  // The streamer view: the plan read-only, nothing to click, no Ko-fi.
+  const stream = await page.context().newPage();
+  const asked: string[] = [];
+  stream.on("request", (r) => {
+    const u = new URL(r.url());
+    if (u.pathname.startsWith("/api/colonize/")) asked.push(`${r.method()} ${u.pathname}`);
+  });
+  await stream.goto("/?screen=colonize&view=stream");
+  await expect(stream.getByRole("heading", { name: "Your sites" })).toBeVisible();
+  await expect(stream.locator("html")).toHaveAttribute("data-streamer", "1");
+  await expect(stream.getByText("Buy me a coffee")).toHaveCount(0);
+  await expect(stream.getByText("Phone view: what the PC knows")).toHaveCount(0);
+  expect(await stream.evaluate(() => getComputedStyle(document.querySelector(".cz")!).pointerEvents)).toBe("none");
+  await stream.waitForTimeout(1000);
+  for (const a of asked) expect(["POST /api/colonize/rpc/getSnapshot", "GET /api/colonize/ui-state"], a).toContain(a);
+  await stream.close();
+  expect(errors).toEqual([]);
+});
+
+test("colonize: the phone view reads only what a LAN device may, and fits a phone", async ({ page }) => {
+  const errors = watchErrors(page);
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    const u = new URL(r.url());
+    if (u.pathname.startsWith("/api/colonize/")) asked.push(`${r.method()} ${u.pathname}`);
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?screen=colonize&phone=1");
+  await expect(page.getByText("Phone view: what the PC knows")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your sites" })).toBeVisible();
+  await expect(page.getByRole("tab")).toHaveCount(0);
+  await page.waitForTimeout(1500);
+  // Nothing a paired phone would be refused (routes/colonizeRoutes.ts COLONIZE_LAN_READ, GET ui-state).
+  expect(asked.length).toBeGreaterThan(0);
+  for (const a of asked) expect(["POST /api/colonize/rpc/getSnapshot", "GET /api/colonize/ui-state"], a).toContain(a);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: `${OUT}/colonize-phone.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("colonize: settings live on the server, so two windows with their own storage agree", async ({ browser }) => {
+  // Two contexts = two browsers' storage, like the app window and a browser tab.
+  const a = await (await browser.newContext()).newPage();
+  const b = await (await browser.newContext()).newPage();
+  const errors = [...watchErrors(a), ...watchErrors(b)];
+  // The plan's on/off button since the cards (R5b; was a checkbox).
+  const spansh = (p: typeof a) => p.getByRole("button", { name: "Ask Spansh in the background" });
+  const on = (x: boolean) => String(x);
+  await a.goto("/?screen=colonize");
+  await a.getByRole("tab", { name: "Sources" }).click();
+  await expect(spansh(a)).toBeVisible();
+  const before = (await spansh(a).getAttribute("aria-pressed")) === "true";
+  await b.goto("/?screen=colonize");
+  await b.getByRole("tab", { name: "Sources" }).click();
+  await expect(spansh(b)).toHaveAttribute("aria-pressed", on(before));
+
+  await spansh(b).click();
+  await expect(spansh(b)).toHaveAttribute("aria-pressed", on(!before));
+  // The other window hears it: redrawn at once when not in front, else it offers to.
+  const show = a.getByRole("button", { name: "Show the changes" });
+  await expect(async () => {
+    if (await show.isVisible()) await show.click();
+    await expect(spansh(a)).toHaveAttribute("aria-pressed", on(!before), { timeout: 500 });
+  }).toPass({ timeout: 10_000 });
+  // And a window opened later starts from it.
+  const c = await (await browser.newContext()).newPage();
+  await c.goto("/?screen=colonize");
+  await c.getByRole("tab", { name: "Sources" }).click();
+  await expect(spansh(c)).toHaveAttribute("aria-pressed", on(!before));
+  // Put it back for the other tests.
+  await spansh(c).click();
+  await expect(spansh(c)).toHaveAttribute("aria-pressed", on(before));
   expect(errors).toEqual([]);
 });
 
@@ -323,6 +607,177 @@ test("hud: the merged overlay shows every section", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("hud: the Colonize section starts Colonize and says when nothing is being built", async ({ page }) => {
+  const errors = watchErrors(page);
+  const started = page.waitForRequest((r) => r.url().includes("/api/colonize/rpc/getSnapshot") && r.method() === "POST");
+  await page.goto("/colonize-overlay.html");
+  await started;
+  // The fixture journal has no construction site.
+  await expect(page.locator('[data-section="colonize"] [data-f="none"]')).toContainText("No site being built");
+  expect(errors).toEqual([]);
+});
+
+/*
+  The Colonize HUD with a site (owner, 2026-10-22): the next stop's buys with bars that fill as the cargo comes aboard,
+  the site's materials with bars, finished lines gone (or last and green with the option), nothing wider than the HUD.
+  The fixture journal has no construction site, so the state is mocked: the first poll and the socket's frame.
+*/
+test("hud: Colonize draws the next stop and the site with bars, finished lines off the HUD", async ({ page }) => {
+  const errors = watchErrors(page);
+  const colonizeHud = {
+    sites: [
+      { marketId: "1", label: "Kraepelin City", system: "Swoilz KI-E b4-9", pct: 52, leftTons: 8280, docked: false },
+      { marketId: "2", label: "Bharadwaj Beacon", system: "Swoilz KI-E b4-9", pct: 8, leftTons: 3700, docked: false },
+    ],
+    moreSites: 0,
+    deliver: null,
+    next: {
+      trip: 2,
+      trips: 9,
+      kind: "buy",
+      station: "Hammond Hub",
+      system: "Laso UF-E d12-16",
+      distanceLy: 14.2,
+      fromShipLy: 33.6,
+      here: false,
+      buys: [
+        { commodityId: "steel", label: "Steel", tons: 40, have: 40, done: true },
+        { commodityId: "titanium", label: "Titanium", tons: 40, have: 12, done: false },
+      ],
+      deliverTo: ["Kraepelin City"],
+    },
+    target: {
+      marketId: "1",
+      label: "Kraepelin City",
+      system: "Swoilz KI-E b4-9",
+      pct: 52,
+      leftTons: 8280,
+      needs: [
+        { commodityId: "steel", label: "Steel", required: 9000, provided: 3600, aboard: 0, done: false },
+        { commodityId: "titanium", label: "Titanium", required: 2400, provided: 600, aboard: 12, done: false },
+        { commodityId: "aluminium", label: "Aluminium", required: 800, provided: 800, aboard: 0, done: true },
+      ],
+    },
+    plan: "active",
+    hold: { used: 52, capacity: 80 },
+  };
+  const payload = { port: 7119, colonizeHud };
+  await page.setViewportSize({ width: 420, height: 900 });
+  await page.route(/\/api\/state\?channel=hud/, (r) => r.fulfill({ json: payload }));
+  await page.route(/\/api\/colonize\/rpc\/getSnapshot/, (r) => r.fulfill({ json: { ok: true, result: null } }));
+  await page.routeWebSocket(/channel=hud/, (ws) => {
+    ws.onMessage(() => {});
+    setTimeout(() => ws.send(JSON.stringify({ type: "state", payload })), 300);
+  });
+  await page.goto("/colonize-overlay.html");
+  const next = page.locator('[data-section="colonize"] [data-f="next"]');
+  await expect(next).toContainText("Hammond Hub");
+  await expect(next).toContainText("34 ly away");
+  await expect(next).toContainText("12 / 40 t");
+  await expect(next).not.toContainText("Steel");
+  expect(await next.locator(".hud-bar__fill").first().evaluate((e) => (e as HTMLElement).style.width)).toBe("30%");
+  const site = page.locator('[data-section="colonize"] [data-f="site"]');
+  await expect(site).toContainText("Kraepelin City");
+  await expect(site).not.toContainText("Aluminium");
+  await expect(site).toContainText("1 of 3 delivered");
+  expect(await page.evaluate(() => [...document.querySelectorAll("*")].filter((e) => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX !== "visible").length)).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `${OUT}/hud-colonize.png`, fullPage: true });
+
+  // "Show finished lines": the bought line and the delivered material come back, last and green.
+  await page.evaluate(() => localStorage.setItem("edexoHudCzFinished", "1"));
+  await page.reload();
+  await expect(site).toContainText("Aluminium");
+  await expect(site.locator(".row--done")).toHaveCount(1);
+  await expect(next.locator(".row--done")).toContainText("Steel");
+  await page.screenshot({ path: `${OUT}/hud-colonize-finished.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+/*
+  The Ship HUD (discuss item 32): the outline with each part coloured by its health, the damaged parts worst first, the
+  everyday wear summed up, nothing wider than the HUD. The fixture journal's ship is whole, so the state is mocked.
+*/
+test("hud: Ship draws the outline and lists the damaged parts, worst first", async ({ page }) => {
+  const errors = watchErrors(page);
+  const part = (slot: string, item: string, label: string, group: string, health: number) => ({ slot, item, label, group, health });
+  const shipDamage = {
+    ship: "mandalay",
+    shipName: "Ze Zoom",
+    shipIdent: "FA-01",
+    hull: 0.62,
+    hullAt: new Date().toISOString(),
+    loadoutAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+    parts: [
+      part("PowerPlant", "int_powerplant_size5_class5", "Power plant 5A", "core", 0.98),
+      part("FrameShiftDrive", "int_hyperdrive_size5_class5", "FSD 5A", "core", 0.71),
+      part("MainEngines", "int_engine_size5_class5", "Thrusters 5A", "core", 0.44),
+      part("Radar", "int_sensors_size5_class5", "Sensors 5A", "core", 0.99),
+      part("MediumHardpoint1", "hpt_beamlaser_gimbal_medium", "Beam laser (M)", "hardpoint", 0.9),
+      part("MediumHardpoint2", "hpt_beamlaser_gimbal_medium", "Beam laser (M)", "hardpoint", 1),
+      part("TinyHardpoint1", "hpt_plasmapointdefence_turret_tiny", "Point defence", "utility", 0.97),
+      part("Slot01_Size5", "int_fuelscoop_size5_class5", "Fuel scoop 5A", "optional", 0.88),
+    ],
+  };
+  const payload = { port: 7119, shipDamage };
+  await page.setViewportSize({ width: 420, height: 700 });
+  await page.route(/\/api\/state\?channel=hud/, (r) => r.fulfill({ json: payload }));
+  await page.routeWebSocket(/channel=hud/, (ws) => {
+    ws.onMessage(() => {});
+    setTimeout(() => ws.send(JSON.stringify({ type: "state", payload })), 300);
+  });
+  await page.goto("/ship-overlay.html");
+  const sec = page.locator('[data-section="ship"]');
+  await expect(sec).toContainText("Ze Zoom");
+  await expect(sec).toContainText("hull 62%");
+  await expect(sec.locator(".row .k")).toHaveText(["Thrusters 5A", "FSD 5A", "Fuel scoop 5A", "Beam laser (M)"]);
+  await expect(sec).toContainText("3 lightly worn");
+  await expect(sec.locator(".ship-part.ship--bad")).toHaveCount(1);
+  await expect(sec.locator(".ship-part.ship--warn")).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `${OUT}/hud-ship.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+/* The ship's vehicles (1.3.1): in the Rhino, it is the picture and the ship a row; a crew-flown fighter is listed. */
+test("hud: Ship draws the vehicle you are in, with the ship and the other vehicles as rows", async ({ page }) => {
+  const errors = watchErrors(page);
+  const now = new Date().toISOString();
+  const shipDamage = {
+    ship: "krait_mkii",
+    shipName: "Ze Zoom",
+    shipIdent: "FA-01",
+    hull: 0.91,
+    hullAt: now,
+    loadoutAt: now,
+    parts: [],
+    vehicles: [
+      { key: "srv:mev_rhino", kind: "srv", type: "mev_rhino", name: "Rhino", state: "out", hull: 0.42, hullAt: now, pilot: "you" },
+      { key: "fighter:independent_fighter", kind: "fighter", type: "independent_fighter", name: "Taipan", state: "out", hull: 0.77, hullAt: now, pilot: "crew" },
+      { key: "slv:lander01", kind: "slv", type: "lander01", name: "Nomad", state: "destroyed", hull: 0, hullAt: now, pilot: null },
+    ],
+    inVehicle: "srv:mev_rhino",
+    fighterType: "independent_fighter",
+  };
+  const payload = { port: 7119, shipDamage };
+  await page.setViewportSize({ width: 420, height: 700 });
+  await page.route(/\/api\/state\?channel=hud/, (r) => r.fulfill({ json: payload }));
+  await page.routeWebSocket(/channel=hud/, (ws) => {
+    ws.onMessage(() => {});
+    setTimeout(() => ws.send(JSON.stringify({ type: "state", payload })), 300);
+  });
+  await page.goto("/ship-overlay.html");
+  const sec = page.locator('[data-section="ship"]');
+  await expect(sec).toContainText("Rhino");
+  await expect(sec).toContainText("from Ze Zoom");
+  await expect(sec).toContainText("hull 42%");
+  await expect(sec.locator(".row .k")).toHaveText(["Ze Zoom", /Taipan\s*out · crew/, /Nomad\s*lost/]);
+  await expect(sec.locator(".ship-veh-icon")).toHaveCount(2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `${OUT}/hud-ship-vehicle.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
 /*
   The 3D galaxy map (G1, docs/galaxy-plan-28092026.md): the whole index loads, region names are
   placed, and moving close to Sol swaps the overview for precise tiles there.
@@ -405,6 +860,109 @@ test("galaxy 3D: the game-style menus open and close, each with its help, and th
 });
 
 /*
+  The system finder (plan-finder-1.2.20, owner 2026-10-19): a finder file in the test profile, then the API's answer
+  and the drawer — round a system typed by name, at least one Earth-like world, the colonised left out; a row shows
+  the system's card.
+*/
+/*
+  Ten minutes behind other tabs the galaxy map gives its memory back (TabSlot); its tab draws it again. It came back
+  zoomed out over the core, where the commander had zoomed in (a tester, 2026-10-29): it opens where it was now.
+*/
+test("galaxy 3D: a galaxy tab let go behind another tab opens where it was, as it was", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.clock.install();
+  await page.goto("/");
+  type G = { stats: () => { phase: string }; lookAt: (x: number, y: number, z: number, d: number) => void };
+  const ready = () =>
+    expect
+      .poll(() => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+      .toBe("ready");
+  const camera = () =>
+    page.evaluate(() => (window as unknown as { __galaxy?: { camera: () => unknown } }).__galaxy?.camera() ?? null);
+  await page.getByRole("button", { name: "Open a screen in a tab" }).click();
+  await page.getByRole("menuitem", { name: /^Galaxy map/ }).click();
+  await ready();
+  // A menu open with a setting changed, and a system picked (2026-10-29: all of it was gone, not only the zoom).
+  await page.getByRole("button", { name: "Targets", exact: true }).click();
+  const worth = () => page.getByRole("slider", { name: "Worth at least (million CR)", exact: true });
+  await worth().fill("8");
+  const find = page.getByRole("searchbox", { name: "Find" });
+  await find.fill("Eol Prou IW");
+  const list = page.getByTestId("g3d-find");
+  await expect(list.getByRole("button").first()).toContainText("Eol Prou IW", { timeout: 15_000 });
+  await list.getByRole("button").first().click();
+  const panel = page.getByTestId("g3d-panel");
+  await expect(panel.locator("h2")).toContainText("Eol Prou IW", { timeout: 10_000 });
+  await page.evaluate(() => (window as unknown as { __galaxy: G }).__galaxy.lookAt(-1500, 0, 22500, 900));
+  const before = await camera();
+  await page.locator(".tab-strip__tab").first().click();
+  await page.clock.fastForward("11:00");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy == null)).toBe(true);
+  await page.locator(".tab-strip__tab", { hasText: "Galaxy" }).first().click();
+  await ready();
+  expect(await camera()).toEqual(before);
+  await expect(page.getByTestId("g3d-targets")).toBeVisible();
+  await expect(worth()).toHaveValue("8");
+  await expect(panel.locator("h2")).toContainText("Eol Prou IW", { timeout: 10_000 });
+  await expect(find).toHaveValue("Eol Prou IW");
+  await closeScreen(page, "Galaxy");
+  expect(errors).toEqual([]);
+});
+
+test("galaxy 3D: the colonisation candidate search lists the systems round a picked one and shows a hit's card", async ({ page, request }) => {
+  const errors = watchErrors(page);
+  const dir = path.join(tmpdir(), "edexo-e2e-profile", "galaxy");
+  const file = path.join(dir, "finder.bin");
+  mkdirSync(dir, { recursive: true });
+  const { writeFinder } = await import("../tests/helpers/finderFixture.js");
+  const F = { populated: 1, colonised: 2, fullyScanned: 16 };
+  writeFinder(file, [
+    { id: 101n, name: "E2E Anchor", x: 0, y: 0, z: 0, listed: 3, u8: { planets: 2, stars: 1, flags: F.populated | F.colonised } },
+    { id: 102n, name: "E2E Near ELW", x: 12, y: 1, z: -3, listed: 7, bodyCount: 7, u8: { elw: 1, planets: 6, stars: 1, landable: 3, bio: 1, flags: F.fullyScanned, mainStar: 4 }, starMask: 1 << 4 },
+    { id: 103n, name: "E2E Taken ELW", x: 20, y: 0, z: 0, listed: 5, u8: { elw: 1, planets: 4, stars: 1, flags: F.populated | F.colonised } },
+    { id: 104n, name: "E2E Rocky Only", x: 8, y: 0, z: 2, listed: 4, u8: { rocky: 3, planets: 3, stars: 1 } },
+  ]);
+  try {
+    const api = await request.post("/api/galaxy/finder", {
+      data: { reference: "picked", picked: "E2E Anchor", radiusLy: 50, min: { elw: 1 } },
+    });
+    const j = (await api.json()) as { hits: { name: string; distLy: number }[]; problem: string | null };
+    expect(j.problem).toBeNull();
+    expect(j.hits.map((h) => h.name)).toEqual(["E2E Near ELW"]);
+
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.addInitScript(() => {
+      localStorage.setItem("edexo.filters.galaxy.finder.ref", JSON.stringify("picked"));
+      localStorage.setItem("edexo.filters.galaxy.finder.radius", JSON.stringify(50));
+      localStorage.setItem("edexo.filters.galaxy.finder.min", JSON.stringify({ elw: 1 }));
+    });
+    await page.goto("/?screen=galaxy");
+    type G = { stats: () => { phase: string } };
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __galaxy?: G }).__galaxy?.stats().phase), { timeout: 60_000 })
+      .toBe("ready");
+    await page.getByRole("button", { name: "Colonisation candidate search", exact: true }).click();
+    const drawer = page.getByTestId("g3d-finder");
+    await drawer.getByLabel("System to search around").fill("E2E Anchor");
+    const row = drawer.locator("tr.is-pickable").filter({ hasText: "E2E Near ELW" });
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await expect(drawer.locator("tr.is-pickable")).toHaveCount(1);
+    await expect(drawer).toContainText("1 system match");
+    await page.screenshot({ path: `${OUT}/galaxy-3d-finder.png` });
+    await row.click();
+    await expect(page.locator(".finder-card")).toContainText("E2E Near ELW");
+    await expect(page.locator(".finder-card")).toContainText("Earth-like world");
+    expect(errors).toEqual([]);
+  } finally {
+    try {
+      rmSync(file, { force: true });
+    } catch {
+      /* the server still has it open (Windows); the profile is a temp folder */
+    }
+  }
+});
+
+/*
   Code review, 2026-10-14: a tab stays mounted behind the others with document.hidden false, and the map's
   route and own-assets polls went on there, keeping the server's map memory from ever being let go.
 */
@@ -423,7 +981,11 @@ test("galaxy 3D: behind another tab the map stops asking; back in front it reads
     .toBe("ready");
   await expect.poll(() => asked.includes("/api/galaxy/own")).toBe(true);
 
-  await page.getByRole("tab", { name: "Main" }).click();
+  await page.getByRole("tab", { name: "Compare" }).click();
+  // The switch has to have happened (rendered, effects run) before the jump: 54 ms after the click the map was still
+  // listening on a busy machine (2026-10-17), the same on the committed code — a race in the test, not the app.
+  await expect(page.getByRole("tab", { name: "Compare" })).toHaveAttribute("aria-selected", "true");
+  await page.waitForTimeout(300);
   asked.length = 0;
   // A jump read from the journal asks the map for the route at once, when it is in front.
   await page.evaluate(() => window.dispatchEvent(new Event("edexo-system-changed")));
@@ -564,8 +1126,11 @@ test("galaxy 3D: NavRoute — Next is the plotted route with EDSM checks, Previo
     ...(edsm === undefined ? {} : { edsm, edsmAt: at }),
   });
   const plotted = [sys(1, "Sol", "G", true), sys(2, "Neut A", "N", false), sys(3, "Neut B", "N"), sys(4, "Hole C", "H", true)];
+  // The fixture commander's own folder (per-commander profiles, 1.3.1).
+  const cmdrDir = path.join(tmpdir(), "edexo-e2e-profile", "commanders", "F0000000");
+  mkdirSync(cmdrDir, { recursive: true });
   writeFileSync(
-    path.join(tmpdir(), "edexo-e2e-profile", "edexo-navroutes.json"),
+    path.join(cmdrDir, "edexo-navroutes.json"),
     JSON.stringify({ formatVersion: 1, routes: [{ at, from: "Sol", to: "Hole C", systems: [1, 2, 3, 4] }], systems: plotted }),
   );
   // The fixture journal has no NavRoute.json: the route poll is given one.
@@ -618,7 +1183,8 @@ test("galaxy 3D: NavRoute — Next is the plotted route with EDSM checks, Previo
 /*
   Owner, 2026-10-15: "NavRoute > Next ... does not find a system even if I copy the name from a galmap location". The map
   read the plotted route on a jump and every 30 s, so a route plotted a moment ago was not there yet. Next reads it on
-  opening and every 3 s while open.
+  opening, and the map reads it again when the server says the route changed (R2, 2026-10-24: the events socket,
+  played here by the test, since the route is mocked in the page and the server never sees it change).
 */
 test("galaxy 3D: NavRoute — a route plotted while Next is open shows within seconds", async ({ page }) => {
   const errors = watchErrors(page);
@@ -628,6 +1194,11 @@ test("galaxy 3D: NavRoute — a route plotted while Next is open shows within se
     const body = (await res.json()) as Record<string, unknown>;
     body.navRoute = plotted;
     await route.fulfill({ response: res, json: body });
+  });
+  let announce: (() => void) | null = null;
+  await page.routeWebSocket(/channel=events/, (ws) => {
+    ws.onMessage(() => {});
+    announce = () => ws.send(JSON.stringify({ type: "changed", topics: ["galaxy-route"] }));
   });
   await page.setViewportSize({ width: 1400, height: 820 });
   await page.goto("/?screen=galaxy");
@@ -639,11 +1210,13 @@ test("galaxy 3D: NavRoute — a route plotted while Next is open shows within se
   const drawer = page.getByTestId("g3d-navroute");
   await drawer.getByRole("button", { name: "Next", exact: true }).click();
   await expect(drawer).toContainText("No route plotted");
-  // Plotted in the game now: well inside the map's 30 s poll.
+  // Plotted in the game now; the server announces it.
   plotted = [
     { address: 11, name: "Smoke Start", starClass: "K", x: 0, y: 0, z: 0, visited: true },
     { address: 12, name: "Copied From Galmap", starClass: "N", x: 40, y: 0, z: 0, visited: false },
   ];
+  await expect.poll(() => announce != null).toBe(true);
+  announce!();
   await drawer.getByLabel("Filter by system name").fill("Copied From Galmap");
   await expect(drawer.locator(".g3d-navroute__item")).toContainText("Copied From Galmap", { timeout: 6_000 });
   expect(errors).toEqual([]);
@@ -930,22 +1503,32 @@ test("galaxy 3D: the plan chains the next targets, and a skipped stop leaves it"
   expect(errors).toEqual([]);
 });
 
-test("launcher: Import Spansh export lives in the Exomastery menu", async ({ page }) => {
+test("launcher: Import Spansh export lives in the Exomastery menu, behind the feeder option", async ({ page, request }) => {
   const errors = watchErrors(page);
   await page.addInitScript(() => localStorage.setItem("edexo.launcher.wizardDone", "1"));
-  await page.goto("/launcher.html");
-  await page.waitForTimeout(1500); // the tiles fade in
-  await page.screenshot({ path: `${OUT}/launcher-no-wizard.png`, fullPage: true });
-  // Its own launcher button is gone (owner, 2026-09-29) …
-  await expect(page.locator(".btn#btnImportDump")).toHaveCount(0);
-  // … and the menu item opens the same panel.
-  await page.locator("#btnExomasteryMenu").click();
-  const item = page.locator("#exomasteryMenu").getByRole("menuitem", { name: /Import Spansh export/ });
-  await expect(item).toBeVisible();
-  await page.locator("#exomasteryMenu").screenshot({ path: `${OUT}/launcher-exomastery-menu.png` });
-  await item.click();
-  await expect(page.locator("#importModal")).toHaveClass(/on/);
-  await expect(page.locator("#exomasteryMenu")).toBeHidden();
+  try {
+    await page.goto("/launcher.html");
+    await page.waitForTimeout(1500); // the tiles fade in
+    await page.screenshot({ path: `${OUT}/launcher-no-wizard.png`, fullPage: true });
+    // Its own launcher button is gone (owner, 2026-09-29) …
+    await expect(page.locator(".btn#btnImportDump")).toHaveCount(0);
+    const item = page.locator("#exomasteryMenu").getByRole("menuitem", { name: /Import Spansh export/ });
+    // … and the menu item is the feeder's, hidden until Options → Developer tools → Data feeder (owner, 2026-10-18).
+    await page.locator("#btnExomasteryMenu").click();
+    await expect(page.locator("#exomasteryMenu")).toBeVisible();
+    await expect(item).toBeHidden();
+    expect((await request.post("/api/settings/feeder", { data: { value: true } })).ok()).toBe(true);
+    await page.reload();
+    await page.waitForTimeout(1500);
+    await page.locator("#btnExomasteryMenu").click();
+    await expect(item).toBeVisible();
+    await page.locator("#exomasteryMenu").screenshot({ path: `${OUT}/launcher-exomastery-menu.png` });
+    await item.click();
+    await expect(page.locator("#importModal")).toHaveClass(/on/);
+    await expect(page.locator("#exomasteryMenu")).toBeHidden();
+  } finally {
+    await request.post("/api/settings/feeder", { data: { value: false } });
+  }
   expect(errors).toEqual([]);
 });
 
@@ -1058,7 +1641,7 @@ test("phone hud: chips and the portrait layout", async ({ page }) => {
   const errors = watchErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/hud-overlay.html?phone=1");
-  await expect(page.locator(".phone-chip:not(.phone-chip--fs)")).toHaveCount(8);
+  await expect(page.locator(".phone-chip:not(.phone-chip--fs)")).toHaveCount(10); // one per section: Colonize the 9th (1.3.0), Ship the 10th
   await expect(page.locator(".phone-chip--fs")).toHaveCount(1);
   await expect(page.locator("body")).toHaveClass(/phone/);
   await page.screenshot({ path: `${OUT}/hud-phone.png`, fullPage: true });
@@ -1115,7 +1698,7 @@ test("options: opens on the settings, the install facts folded at the bottom wit
   const box = page.locator(".options-diagnostics-text");
   await expect(box).toBeVisible();
   const text = await box.inputValue();
-  expect(text).toContain("ED Exo Compare");
+  expect(text).toContain("EDEXO");
   expect(text).toContain("Journals:");
   // Nothing of the commander's: no LAN key, no home folder.
   expect(text).not.toMatch(/[?&]k=[^…]/);
@@ -1147,6 +1730,7 @@ test("streamer view: the app with nothing to click", async ({ page }) => {
   expect(await page.evaluate(() => getComputedStyle(document.querySelector(".app-shell")!).pointerEvents)).toBe("none");
   // Nothing a viewer needs: the legal footer and the Live / FDev dots.
   await expect(page.locator(".app-legal-footer")).toBeHidden();
+  await expect(page.locator(".app-legal-footer-coffee")).toHaveCount(0); // asks nothing of a stream
   await expect(page.locator(".appbar-status").first()).toBeHidden();
   await page.screenshot({ path: `${OUT}/streamer-view.png` });
   expect(errors).toEqual([]);
@@ -1177,7 +1761,11 @@ test("streamer view: shows the app as the streamer has it set up (settings mirro
   await expect(compact).toHaveAttribute("aria-pressed", "true");
   await compact.click();
   await expect(page.locator(".srow")).toHaveCount(0);
-  await page.waitForTimeout(1500); // the app reports its settings once a second
+  /*
+    No wait for the app's report (it checks once a second): the view must end up with the streamer's settings
+    whether the report lands before it loads, while it starts, or after (serverChanges.ts calls every listener when
+    its socket opens; with a 1.5 s wait here instead, the view missed a report landing in its first second under load).
+  */
   // OBS is a browser of its own, with storage of its own.
   const obs = await browser.newContext({ baseURL: page.url() });
   const view = await obs.newPage();

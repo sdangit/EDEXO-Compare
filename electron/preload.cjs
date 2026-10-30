@@ -79,6 +79,13 @@ contextBridge.exposeInMainWorld("edexoElectron", {
   getTrayPref: () => ipcRenderer.invoke("edexo:get-tray-pref"),
   /** @param {{ enabled: boolean }} opts */
   setTrayPref: (opts) => ipcRenderer.invoke("edexo:set-tray-pref", opts),
+  /**
+   * Hardware acceleration (electron/gpuSafeMode.cjs): `{ safeNow, why, safeNext, locked, auto, reason }`; a change
+   * counts from the next start.
+   */
+  getGraphicsPref: () => ipcRenderer.invoke("edexo:get-graphics-pref"),
+  /** @param {{ hardware: boolean }} opts */
+  setGraphicsPref: (opts) => ipcRenderer.invoke("edexo:set-graphics-pref", opts),
   /** Whether the HUD hotkey could be registered: `{ shortcut, registered }`. */
   getHotkeyStatus: () => ipcRenderer.invoke("edexo:hotkey-status"),
   /** Key binds: `{ binds, status, actions }` (electron/keybinds.cjs). Launcher only. */
@@ -105,6 +112,12 @@ contextBridge.exposeInMainWorld("edexoElectron", {
    * @returns {Promise<{ opened: boolean; focused?: boolean; error?: string }>}
    */
   openAppWindow: () => ipcRenderer.invoke("edexo:open-app-window"),
+  /**
+   * The Colonize window (1.3.0), beside the app window. Brings it forward when it is open.
+   *
+   * @returns {Promise<{ opened: boolean; focused?: boolean; error?: string }>}
+   */
+  openColonizeWindow: () => ipcRenderer.invoke("edexo:open-colonize-window"),
   /** @returns {Promise<{ opened: boolean; paths?: string[] }>} */
   getFootOverlayOpen: () => ipcRenderer.invoke("edexo:foot-overlay-state"),
   /** @returns {Promise<{ paths: string[] }>} */
@@ -152,6 +165,8 @@ contextBridge.exposeInMainWorld("edexoElectron", {
     downloadLists: () => browserCall({ op: "downloadLists" }),
     /** Where the page goes in this window (CSS pixels), or null to hide it. */
     bounds: (rect) => browserCall({ op: "bounds", rect }),
+    /** A still of the page in front, shown in its place while a menu covers it. */
+    snapshot: () => browserCall({ op: "snapshot" }),
     open: (text) => browserCall({ op: "open", text }),
     close: (id) => browserCall({ op: "close", id }),
     select: (id) => browserCall({ op: "select", id }),
@@ -169,10 +184,32 @@ contextBridge.exposeInMainWorld("edexoElectron", {
     addLink: (name, url) => browserCall({ op: "addLink", name, url }),
     removeLink: (url) => browserCall({ op: "removeLink", url }),
     setEngine: (key, custom) => browserCall({ op: "setEngine", key, custom }),
-    /** The browser's state as it changes, and "focusAddress" (Ctrl+L in a page). Returns an unsubscribe. */
+    setKeepCache: (on) => browserCall({ op: "setKeepCache", on }),
+    setRememberPasswords: (on) => browserCall({ op: "setRememberPasswords", on }),
+    /** The save prompt's answer: "save", "never" (for this site) or "later". */
+    passwordAnswer: (id, answer) => browserCall({ op: "passwordAnswer", id, answer }),
+    /** Fills a saved login into the tab's page; the password never comes to this side. */
+    passwordFill: (id, username) => browserCall({ op: "passwordFill", id, username }),
+    /** Colonize (1.3.0): Inara's commodity search in a tab that offers "EDEXO — Read" (browserTabs.cjs openInara). */
+    openInara: (url) => browserCall({ op: "openInara", url }),
+    /** What became of a pop-up's read, shown in that page's pop-up. */
+    inaraResult: (id, ok, text) => browserCall({ op: "inaraResult", id, ok, text }),
+    passwordDelete: (origin, username) => browserCall({ op: "passwordDelete", origin, username }),
+    passwordDeleteAll: () => browserCall({ op: "passwordDeleteAll" }),
+    passwordNeverRemove: (origin) => browserCall({ op: "passwordNeverRemove", origin }),
+    /** The optional master password over the saved logins (1.2.19). */
+    masterUnlock: (password) => browserCall({ op: "masterUnlock", password }),
+    masterLock: () => browserCall({ op: "masterLock" }),
+    masterSet: (password, current) => browserCall({ op: "masterSet", password, current }),
+    masterRemove: (current) => browserCall({ op: "masterRemove", current }),
+    /**
+     * The browser's state as it changes, "focusAddress" (Ctrl+L in a page) and "inaraRead" (an Inara pop-up's Read,
+     * with what was read). Returns an unsubscribe.
+     */
     on: (cb) => {
       const st = (_e, s) => cb({ type: "state", state: s });
-      const ev = (_e, m) => cb({ type: "event", event: m && typeof m.type === "string" ? m.type : "" });
+      const ev = (_e, m) =>
+        cb({ type: "event", event: m && typeof m.type === "string" ? m.type : "", data: m && m.type === "inaraRead" ? m.data : undefined });
       ipcRenderer.on("edexo:browser-state", st);
       ipcRenderer.on("edexo:browser-event", ev);
       return () => {

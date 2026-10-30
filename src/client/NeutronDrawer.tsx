@@ -8,10 +8,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fmtLy } from "@shared/format";
 import type { GalaxyFindDTO } from "@shared/dto/galaxy";
-import { G3D_HELP, MenuHead, MenuRow } from "./galaxy3d/G3dMenu";
+import { FlaskConical, Fuel, Zap } from "lucide-react";
+import { G3D_HELP, MenuCheck, MenuHead, MenuRow } from "./galaxy3d/G3dMenu";
+import { keepNeutronMarks, keptNeutronMarks, type NeutronMark } from "./galaxy3d/neutronMarks";
 import { PickList, type PickOption } from "./galaxy3d/PickList";
 import { CopySystemButton } from "./CopySystemButton";
 import { isBool, usePersistedState } from "./usePersistedState";
+import { onServerChange } from "./serverChanges";
 
 const isBoost = (v: unknown): v is number | null => v === null || v === 4 || v === 6;
 
@@ -27,7 +30,7 @@ interface Ship {
   wearIsDefault: boolean;
   /** This ship's own supercharges, other ships with the same drive, or the default (shared/fsdWear.ts). */
   wearFrom: "ship" | "drive" | "default";
-  /** A supercharge multiplies the range by this: the ship type's (6 for the Caspian, else 4). */
+  /** A supercharge multiplies the range by this: the drive's (6 for the Mk II SCO drive, else 4). */
   boostFactor: number;
   /** The ship type is one the app knows; when not, the commander's own ×4 / ×6 is kept. */
   shipKnown?: boolean;
@@ -55,12 +58,16 @@ export interface NeutronHopDTO {
   boosted: number;
   distanceLy: number;
   refuel: boolean;
+  /** Scoop to half a tank, not full: the plan counts on the lighter ship's range. */
+  refuelHalf?: boolean;
   scoopOnWay: boolean;
   scoopLs: number | null;
   jumpsLeft: number;
   fsdHealth: number | null;
   /** "Use Jumponium": the FSD injections planned for this hop's normal jumps (one jump fewer), else null. */
   inject?: { tier: "basic" | "standard" | "premium"; count: number } | null;
+  /** The unboosted range the hop is planned with: the fuel aboard as it leaves sets it. */
+  rangeLy?: number;
 }
 interface RouteDTO {
   hops: NeutronHopDTO[];
@@ -111,38 +118,95 @@ interface LiveDTO {
     done: boolean;
     replanning: boolean;
   } | null;
-  hops: (Stop & { kind: NeutronHopDTO["kind"] })[] | null;
+  hops: NeutronMark[] | null;
   /** Bumped with every new route, a re-plot from where the ship went included. */
   version: number;
 }
 
 const pct = (v: number | null) => (v == null ? "?" : `${Math.round(v * 100)} %`);
 
+/*
+  The plan, kept while another drawer is open (owner, 2026-10-28: "click on some other tab (i.e. Layers) … it forgets
+  the whole route", its line still on the map): the map unmounts a drawer it is not showing, so the stops, the
+  ship's numbers and the route live here, for as long as the window; its line and dots in galaxy3d/neutronMarks.ts.
+*/
+const kept = {
+  stops: [] as Stop[],
+  range: "",
+  tank: "",
+  /** The range and jumps a tank last filled in from the ship: a field still holding them follows the ship. */
+  rangeFromShip: null as string | null,
+  tankFromShip: null as string | null,
+  boostNow: null as number | null,
+  optimise: false,
+  route: null as RouteDTO | null,
+  liveVersion: -1,
+  /** The newest plan asked for, by any opening of the drawer: an older answer is stale. */
+  planSeq: 0,
+  /** A plan still on its way, for a drawer opened while it runs. */
+  inFlight: null as Promise<RouteDTO | null> | null,
+};
+
 export function NeutronDrawer({
   onRoute,
   onFocus,
 }: {
-  onRoute: (pts: Pt[]) => void;
+  onRoute: (marks: NeutronMark[]) => void;
   onFocus: (p: Pt) => void;
 }) {
   const [status, setStatus] = useState<Status | null>(null);
-  const [stops, setStops] = useState<Stop[]>([]);
+  const [stops, setStops] = useState<Stop[]>(kept.stops);
   const [query, setQuery] = useState("");
   const [found, setFound] = useState<Stop[]>([]);
-  const [range, setRange] = useState("");
-  const [tank, setTank] = useState("");
+  const [range, setRange] = useState(kept.range);
+  const [tank, setTank] = useState(kept.tank);
   /*
-    The supercharge (owner, 2026-10-15): the ship type the game writes at login picks it (×6 the Caspian, ×4 the rest);
-    for a ship type the app does not know yet (a game update) it stays at ×4 and the commander's own pick is remembered.
+    The supercharge (owner, 2026-10-15; by the drive since 2026-10-20): the FSD in the ship's Loadout picks it (×6 the
+    Mk II SCO drive, ×4 every other drive), else the ship type; when neither says, it stays at ×4 and the commander's
+    own pick is remembered.
   */
   const [boostPicked, setBoostPicked] = usePersistedState<number | null>("galaxy.neutron.boost", null, isBoost);
-  const [boostNow, setBoostNow] = useState<number | null>(null);
-  const [optimise, setOptimise] = useState(false);
+  const [boostNow, setBoostNow] = useState<number | null>(kept.boostNow);
+  const [optimise, setOptimise] = useState(kept.optimise);
   const [useJump, setUseJump] = usePersistedState("galaxy.neutron.jumponium", false, isBool);
-  const [route, setRoute] = useState<RouteDTO | null>(null);
+  const [halfTank, setHalfTank] = usePersistedState("galaxy.neutron.halfTank", false, isBool);
+  const [route, setRoute] = useState<RouteDTO | null>(kept.route);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState<LiveDTO | null>(null);
+  useEffect(() => {
+    Object.assign(kept, { stops, range, tank, boostNow, optimise, route });
+  }, [stops, range, tank, boostNow, optimise, route]);
+  const draw = useCallback(
+    (marks: NeutronMark[]) => {
+      keepNeutronMarks(marks);
+      onRoute(marks);
+    },
+    [onRoute],
+  );
+  // Back from another drawer, or the galaxy tab drawn again: the kept route's line with it.
+  useEffect(() => {
+    if (keptNeutronMarks().length) onRoute(keptNeutronMarks());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, as the drawer opens
+  }, []);
+  // A plan still running when the drawer was closed for another menu: its answer here once it comes.
+  useEffect(() => {
+    const p = kept.inFlight;
+    if (!p) return;
+    let open = true;
+    setBusy(true);
+    void p.then((j) => {
+      if (!open) return;
+      if (j) {
+        setRoute(j);
+        setStops(kept.stops);
+      }
+      setBusy(false);
+    });
+    return () => {
+      open = false;
+    };
+  }, []);
 
   const load = () =>
     void fetch("/api/neutron/status")
@@ -154,34 +218,30 @@ export function NeutronDrawer({
     A route being flown: shown and drawn on the map. Asked again every few seconds while one is flown, so a re-plot
     from where the ship went (server/neutronLive.ts) is drawn, and the end of the route clears the map.
   */
-  const liveVersion = useRef(-1);
   const readLive = useCallback(() => {
     void fetch("/api/neutron/live")
       .then((r) => (r.ok ? r.json() : null))
       .then((j: LiveDTO | null) => {
         if (!j) return;
         setLive(j);
-        if (j.version === liveVersion.current) return;
-        const first = liveVersion.current < 0;
-        liveVersion.current = j.version;
+        if (j.version === kept.liveVersion) return;
+        const first = kept.liveVersion < 0;
+        kept.liveVersion = j.version;
         if (j.active && j.hops) {
-          onRoute(j.hops.map((h) => ({ x: h.x, y: h.y, z: h.z })));
+          draw(j.hops);
           // A re-plot replaced the plan in the table: the map shows the one being flown.
           if (!first) setRoute(null);
         } else {
           // Ended (arrived, stopped, a boxel run) — also while the drawer was closed: no line stays (review 1.2.16).
           if (!first) setRoute(null);
-          onRoute([]);
+          draw([]);
         }
       })
       .catch(() => undefined);
-  }, [onRoute]);
+  }, [draw]);
   useEffect(readLive, [readLive]);
-  useEffect(() => {
-    if (!live?.active) return;
-    const t = window.setInterval(readLive, 4000);
-    return () => clearInterval(t);
-  }, [live?.active, readLive]);
+  // A re-plot, an arrival or a stop from another window (R2, 2026-10-24: was asked every 4 s while flying).
+  useEffect(() => onServerChange("neutron-live", readLive), [readLive]);
   const setFlying = async (body: object) => {
     setError(null);
     try {
@@ -192,7 +252,7 @@ export function NeutronDrawer({
       });
       const j = (await r.json()) as LiveDTO & { error?: string };
       if (!r.ok) throw new Error(j.error ?? `Failed (${r.status})`);
-      liveVersion.current = j.version;
+      kept.liveVersion = j.version;
       setLive(j);
       return j;
     } catch (e) {
@@ -205,7 +265,7 @@ export function NeutronDrawer({
     const j = await setFlying({ stop: true });
     if (j && !j.active) {
       setRoute(null);
-      onRoute([]);
+      draw([]);
     }
   };
   useEffect(() => {
@@ -226,16 +286,22 @@ export function NeutronDrawer({
     setBoostNow(v);
     if (ship?.shipKnown === false) setBoostPicked(v);
   };
+  /*
+    The ship's range and jumps a tank fill the fields, and follow the ship (a refit, another ship) until typed over
+    (owner, 2026-10-28: after a refit they only showed after some jumps).
+  */
   useEffect(() => {
     if (!ship) return;
-    if (!range && ship.rangeLy) setRange(ship.rangeLy.toFixed(1));
-    if (!tank && ship.jumpsPerTank) setTank(String(ship.jumpsPerTank));
+    const r = ship.rangeLy ? ship.rangeLy.toFixed(1) : null;
+    const t = ship.jumpsPerTank ? String(ship.jumpsPerTank) : null;
+    if (r != null && (!range || range === kept.rangeFromShip)) setRange(r);
+    if (t != null && (!tank || tank === kept.tankFromShip)) setTank(t);
+    if (r != null) kept.rangeFromShip = r;
+    if (t != null) kept.tankFromShip = t;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ship]);
-  useEffect(() => {
-    const t = window.setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, []);
+  // A jump or an outfitting changed the ship (R2, 2026-10-24: was asked every 5 s).
+  useEffect(() => onServerChange("neutron-status", load), []);
   const from: Stop | null = ship?.position ? { name: ship.system ?? "Your ship", ...ship.position } : null;
   // Without a position from the journals (no jump yet), the first stop is where the route starts.
   const waypoints = from ? [from, ...stops] : stops;
@@ -269,9 +335,21 @@ export function NeutronDrawer({
       return next;
     });
 
-  const planSeq = useRef(0);
-  const plan = async (): Promise<RouteDTO | null> => {
-    const seq = ++planSeq.current;
+  /*
+    A plan takes seconds, and the drawer may close for another menu meanwhile (2026-10-29: the new route's line on the
+    map, the old route in the list when it opened again): the answer goes into `kept` itself, not only into this
+    drawer's state, which a closed drawer no longer has.
+  */
+  const plan = (): Promise<RouteDTO | null> => {
+    const p = planNow();
+    kept.inFlight = p;
+    void p.finally(() => {
+      if (kept.inFlight === p) kept.inFlight = null;
+    });
+    return p;
+  };
+  const planNow = async (): Promise<RouteDTO | null> => {
+    const seq = ++kept.planSeq;
     setBusy(true);
     setError(null);
     try {
@@ -285,31 +363,34 @@ export function NeutronDrawer({
           boost: boost ?? undefined,
           optimise,
           useJumponium: useJump,
+          halfTank,
         }),
       });
       const j = (await r.json()) as RouteDTO & { error?: string };
       // A newer plan was asked for meanwhile (Use Jumponium flipped twice): this answer is stale (review 1.2.16).
-      if (seq !== planSeq.current) return null;
+      if (seq !== kept.planSeq) return null;
       if (!r.ok) throw new Error(j.error ?? `Plan failed (${r.status})`);
+      kept.route = j;
+      if (optimise) kept.stops = from ? j.waypoints.slice(1) : j.waypoints;
       setRoute(j);
-      if (optimise) setStops(from ? j.waypoints.slice(1) : j.waypoints);
-      onRoute(j.hops.map((h) => ({ x: h.x, y: h.y, z: h.z })));
+      setStops(kept.stops);
+      draw(j.hops);
       return j;
     } catch (e) {
-      if (seq === planSeq.current) setError(e instanceof Error ? e.message : String(e));
+      if (seq === kept.planSeq) setError(e instanceof Error ? e.message : String(e));
       return null;
     } finally {
-      if (seq === planSeq.current) setBusy(false);
+      if (seq === kept.planSeq) setBusy(false);
     }
   };
-  // Use Jumponium flipped with a route on screen: plan it again with (or without) the injections.
-  const jumpSeen = useRef(useJump);
+  // Use Jumponium or half a tank flipped with a route on screen: plan it again with (or without) it.
+  const jumpSeen = useRef({ useJump, halfTank });
   useEffect(() => {
-    if (jumpSeen.current === useJump) return;
-    jumpSeen.current = useJump;
+    if (jumpSeen.current.useJump === useJump && jumpSeen.current.halfTank === halfTank) return;
+    jumpSeen.current = { useJump, halfTank };
     if (route && waypoints.length >= 2) void plan();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the toggle replans
-  }, [useJump]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the toggles replan
+  }, [useJump, halfTank]);
   /*
     Fly: from where the ship is now. A plan made somewhere else is made again from here first; the destinations go
     with it, so the server can plot again from wherever the ship goes off the route.
@@ -327,9 +408,25 @@ export function NeutronDrawer({
         rangeLy: Number(range) || ship?.rangeLy || undefined,
         boost: boost ?? undefined,
         useJumponium: r.jumponium?.on === true,
+        halfTank,
       },
     });
   };
+
+  /*
+    A supercharge reaches the range times four (six), and the range grows as the tank empties: a hop leaving with
+    part of a tank goes past the full tank's reach (owner, 2026-10-28: "74 ly … x4 is 296 ly, I still see 305 ly
+    jumps"). Said on each supercharged hop, and once above the table.
+  */
+  const factor = boost ?? ship?.boostFactor ?? 4;
+  const fullReach = (Number(range) || ship?.rangeLy || 0) * factor;
+  const reachNote = (h: NeutronHopDTO) =>
+    h.rangeLy
+      ? `Planned with the fuel aboard as it leaves: ${h.rangeLy.toFixed(1)} ly × ${factor} = ${Math.round(h.rangeLy * factor)} ly reach${fullReach ? ` (a full tank: ${Math.round(fullReach)} ly)` : ""}.`
+      : "";
+  const pastFull = route
+    ? route.hops.filter((h) => h.boosted && h.jumps === 1 && fullReach && h.distanceLy > fullReach + 0.5).length
+    : 0;
 
   const download = () => void fetch("/api/neutron/download", { method: "POST" }).then(load);
   const rel = status?.release;
@@ -366,7 +463,8 @@ export function NeutronDrawer({
                 {live.view.total}
                 {live.view.next ? (
                   <>
-                    , next <strong>{live.view.next}</strong> (on the clipboard; F6 copies it again)
+                    , next <strong>{live.view.next}</strong> (on the clipboard: target it in the galaxy map, don't plot to it; F6
+                    copies it again)
                   </>
                 ) : null}
                 .
@@ -442,7 +540,7 @@ export function NeutronDrawer({
           <div className="g3d-menu__section">
             <MenuRow
               label="Jump range"
-              hint={`Laden, unboosted, as your jumps show it (change it for another ship); a supercharge reaches ${(boost ?? ship?.boostFactor) === 6 ? "six times this (the Caspian's Mk II SCO drive)" : "four times this"}`}
+              hint={`Laden, unboosted, with a full tank, as your jumps show it (change it for another ship); a supercharge reaches ${(boost ?? ship?.boostFactor) === 6 ? "six times this (the Mk II SCO drive)" : "four times this"}, and further on a part tank`}
             >
               <input
                 className="g3d-input g3d-row__val"
@@ -456,8 +554,8 @@ export function NeutronDrawer({
               label="Supercharge"
               hint={
                 ship?.shipKnown === false
-                  ? "Your ship's type is not one the app knows yet (a game update?): ×4 unless you pick ×6, and your pick is remembered"
-                  : "From your ship's type, as the game writes it at login: ×6 for the Caspian Explorer, ×4 for every other ship. Pick another for a range typed in for another ship"
+                  ? "Neither your ship's drive nor its type is one the app knows yet (a game update?): ×4 unless you pick ×6, and your pick is remembered"
+                  : "From your ship's frame shift drive, as the game writes it at login: ×6 with the Mk II SCO drive (the Caspian Explorer's), ×4 with any other. Pick another for a range typed in for another ship"
               }
             >
               <select
@@ -467,7 +565,7 @@ export function NeutronDrawer({
                 aria-label="Supercharge"
               >
                 <option value="4">×4</option>
-                <option value="6">×6 (Caspian)</option>
+                <option value="6">×6 (Mk II SCO drive)</option>
               </select>
             </MenuRow>
             <MenuRow
@@ -500,33 +598,32 @@ export function NeutronDrawer({
                 · this ship supercharges ×{ship.boostFactor}
               </p>
             ) : null}
-            <label className="g3d-row g3d-row--check">
-              <input
-                type="checkbox"
-                className="g3d-row__box"
-                checked={optimise}
-                onChange={(e) => setOptimise(e.target.checked)}
-              />
-              <span className="g3d-row__label">Optimise the order (first and last stay)</span>
-            </label>
-            <label
-              className="g3d-row g3d-row--check"
-              title="Plan with FSD injections: on every hop where one takes a jump off its normal jumps (it never adds to a supercharged jump), the cheapest by material, one per jump. The HUD says which to synthesise on the way."
-            >
-              <input
-                type="checkbox"
-                className="g3d-row__box"
-                checked={useJump}
-                disabled={busy}
-                onChange={(e) => setUseJump(e.target.checked)}
-              />
-              <span className="g3d-row__label">
-                Use Jumponium
-                {route?.jumponium && !route.jumponium.on && route.jumponium.possible
-                  ? ` (−${route.jumponium.possible} jump${route.jumponium.possible === 1 ? "" : "s"} on this route)`
-                  : ""}
-              </span>
-            </label>
+            <MenuCheck
+              label="Optimise the order"
+              hint="The stops in the shortest order; the first and the last stay where they are"
+              on={optimise}
+              set={setOptimise}
+            />
+            <MenuCheck
+              label="Scoop to half a tank where it saves jumps"
+              hint="A lighter ship jumps further: refuel stops may scoop to half a tank where the next supercharges then reach further (Spansh's way). A jump or two fewer on a long trip at most, for more scoop stops, and often none with a small tank; the plan says “scoop to half” where it counts on it, and a full tank there falls short."
+              on={halfTank}
+              set={setHalfTank}
+              disabled={busy}
+              note={route && halfTank ? `(${route.hops.filter((h) => h.refuelHalf).length} of ${route.refuels} stops)` : undefined}
+            />
+            <MenuCheck
+              label="Use Jumponium"
+              hint="Plan with FSD injections: on every hop where one takes a jump off its normal jumps (it never adds to a supercharged jump), the cheapest by material, one per jump. The HUD says which to synthesise on the way."
+              on={useJump}
+              set={setUseJump}
+              disabled={busy}
+              note={
+                route?.jumponium && !route.jumponium.on && route.jumponium.possible
+                  ? `(−${route.jumponium.possible} jump${route.jumponium.possible === 1 ? "" : "s"} on this route)`
+                  : undefined
+              }
+            />
             <button
               type="button"
               className="btn-top-toggle"
@@ -547,7 +644,7 @@ export function NeutronDrawer({
               <button
                 type="button"
                 className="btn-top-toggle"
-                title="From where you are now: after each jump onto a stop the next stop goes to the clipboard (paste it in the galaxy map; F6 copies it again), and the HUD's Next jump says where to scoop and supercharge. Off the route, it is plotted again from where you are. Ends at the last stop, with Stop, or with a boxel run."
+                title="From where you are now: after each jump onto a stop the next stop goes to the clipboard (target it in the game's galaxy map, don't plot a route to it: the game can refuse to plot a full-range jump on a part tank; F6 copies it again), and the HUD's Next jump says where to scoop and supercharge. Off the route, it is plotted again from where you are. Ends at the last stop, with Stop, or with a boxel run."
                 disabled={busy}
                 onClick={() => void fly()}
               >
@@ -568,8 +665,9 @@ export function NeutronDrawer({
                 <p className="g3d-panel__note">
                   {route.jumponium.plan.saved ? (
                     <>
-                      ⚗ FSD injections take {route.jumponium.plan.saved} jump
-                      {route.jumponium.plan.saved === 1 ? "" : "s"} off (hops marked ⚗):{" "}
+                      <FlaskConical className="g3d-neutron-ico" aria-hidden="true" /> FSD injections take{" "}
+                      {route.jumponium.plan.saved} jump
+                      {route.jumponium.plan.saved === 1 ? "" : "s"} off (hops marked with the flask):{" "}
                       {Object.entries(route.jumponium.plan.used)
                         .filter(([, n]) => n)
                         .map(([t, n]) => `${n} ${TIER_NAME[t]}`)
@@ -588,10 +686,17 @@ export function NeutronDrawer({
                       Galaxy map → Jumponium for where to find more.
                     </>
                   ) : route.jumponium.short ? (
-                    `⚗ The materials aboard make no injection this route can use; ${route.jumponium.short} hop${route.jumponium.short === 1 ? "" : "s"} would get shorter with more. Galaxy map → Jumponium for where to find them.`
+                    `The materials aboard make no injection this route can use; ${route.jumponium.short} hop${route.jumponium.short === 1 ? "" : "s"} would get shorter with more. Galaxy map → Jumponium for where to find them.`
                   ) : (
-                    "⚗ No hop on this route gets shorter with an FSD injection."
+                    "No hop on this route gets shorter with an FSD injection."
                   )}
+                </p>
+              ) : null}
+              {pastFull ? (
+                <p className="g3d-panel__note">
+                  {pastFull} supercharged hop{pastFull === 1 ? " goes" : "s go"} past {Math.round(fullReach)} ly (
+                  {fmtLy(Number(range) || ship?.rangeLy || 0)} × {factor}, a full tank): the tank is part empty there, and
+                  a lighter ship jumps further. Hover a hop's lightning for its range.
                 </p>
               ) : null}
               {route.unsafeLegs.length ? (
@@ -622,10 +727,15 @@ export function NeutronDrawer({
                         {h.refuel ? (
                           <span
                             className="g3d-neutron-fuel"
-                            title="Scoop the system's own star before supercharging"
+                            title={
+                              h.refuelHalf
+                                ? "Scoop the system's own star to half a tank before supercharging: the lighter ship reaches the next stops, a full tank would not"
+                                : "Scoop the system's own star before supercharging"
+                            }
                           >
                             {" "}
-                            ⛽ scoop{h.scoopLs != null ? ` (${h.scoopLs.toLocaleString("en-US")} ls)` : ""}
+                            <Fuel className="g3d-neutron-ico" aria-hidden="true" /> {h.refuelHalf ? "scoop to half" : "scoop"}
+                            {h.scoopLs != null ? ` (${h.scoopLs.toLocaleString("en-US")} ls)` : ""}
                           </span>
                         ) : null}
                         {h.scoopOnWay ? (
@@ -634,19 +744,36 @@ export function NeutronDrawer({
                             title="More normal jumps than the tank holds: scoop a K G B F O A M star on the way"
                           >
                             {" "}
-                            ⛽ on the way
+                            <Fuel className="g3d-neutron-ico" aria-hidden="true" /> on the way
                           </span>
                         ) : null}
                       </td>
                       <td>
-                        {h.jumps ? `${h.jumps}${h.boosted ? " ⚡" : ""}` : ""}
+                        {/* Past a supercharge's reach: the supercharged jump, then the game's own plot (a tester
+                            read "905 ly" as one jump, 2026-10-28). */}
+                        {h.boosted && h.jumps > 1 ? (
+                          <span
+                            title={`One supercharged jump, then ${h.jumps - 1} normal jump${h.jumps === 2 ? "" : "s"}: plot the system in the game's galaxy map after supercharging. ${reachNote(h)}`}
+                          >
+                            <Zap className="g3d-neutron-ico" aria-label="Supercharged" /> + {h.jumps - 1}
+                          </span>
+                        ) : h.boosted ? (
+                          <span title={`One supercharged jump. ${reachNote(h)}`}>
+                            <Zap className="g3d-neutron-ico" aria-label="Supercharged" />
+                          </span>
+                        ) : h.jumps ? (
+                          String(h.jumps)
+                        ) : (
+                          ""
+                        )}
                         {h.inject ? (
                           <span
                             className="g3d-neutron-inject"
                             title={`${h.inject.count} ${TIER_NAME[h.inject.tier]} FSD injection${h.inject.count > 1 ? "s" : ""}, one per normal jump: one jump fewer`}
                           >
                             {" "}
-                            ⚗ {h.inject.count} {TIER_NAME[h.inject.tier]}
+                            <FlaskConical className="g3d-neutron-ico" aria-hidden="true" /> {h.inject.count}{" "}
+                            {TIER_NAME[h.inject.tier]}
                           </span>
                         ) : null}{" "}
                         <span className="dim">{h.distanceLy ? fmtLy(h.distanceLy) : ""}</span>

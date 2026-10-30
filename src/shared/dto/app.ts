@@ -111,7 +111,28 @@ export interface JournalBootProgressDTO {
   message: string;
 }
 
+/** A commander the journals name (per-commander profiles, 1.3.1). */
+export interface CommanderRefDTO {
+  fid: string;
+  name: string;
+}
+
+/**
+ * Whose data the app shows, and who the game is playing (per-commander profiles, 1.3.1). `list` is every commander
+ * the journals name, the one who played last first; `game` is the commander of a session still running (null when
+ * the game is closed or at the main menu); `canSwitch`: this server can be started again for another commander (the
+ * desktop app), else switching needs a restart by hand.
+ */
+export interface CommandersDTO {
+  active: CommanderRefDTO | null;
+  game: CommanderRefDTO | null;
+  list: (CommanderRefDTO & { files: number })[];
+  canSwitch: boolean;
+}
+
 export interface AppStatusDTO {
+  /** Per-commander profiles (1.3.1). */
+  commanders?: CommandersDTO;
   mode: "server" | "client";
   bindHost: string;
   port: number;
@@ -133,6 +154,8 @@ export interface AppStatusDTO {
   lastJournalEventIso: string | null;
   commanderName: string | null;
   journalBoot: JournalBootProgressDTO | null;
+  /** The launcher hides the feeder's Spansh dump import unless this is on (1.2.20). */
+  feederEnabled?: boolean;
   /**
    * The launcher's live strip, cheap store reads only (no snapshot rebuild): where the commander
    * is and what is unsold. All optional so older status payloads still parse.
@@ -236,10 +259,16 @@ export interface HudPrefsDTO {
   relevant?: boolean;
   /** HUD type (owner, 2026-10-04): Original (default), Title Background, Elite Style. */
   hudType?: "original" | "title" | "elite";
-  /** "HUD Overlay by EDEXO-Compare" above or below each HUD (owner, 2026-10-09); off by default. */
+  /** "HUD Overlay by EDEXO" above or below each HUD (owner, 2026-10-09); off by default. */
   credit?: "off" | "top" | "bottom";
   /** "Next boxel" line under the Next jump HUD (plan 2.7). */
   nextBoxel?: boolean;
+  /** Colonize HUD (1.3.0): the followed site's materials with bars (default on). */
+  czNeeds?: boolean;
+  /** Colonize HUD: the other sites being built (default on). */
+  czSites?: boolean;
+  /** Colonize HUD: keep finished lines, last and green (default off: they leave the HUD). */
+  czFinished?: boolean;
   /** Elite Style's tilt, degrees, -35..35 (positive: the right edge goes into the screen). */
   tilt?: number;
   /** Elite Style's angle as a turn (3D, "swinging door") or a slant (flat, same width). */

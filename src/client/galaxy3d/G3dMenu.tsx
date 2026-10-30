@@ -5,7 +5,8 @@
  * itself on hover, and each menu has a [?] for the longer story.
  */
 import type { ReactNode } from "react";
-import { BookOpen, Compass, Crosshair, Eye, Filter, FlaskConical, Layers, Route, Search, type LucideIcon } from "lucide-react";
+import { CoriolisPaths } from "../ui/icons";
+import { BookOpen, Check, Compass, Crosshair, Eye, Filter, FlaskConical, Layers, Route, ScanSearch, Search, type LucideIcon } from "lucide-react";
 import { InfoPopover, Tooltip } from "../ui/Tooltip";
 
 export type G3dTabKey =
@@ -19,7 +20,8 @@ export type G3dTabKey =
   | "expedition"
   | "neutron"
   | "stations"
-  | "jumponium";
+  | "jumponium"
+  | "finder";
 
 export const G3D_TABS: { key: G3dTabKey; label: string; hint: string }[] = [
   { key: "view", label: "View", hint: "View: camera, follow your ship, colours, brightness" },
@@ -61,8 +63,13 @@ export const G3D_TABS: { key: G3dTabKey; label: string; hint: string }[] = [
   },
   {
     key: "stations",
-    label: "Stations",
-    hint: "Stations: the nearest station with the services you pick (repair, refuel, Vista Genomics…), shown on the map",
+    label: "Carriers & Stations",
+    hint: "Carriers & Stations: the nearest fleet carriers, stations with the services you pick, and Find Tritium — from the system you picked, else your ship",
+  },
+  {
+    key: "finder",
+    label: "Colonisation candidate search",
+    hint: "Colonisation candidate search: systems round your colonies, a system you pick or every colonised one — by the bodies they have, without the systems already taken",
   },
   {
     key: "jumponium",
@@ -72,15 +79,20 @@ export const G3D_TABS: { key: G3dTabKey; label: string; hint: string }[] = [
 ];
 
 export const G3D_HELP: Record<G3dTabKey, string[]> = {
+  finder: [
+    "Systems within the distance you set of a reference: your colonised systems (from your journals), a system you select on the map or type, or every colonised system in the galaxy. The distance runs from 15 to 150 ly in steps of 5; each system is measured from the nearest reference.",
+    "Every filter is a floor — at least this many of a body type, ringed, landable or terraformable bodies, bodies with biology or geology signals (any species: the signal is what counts) — and the stars: the main star's class, or a black hole, neutron star, white dwarf or giant anywhere in it. Hide colonised leaves out every system someone colonised or claimed, Frontier's own inhabited systems, and your own colonies.",
+    "The data is a download of its own: the systems within 150 ly of inhabited space, from Spansh's dump. The counts are the bodies Spansh lists, so a system may hold more than it shows; Fully scanned only keeps the systems whose every body is listed. Colonisation is as of the data's date: a system claimed since may still show.",
+  ],
   jumponium: [
     "Two tabs: Jumponium, the FSD injection materials (Basic +25 %, Standard +50 %, Premium +100 % jump range for one jump), and AFM Refill, the materials that refill an AFMU (Standard and Premium repair faster). Each shows what you hold (from your journals: the game writes the list at every login, the app follows each pick-up, trade and synthesis after it) and how many of each tier that makes.",
     "Below, the nearest landable bodies with the elements you pick. Rich is the top tenth of landable bodies for an element, Top 1 % the best hundredth. Carbon, nickel, chromium and manganese are on most bodies and are not listed. No body carries all five premium jumponium elements: premium always takes two or more bodies.",
     "Your own scanned bodies are always searched. The rest of the galaxy comes from a file downloaded with the galaxy index: the top 1 % of landable bodies for each of thirteen elements, from Spansh's dump. An AFMU's ammunition is not in the journals: the app knows whether one is fitted, not how full it is.",
   ],
   stations: [
-    "The nearest stations to your ship with every service you pick (or any of them), a pad big enough and not too far from the arrival star. Settlements and colony construction sites only if you ask for them.",
-    "Click a row to fly the map there; Layers → Stations shows every system with a station, and pointing at one names its stations.",
-    "From Spansh's station dump, downloaded with the galaxy index (or alone here). Fleet carriers are in Carriers.",
+    "Three tabs, the same as the Carriers & Stations screen. Every list is measured from the system you picked on the map, else from your ship; picking a row here flies the map there without re-sorting the list.",
+    "Carriers: fleet carriers from EDAstro's list, nearest first (last sightings, not live). Stations: the nearest with every service you pick (or any of them), a pad big enough and not too far from the arrival star; settlements and colony construction sites only if you ask. Find Tritium: the nearest rings with Tritium hotspots and the nearest stations and carriers selling it, ten of each, from Spansh.",
+    "Carriers and stations are downloaded once on request, then kept current on their own (every 12 h and 24 h; change it beside each list). Layers → Stations and Carriers show them on the map.",
   ],
   view: [
     "Top looks straight down on the galaxy, Tilt across it at an angle. Core flies to Sagittarius A*, Sol home, Me to your ship.",
@@ -110,11 +122,11 @@ export const G3D_HELP: Record<G3dTabKey, string[]> = {
     "Your codex, region by region: how many of a region's entries you have logged. Click a region on the map or in the list to see its systems.",
   ],
   neutron: [
-    "A route through two or more systems, jumping from neutron star to neutron star: at one the FSD supercharges and the next jump reaches four times your range (six in a Caspian Explorer: read from the ship you fly).",
+    "A route through two or more systems, jumping from neutron star to neutron star: at one the FSD supercharges and the next jump reaches four times your range (six with the Mk II SCO drive, the Caspian Explorer's: read from the drive you fly).",
     "Your jump range, how many full-range jumps a tank does and the fuel aboard come from your journals; change them for another ship.",
     "Refuel stops are neutron stars with a scoopable star of their own (four in ten): scoop it, then supercharge. Where only normal jumps cross a gap longer than the tank lasts, the route says to scoop on the way.",
     "Every supercharge wears the FSD, by how much depends on the ship and its drive: learned for each ship from its Loadouts (about 1 % until it has three supercharges between two of them). The plan marks where it is expected under 80 %: repair before going on — Carriers → Stations → Repair finds the nearest.",
-    "Fly this route: after each jump onto a stop, the next stop goes to the clipboard (paste it in the game's galaxy map; F6 copies it again) and the HUD's Next jump says where to scoop and supercharge. It ends at the last stop, with Stop, or when a boxel run starts.",
+    "Fly this route: after each jump onto a stop, the next stop goes to the clipboard (target it in the game's galaxy map, don't plot a route to it: the game can refuse to plot a full-range jump on a part tank; F6 copies it again) and the HUD's Next jump says where to scoop and supercharge. It ends at the last stop, with Stop, or when a boxel run starts.",
     "The neutron stars are a separate download beside the galaxy index; a plan reads only the part of the galaxy it crosses.",
   ],
   expedition: [
@@ -154,6 +166,45 @@ export function MenuRow({ label, hint, children }: { label: string; hint: string
       </Tooltip>
       <span className="g3d-row__ctl">{children}</span>
     </div>
+  );
+}
+
+/**
+ * A ticked row, the Filter's way: the tick fills and shows a check when on (owner, 2026-10-28: the neutron route's
+ * switches showed nothing when picked). `note` goes after the label, dimmed.
+ */
+export function MenuCheck({
+  label,
+  hint,
+  on,
+  set,
+  disabled,
+  note,
+}: {
+  label: string;
+  hint: string;
+  on: boolean;
+  set: (v: boolean) => void;
+  disabled?: boolean;
+  note?: string;
+}) {
+  return (
+    <label className={`g3d-row g3d-row--check g3d-row--tick${disabled ? " g3d-row--disabled" : ""}`} title={hint}>
+      <input
+        type="checkbox"
+        className="g3d-row__box"
+        checked={on}
+        disabled={disabled}
+        onChange={(ev) => set(ev.target.checked)}
+      />
+      <span className="g3d-row__label">
+        {label}
+        {note ? <span className="dim"> {note}</span> : null}
+      </span>
+      <span className={on ? "g3d-tick g3d-tick--on" : "g3d-tick"} aria-hidden="true">
+        {on ? <Check size={14} strokeWidth={3} /> : null}
+      </span>
+    </label>
   );
 }
 
@@ -199,6 +250,7 @@ const LUCIDE_TABS: Partial<Record<G3dTabKey, LucideIcon>> = {
   targets: Crosshair,
   expedition: Compass,
   jumponium: FlaskConical,
+  finder: ScanSearch,
 };
 
 export function G3dIcon({ name }: { name: G3dTabKey }) {
@@ -214,17 +266,8 @@ export function G3dIcon({ name }: { name: G3dTabKey }) {
   return (
     <svg className="g3d-tab__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       {name === "stations" ? (
-        /*
-          A Coriolis starport face on (owner, 2026-10-13): a cuboctahedron — six squares meeting at their corners, a
-          triangle in each gap. From the front its outline is a square; the front square stands on a corner inside
-          it, touching each side in the middle, the four corner gaps are triangles, and the docking slot lies level
-          across the middle, from the left corner towards the right.
-        */
-        <>
-          <path {...p} d="M3.5 3.5h17v17h-17z" />
-          <path {...p} d="M12 3.5 20.5 12 12 20.5 3.5 12z" />
-          <path {...p} d="M8.6 11.3h6.8v1.4H8.6z" strokeWidth={1.3} />
-        </>
+        // The Coriolis starport drawn for him (ui/icons.tsx), shared with the app menu's Carriers & Stations.
+        <CoriolisPaths p={p} slotWidth={1.3} />
       ) : (
         /*
           A neutron star, not a sun (owner, 2026-10-15): a small bright core, the two jets the game draws along its

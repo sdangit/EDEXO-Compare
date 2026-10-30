@@ -12,11 +12,44 @@ import { lazyDetailOf } from "./lazyMatchDetail.js";
 import type { AppSnapshot, BodyComputed } from "../shared/types.js";
 import { footfallCertainty, type FootfallCertainty } from "../shared/footfallValue.js";
 
-export type WsChannel = "app" | "hud" | "launcher";
+/**
+ * `colonize`: a Colonize window (1.3.0) — its own events, and only the few app fields its header shows.
+ * `shell`: the Colonize window's shared header and Compare's screens in its tabs (discuss item 22, 1.3.1): the app's
+ * state without the big fields only Compare's own screen uses (SHELL_OMIT).
+ */
+export type WsChannel = "app" | "hud" | "launcher" | "colonize" | "shell";
 
 export function parseWsChannel(v: unknown): WsChannel | null {
-  return v === "app" || v === "hud" || v === "launcher" ? v : null;
+  return v === "app" || v === "hud" || v === "launcher" || v === "colonize" || v === "shell" ? v : null;
 }
+
+/**
+ * What the shell leaves out (measured on the owner's profile 2026-10-25: 1,027 KB of state, these 1,016 KB of it):
+ * the on-foot scans (501 KB; the Encyclopedia and My exobiology fetch them when opened, /api/foot-scanned), the
+ * journal's system list (319 KB; Compare's header search), the bodies (115 KB, and pushed again on every scan; the
+ * exobiology alerts, shown in Compare), the unsold organics' lines (46 KB; Compare's data-value breakdown) and the
+ * system map (35 KB; not offered in Colonize).
+ */
+export const SHELL_OMIT = [
+  "footScannedEntries",
+  "journalSystems",
+  "bodies",
+  "organicPendingLines",
+  "systemMap",
+] as const satisfies readonly (keyof AppSnapshot)[];
+
+/** What a Colonize window reads off the app's state: the connection, the boot, where the ship is. */
+const COLONIZE_KEYS = [
+  "port",
+  "mode",
+  "journalBoot",
+  "journalDir",
+  "commanderName",
+  "currentSystem",
+  "currentSystemAddress",
+  "currentRegion",
+  "lastJournalEventIso",
+] as const satisfies readonly (keyof AppSnapshot)[];
 
 /** Everything the HUD (`src/client/hud/`) reads off the snapshot (`d.<key>`), plus the bodies it looks up. */
 const HUD_KEYS = [
@@ -54,11 +87,16 @@ const HUD_KEYS = [
   // The Notable and Notices overlays (2026-09-30); notices are cut down below.
   "notableBodies",
   "notices",
+  "colonizeHud",
+  // The Ship section (discuss item 32): the ship's damage part by part.
+  "shipDamage",
 ] as const satisfies readonly (keyof AppSnapshot)[];
 
 /** What the launcher's `applyLauncherSnapshotData` reads; its live strip polls `/api/status` on its own. */
 const LAUNCHER_KEYS = [
   "port",
+  // The feeder's Spansh import in the Exomastery menu follows this (1.2.20); without it every push hid it again.
+  "feederEnabled",
   "journalBoot",
   "journalDir",
   "journalDirConfiguredOk",
@@ -236,6 +274,12 @@ export function findMatchDetail(
 }
 
 export function slimSnapshotForChannel(snap: AppSnapshot, channel: WsChannel): Partial<AppSnapshot> {
+  if (channel === "shell") {
+    const out: Record<string, unknown> = { ...snap };
+    for (const k of SHELL_OMIT) delete out[k];
+    if (snap.exoOverlayFocusBody) out.exoOverlayFocusBody = slimBodyForApp(snap.exoOverlayFocusBody);
+    return out as Partial<AppSnapshot>;
+  }
   if (channel === "app") {
     return {
       ...snap,
@@ -246,7 +290,8 @@ export function slimSnapshotForChannel(snap: AppSnapshot, channel: WsChannel): P
     };
   }
   const out: Record<string, unknown> = {};
-  const keys: readonly (keyof AppSnapshot)[] = channel === "hud" ? HUD_KEYS : LAUNCHER_KEYS;
+  const keys: readonly (keyof AppSnapshot)[] =
+    channel === "hud" ? HUD_KEYS : channel === "colonize" ? COLONIZE_KEYS : LAUNCHER_KEYS;
   for (const k of keys) out[k] = snap[k];
   if (channel === "hud") {
     out.bodies = (snap.bodies ?? []).map(slimBodyForHud);

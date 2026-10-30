@@ -22,6 +22,8 @@ export interface SpeciesMatchContext {
   orbitDistanceFromParentStarLs?: number;
   /** The body orbits a star (or a barycentre of stars), not a planet — from its `Parents`. */
   orbitsAStar?: boolean;
+  /** Kind of the journal `Parents[0]` entry: Star, Planet or Null (a barycentre). */
+  parentKind?: "Star" | "Planet" | "Null";
   /** The body's `DistanceFromArrivalLS`: how far it is from the system's arrival (main) star. */
   distanceFromArrivalLs?: number;
   /** The body's system (id64), for species known from one system only. */
@@ -36,6 +38,12 @@ export interface SpeciesMatchContext {
    * pluma on a body whose system primary is a neutron star.
    */
   hostStarClasses?: string[];
+  /**
+   * Journal star types of every star that could colour this body (the stars behind {@link hostStarClasses}, before
+   * the brightest-star override), as the journal writes them — "A" and "AeBe" kept apart. Read by the Stratum
+   * colour rule in matchSpecies (owner, 2026-10-16).
+   */
+  colourCandidateStarTypes?: string[];
   /**
    * Host-class key of the system's **main** star — the arrival star — which is not always the body's
    * host. Some species follow it rather than the star the body orbits: Stratum araneamus is under an
@@ -443,6 +451,12 @@ export interface MatchReason {
    * 1.10). Unset: the field's own card (`server/cardVerdicts.ts`).
    */
   card?: string;
+  /**
+   * On a *failure* reason: a rule measured on a year of finds ("never grew here where about N were expected" — the
+   * colour-star table, the measured exclusions), not a codex list. A confirmed find against it is a rare exception
+   * (outlier-register.json), not a codex line to widen (owner, 2026-10-18: HIP 64848 1 a / 1 b).
+   */
+  measured?: boolean;
 }
 
 export interface SpeciesProvenance {
@@ -670,7 +684,16 @@ export interface SpeciesMatch {
    * strongest first. `weight` is a log-odds nudge (+ for, − against) where there is one, null for a
    * plain measured fact. Body tab only; absent on the other surfaces.
    */
-  chanceWhy?: { label: string; weight: number | null; kind: "genus" | "field" | "measured" | "region" }[];
+  chanceWhy?: {
+    label: string;
+    weight: number | null;
+    kind: "genus" | "field" | "measured" | "region" | "calibration";
+  }[];
+  /**
+   * How many systems each colour this row would grow here has been logged in (1.2.19; `server/codexVariantCounts.ts`,
+   * EDAstro's codex): galaxy-wide and in this region. One entry per possible colour; absent when the colour is unknown.
+   */
+  colourRarity?: import("../rareColour.js").ColourRarity[];
   /** This plant, here, would advance the tracked achievement (`server/achievements.ts`). */
   achievementAdvance?: import("./achievements.js").AchievementAdvanceDTO;
   /** This species' rarity in the body's region (`shared/speciesRarity.ts`); the DNA badge shows it. */

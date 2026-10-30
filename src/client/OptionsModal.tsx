@@ -2,9 +2,15 @@
  * The options modal and its panels, split out of App.tsx (7.3).
  */
 import { useToast } from "./ui/feedback";
+import { withTransition } from "./motion";
+import { MotionSetting } from "./options/MotionSetting";
+import { FontSetting } from "./options/FontSetting";
+import { ModalHead } from "./ui/ModalHead";
+import { ExoAlertsSetting } from "./options/ExoAlertsSetting";
 import { useModal } from "./ui/useModal";
 import { InfoPopover } from "./ui/Tooltip";
 import { FoldPanel } from "./ui/Fold";
+import { OldCopiesPanel } from "./options/OldCopiesPanel";
 import { Select } from "./ui/Select";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { AppSnapshot } from "@shared/types";
@@ -22,6 +28,7 @@ import {
   EXO_MAP_CR_STEP,
   EXO_MAP_PLUS_SLIDER_MAX,
   secondScreenUrl,
+  colonizeScreenUrl,
 } from "./lsPrefs";
 import {
   CanonnUploadPanel,
@@ -159,13 +166,18 @@ export function MapOptionsModal({
   plusPlusMinCr,
   onResetExobiology,
   onClose,
+  app = "compare",
 }: {
   snap: AppSnapshot;
   plusMinCr: number;
   plusPlusMinCr: number;
   onResetExobiology: () => void;
   onClose: () => void;
+  /** Colonize (1.3.0) keeps what is the same app-wide — look, notices, online data, devices, journals, about — and
+   *  leaves out Compare's own: map marks, the snapshot stamp, exobiology and the developer tools. */
+  app?: "compare" | "colonize";
 }) {
+  const compare = app === "compare";
   const dialogRef = useModal<HTMLDivElement>(true, onClose);
   const toast = useToast();
   const [optPlus, setOptPlus] = useState(plusMinCr);
@@ -253,7 +265,7 @@ export function MapOptionsModal({
   );
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+    <div className="modal-backdrop" role="presentation" onClick={() => withTransition(onClose)}>
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -263,12 +275,24 @@ export function MapOptionsModal({
         aria-labelledby="options-modal-title"
         onClick={(ev) => ev.stopPropagation()}
       >
-        <div className="modal-head">
-          <h3 id="options-modal-title">Options</h3>
-          <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </div>
+        <ModalHead
+          title="Options"
+          titleId="options-modal-title"
+          onClose={onClose}
+          helpTitle="About these settings"
+          help={
+            <>
+              <p>
+                The settings of this app, grouped by kind. Each one is a fold that starts closed and remembers being
+                opened; the "?" on a fold explains its settings.
+              </p>
+              <p>
+                They are kept by the app, not this window, so every window and the next start show the same. The
+                install facts at the bottom (Copy diagnostics) are what a bug report needs.
+              </p>
+            </>
+          }
+        />
         <div className="modal-body">
           {/*
             Grouped (owner, 2026-10-04: "less chaotic options everywhere, with hover-on details for each
@@ -279,6 +303,10 @@ export function MapOptionsModal({
             Look
           </h4>
           <ColourSchemePanel />
+          <MotionSetting />
+          <FontSetting />
+          {compare ? (
+          <>
           {/*
             The mechanism here predates this session and is not being changed — only its presentation
             (A5). Two paragraphs explained what a <strong>+</strong> means before either slider was
@@ -356,15 +384,22 @@ export function MapOptionsModal({
             </div>
           </FoldPanel>
           <SnapshotStampPanel prefs={snap.photoStamp} />
+          </>
+          ) : null}
           <h4 className="options-group-head" title="What the app tells you about, on the bell and the Notices HUD">
             Notifications
           </h4>
           <NotifyPanel />
-          <h4 className="options-group-head" title="Which species are worth sampling, and the predictions the app missed">
-            Exobiology
-          </h4>
-          <CollectionFocusPanel />
-          <ExoMissLogPanel outliers={snap.exoOutliers} />
+          {compare ? (
+            <>
+              <h4 className="options-group-head" title="Which species are worth sampling, and the predictions the app missed">
+                Exobiology
+              </h4>
+              <CollectionFocusPanel />
+              <ExoAlertsSetting />
+              <ExoMissLogPanel outliers={snap.exoOutliers} />
+            </>
+          ) : null}
           <h4 className="options-group-head" title="What the app fetches from EDSM, and what it sends to EDSM, Canonn and EDDN under your name">
             Online data
           </h4>
@@ -413,11 +448,21 @@ export function MapOptionsModal({
                     </p>
                   </InfoPopover>
                 </span>
+                <span className="options-lan-head">
+                  Colonize
+                  <InfoPopover title="Colonize on a phone" label="What Colonize shows on a phone">
+                    <p>
+                      Your construction sites, the hold and the haul plan made on this PC, with its ticks, as they
+                      change. Read-only: plans, ticks and settings are made in Colonize here.
+                    </p>
+                  </InfoPopover>
+                </span>
                 {snap.lanUrls.map((u) => (
                   <Fragment key={u}>
                     <span className="options-lan-addr">{lanHost(u)}</span>
                     <CopyLanUrlButton url={u} label="Copy" />
                     <CopyLanUrlButton url={secondScreenUrl(u)} label="Copy" />
+                    <CopyLanUrlButton url={colonizeScreenUrl(u)} label="Copy" />
                   </Fragment>
                 ))}
               </div>
@@ -466,6 +511,39 @@ export function MapOptionsModal({
               </InfoPopover>
             </div>
           </FoldPanel>
+          {compare ? <OldCopiesPanel /> : null}
+          {compare ? (
+          <FoldPanel
+            foldKey="options-developer"
+            defaultOpen={false}
+            className="options-meta-block"
+            title="Developer tools"
+            summary={snap.feederEnabled ? "Data feeder on" : "Off"}
+          >
+            <label className="options-oneline">
+              <input
+                type="checkbox"
+                checked={snap.feederEnabled === true}
+                onChange={(e) => {
+                  void fetch("/api/settings/feeder", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ value: e.target.checked }),
+                  }).catch(() => {});
+                }}
+              />{" "}
+              Data feeder
+              <InfoPopover title="Data feeder" label="What the data feeder is">
+                <p>
+                  The tool the species profiles are built with, from a corpus of sample packs that does not ship with the
+                  app. On: the menu&apos;s <strong>Data feeder</strong> entry (where this computer has a corpus) and the
+                  launcher&apos;s Spansh dump import. The profiles you predict with are already built in; most commanders
+                  never need this.
+                </p>
+              </InfoPopover>
+            </label>
+          </FoldPanel>
+          ) : null}
           <h4 className="options-group-head" title="What this install runs on, for a bug report">
             About
           </h4>
@@ -486,13 +564,16 @@ export function MapOptionsModal({
                 <span className="tab"> · merged {snap.journalFileCount} log file(s)</span>
               ) : null}
             </p>
-            <p className="options-journal-line dim">Species DB: {snap.speciesCount}</p>
+            {compare ? <p className="options-journal-line dim">Species DB: {snap.speciesCount}</p> : null}
             <CopyDiagnostics />
-            <FeederCorpusSetting />
+            {/* The feeder's corpus folder: with the feeder (Developer tools), not asked for otherwise (1.2.20). */}
+            {compare && snap.feederEnabled ? <FeederCorpusSetting /> : null}
           </details>
-          <button type="button" className="btn-top-danger options-reset-exo" onClick={onResetExobiology}>
-            Reset exobiology…
-          </button>
+          {compare ? (
+            <button type="button" className="btn-top-danger options-reset-exo" onClick={onResetExobiology}>
+              Reset exobiology…
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

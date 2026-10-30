@@ -10,16 +10,28 @@
   (a link that opens one becomes a tab), no navigation outside http(s), no certificate exceptions.
 
   Private by default: everything a site stores is cleared at the browser's first use in each run (and at quit),
-  except for the sites marked "Remember this site". Blocking (browserBlocker.cjs) is on for every site unless
-  switched off for it. Nothing is collected: no history kept, no telemetry, Do Not Track and Global Privacy
-  Control sent, a plain Chrome user agent (no Electron or app name in it).
+  except for the sites marked "Remember this site" (and the page cache, when "Keep page cache" is on). Blocking
+  (browserBlocker.cjs) is on for every site unless switched off for it. Nothing is collected: no history kept, no
+  telemetry, Do Not Track and Global Privacy Control sent, a plain Chrome user agent (no Electron or app name in it).
+  "Remember passwords" (off by default) keeps logins encrypted by the operating system (browserPasswords.cjs).
 
   RAM: nothing until the Browser tab opens; one renderer per page while it is open; when the tab closes every page
   closes and the blocking engine is let go.
 */
 
 const path = require("node:path");
+const { randomBytes } = require("node:crypto");
 const { httpUrl } = require("./browserPrefs.cjs");
+const { createTabPasswords } = require("./browserTabPasswords.cjs");
+// The page-side scripts and the address helpers (audit 2026-10-22: moved out, re-exported below).
+const {
+  cosmeticScript,
+  passwordCaptureScript,
+  passwordFillScript,
+  inaraReadScript,
+  inaraOfferScript,
+} = require("./browserPageScripts.cjs");
+const { isLocalHost, resolveTyped, isInaraCommodityPage, chromeUserAgent } = require("./browserUrls.cjs");
 
 const PARTITION = "persist:edexo-browser";
 const MAX_TABS = 30;
@@ -30,93 +42,36 @@ const DETACH_GRACE_MS = 4000;
  * reach (the DOM is shared, the scripts are not), so browsed pages still get no preload.
  */
 const COSMETIC_WORLD = 1077;
+/**
+ * The script world the Inara pop-up ("EDEXO — Read") lives and reads in (1.3.0, C5): its own, like the others, so the page
+ * cannot see or change what is read.
+ */
+const INARA_WORLD = 1079;
+/** The most of an Inara results table taken across (a full commodity search is a few hundred kB). */
+const INARA_TABLE_MAX = 4_000_000;
+/** A pop-up's Read the app window has not answered by then: the pop-up says so instead of "Reading…" for ever. */
+const INARA_ANSWER_MS = 15_000;
+/*
+  "Keep page cache" (owner, 2026-10-16): everything a site stored is cleared as before except the HTTP cache, so a
+  site visited in an earlier run loads from disk. Measured with docs/perf/browser/timing.cjs on five sites: a cold
+  load took ~775-895 ms, a warm one ~142-300 ms. Every clearData data type but "cache" (Electron 42's list).
+*/
+const DATA_TYPES_BUT_CACHE = [
+  "backgroundFetch",
+  "cookies",
+  "downloads",
+  "fileSystems",
+  "indexedDB",
+  "localStorage",
+  "serviceWorkers",
+  "webSQL",
+];
 /** Looked again after the page loaded, for what it adds later (lazy ad slots). */
 const COSMETIC_PASSES_MS = [1500, 4000, 10000];
-/*
-  Every reload here skips the cache (owner, 2026-10-13: blocking switched on or off showed only in a new tab). A
-  normal reload takes the page's scripts and images from the page process's own memory cache, which never reaches
-  webRequest, so the blocker was not asked again; a new tab has a new process and an empty cache.
-*/
 /** How long a page's request waits for its scriptlets to be registered (they take a few ms). */
 const INJECT_WAIT_MS = 1500;
 /** Requests of these kinds, once blocked, leave a box on the page: it is collapsed. */
 const COLLAPSE_TYPES = new Set(["subFrame", "image", "object", "media"]);
-
-/**
- * Reads the page's class names, ids and links (for the lists' general hiding rules, which match on them), and
- * collapses the frames and images whose request was blocked, as uBlock does: the element goes, not only its
- * content (owner, 2026-10-13: "it only removes its contents").
- */
-function cosmeticScript(blocked) {
-  return `(() => {
-  const blocked = new Set(${JSON.stringify(blocked)});
-  let collapsed = 0;
-  for (const el of document.querySelectorAll("iframe[src], img[src], embed[src], object[data], video[src]")) {
-    const src = el.src || el.data;
-    if (src && blocked.has(src)) {
-      el.style.setProperty("display", "none", "important");
-      collapsed++;
-    }
-  }
-  const classes = new Set(), ids = new Set(), hrefs = new Set();
-  const all = document.querySelectorAll("[class], [id], a[href]");
-  for (let k = 0; k < all.length && k < 30000; k++) {
-    const el = all[k];
-    if (el.id) ids.add(el.id);
-    if (el.classList) for (const c of el.classList) classes.add(c);
-    if (el.tagName === "A") {
-      const h = el.getAttribute("href");
-      if (h) hrefs.add(h);
-    }
-  }
-  return { classes: [...classes].slice(0, 8000), ids: [...ids].slice(0, 4000), hrefs: [...hrefs].slice(0, 4000), collapsed };
-})()`;
-}
-
-/** Hosts plain HTTP is never upgraded for: this machine and the home network. */
-function isLocalHost(host) {
-  return (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".local") ||
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-    host === "[::1]"
-  );
-}
-
-/**
- * What the address bar's text means: an http(s) URL, a host name ("edsm.net", "localhost:7111"), or a search.
- * Anything with another scheme (file:, javascript:, chrome: …) is searched for, never opened.
- */
-function resolveTyped(text, searchUrl) {
-  const t = String(text ?? "")
-    .trim()
-    .slice(0, 2048);
-  if (!t) return null;
-  if (/^https?:\/\//i.test(t)) return httpUrl(t)?.href ?? searchUrl(t);
-  if (!/\s/.test(t) && /^[^/:]+(:\d{1,5})?(\/.*)?$/.test(t)) {
-    const host = t.split(/[/:]/)[0].toLowerCase();
-    if (host === "localhost" || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return `http://${t}`;
-    if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,63}$/i.test(host))
-      return httpUrl(`https://${t}`)?.href ?? searchUrl(t);
-  }
-  return searchUrl(t);
-}
-
-function chromeUserAgent() {
-  const os =
-    process.platform === "win32"
-      ? "Windows NT 10.0; Win64; x64"
-      : process.platform === "darwin"
-        ? "Macintosh; Intel Mac OS X 10_15_7"
-        : "X11; Linux x86_64";
-  // Chrome freezes the minor parts of its version in the user agent.
-  const major = String(process.versions.chrome || "130").split(".")[0];
-  return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
-}
 
 /**
  * @param {object} o
@@ -129,6 +84,8 @@ function chromeUserAgent() {
  */
 function createBrowserTabs(o) {
   const { BrowserWindow, WebContentsView, Menu, clipboard, session, app } = o.electron;
+  // Electron 44: the clipboard's calls return Promises; a failed copy is not worth a crash report.
+  const copyText = (t) => void Promise.resolve(clipboard.writeText(t)).catch(() => {});
   /** @type {Map<number, any>} */
   const tabs = new Map();
   let order = [];
@@ -138,6 +95,18 @@ function createBrowserTabs(o) {
   let host = null;
   let bounds = null;
   let detachTimer = null;
+  /*
+    Windows told the pages went to another window ("elsewhere"). When that window lets them go (its Browser tab or the
+    window closes), they are told the pages are free and take them back; the pages used to close after the grace while
+    the first window still had its Browser tab open (review 2026-10-24).
+  */
+  const waiting = new Set();
+  function offerToWaiting() {
+    for (const wc of waiting) {
+      if (wc.isDestroyed()) waiting.delete(wc);
+      else wc.send("edexo:browser-event", { type: "free" });
+    }
+  }
   let ses = null;
   let cleared = false;
   /** Hosts whose https upgrade failed and that the commander chose to open over plain HTTP, this run. */
@@ -284,10 +253,13 @@ function createBrowserTabs(o) {
     }
   }
 
-  /** Everything a site stored, except the remembered sites' (plan 9.2: incognito by default). */
+  /** Everything a site stored, except the remembered sites' (plan 9.2: incognito by default), and the cache if kept. */
   async function clearUnremembered() {
     const keep = o.prefs.keptOrigins();
-    await getSession().clearData(keep.length ? { excludeOrigins: keep } : {});
+    const what = {};
+    if (o.prefs.keepCache()) what.dataTypes = [...DATA_TYPES_BUT_CACHE];
+    if (keep.length) what.excludeOrigins = keep;
+    await getSession().clearData(what);
   }
 
   // ---- tabs ----------------------------------------------------------------------------------------------------
@@ -326,6 +298,14 @@ function createBrowserTabs(o) {
       secure: (t.url || "").startsWith("https://"),
       startPage: !!t.startPage,
       error: t.error,
+      // Origin and username only: the captured password stays in the main process.
+      passwordPrompt: t.pwPrompt
+        ? { origin: t.pwPrompt.origin, username: t.pwPrompt.username, update: t.pwPrompt.update }
+        : null,
+      // The key button: saved usernames for this exact origin, while the page shows a password field.
+      logins: t.pw && t.pwField && passwordsOn() ? passwords.usernames(t.pw.origin) : [],
+      // Logins saved for this origin that the master password still locks: the key button offers an unlock.
+      loginsLocked: t.pw && t.pwField && passwordsOn() ? passwords.lockedCount(t.pw.origin) : 0,
     };
   }
 
@@ -339,6 +319,9 @@ function createBrowserTabs(o) {
       engines: o.prefs.engines(),
       engine: o.prefs.engine(),
       customSearch: o.prefs.customSearch(),
+      keepCache: o.prefs.keepCache(),
+      rememberPasswords: o.prefs.rememberPasswords(),
+      passwords: passwordsView(),
     };
   }
 
@@ -414,7 +397,19 @@ function createBrowserTabs(o) {
         t.collapse.clear();
         t.seen = { classes: new Set(), ids: new Set(), hrefs: new Set() };
         for (const x of t.passTimers.splice(0)) clearTimeout(x);
+        /*
+          Leaving the page: its password field (the key) goes now, its nonce at the next document's dom-ready. The
+          report a sign-in's submit sends can arrive after the navigation it starts; only the old page knows its
+          nonce, and that page is gone once the new one is in.
+        */
+        t.pwField = false;
       }
+    });
+    // The password world's reports (see onPageConsole); every other console line is ignored, and nothing is logged.
+    wc.on("console-message", (details, _level, legacyMessage) => {
+      const message = typeof details?.message === "string" ? details.message : legacyMessage;
+      onPageConsole(t, wc, message, details?.frame);
+      onInaraConsole(t, wc, message, details?.frame);
     });
     wc.on("did-navigate", (_e, url) => {
       t.url = url;
@@ -453,6 +448,8 @@ function createBrowserTabs(o) {
     });
     wc.on("dom-ready", () => {
       const url = wc.getURL();
+      watchPasswords(t, wc, url);
+      offerInara(t, wc, url);
       if (!o.prefs.site(domainOf(url) ?? "").blocking) return;
       const css = o.blocker.cosmetics(url);
       if (css) void wc.insertCSS(css, { cssOrigin: "user" }).catch(() => {});
@@ -486,7 +483,7 @@ function createBrowserTabs(o) {
       if (ctrl && k === "t") openTab(null);
       else if (ctrl && k === "w") closeTab(t.id);
       else if (ctrl && k === "l") send("focusAddress");
-      else if (k === "f5" || (ctrl && k === "r")) wc.reloadIgnoringCache();
+      else if (k === "f5" || (ctrl && k === "r")) wc.reload();
       else if (input.alt && k === "arrowleft") wc.navigationHistory.goBack();
       else if (input.alt && k === "arrowright") wc.navigationHistory.goForward();
       else if (ctrl && k === "tab") stepTab(input.shift ? -1 : 1);
@@ -504,12 +501,12 @@ function createBrowserTabs(o) {
       const items = [];
       if (p.linkURL && httpUrl(p.linkURL)) {
         items.push({ label: "Open link in a new tab", click: () => openTab(p.linkURL, t.id) });
-        items.push({ label: "Copy link address", click: () => clipboard.writeText(p.linkURL) });
+        items.push({ label: "Copy link address", click: () => copyText(p.linkURL) });
         items.push({ type: "separator" });
       }
       if (p.srcURL && p.mediaType === "image" && httpUrl(p.srcURL))
         items.push(
-          { label: "Copy image address", click: () => clipboard.writeText(p.srcURL) },
+          { label: "Copy image address", click: () => copyText(p.srcURL) },
           { type: "separator" },
         );
       if (p.isEditable)
@@ -526,7 +523,7 @@ function createBrowserTabs(o) {
           enabled: wc.navigationHistory.canGoForward(),
           click: () => wc.navigationHistory.goForward(),
         },
-        { label: "Reload", click: () => wc.reloadIgnoringCache() },
+        { label: "Reload", click: () => wc.reload() },
       );
       Menu.buildFromTemplate(items).popup({ window: host && !host.isDestroyed() ? host : undefined });
     });
@@ -568,6 +565,76 @@ function createBrowserTabs(o) {
     for (const x of t.passTimers.splice(0)) clearTimeout(x);
     void cosmeticPass(t);
     for (const ms of COSMETIC_PASSES_MS) t.passTimers.push(setTimeout(() => void cosmeticPass(t), ms));
+  }
+
+  // ---- remember passwords (browserTabPasswords.cjs) ----------------------------------------------------------------
+  const passwords = o.passwords ?? null;
+  const tabPasswords = createTabPasswords({ passwords, prefs: o.prefs, tabs, changed: () => changed(), state: () => state() });
+  const { passwordsOn, watchPasswords, onPageConsole, dropPrompt, passwordsView } = tabPasswords;
+
+  /** A tab opened from EDEXO's Inara links (`openInara`): each commodity search it loads gets the pop-up. */
+  function offerInara(t, wc, url) {
+    t.inara = null;
+    if (!t.fromApp || !isInaraCommodityPage(url)) return;
+    const nonce = `${randomBytes(16).toString("hex")}:`;
+    t.inara = { nonce };
+    void wc.executeJavaScriptInIsolatedWorld(INARA_WORLD, [{ code: inaraOfferScript(nonce) }]).catch(() => {});
+  }
+
+  /** What "EDEXO — Read" takes: the page's results table, its near star and the commodity picked, as shown. */
+  async function readInaraPage(t) {
+    const wci = t?.view?.webContents;
+    if (!t || t.startPage || !wci || wci.isDestroyed()) return { error: "No page open." };
+    const url = wci.getURL();
+    if (!isInaraCommodityPage(url)) return { error: "Not an Inara commodity search page." };
+    const r = await wci.executeJavaScriptInIsolatedWorld(INARA_WORLD, [{ code: inaraReadScript() }]).catch(() => null);
+    const table = typeof r?.table === "string" ? r.table : "";
+    if (!table) return { error: "No results on this page yet: run the search on Inara first." };
+    if (table.length > INARA_TABLE_MAX) return { error: "The results table is too large to read." };
+    const commodities = Array.isArray(r?.commodities)
+      ? r.commodities.filter((c) => typeof c === "string" && c.length <= 80).slice(0, 10)
+      : [];
+    const near = typeof r?.near === "string" ? r.near.slice(0, 120) : "";
+    return { ok: true, url, table, near, commodities };
+  }
+
+  /** The pop-up's text, in the page. */
+  function inaraSay(t, text, ok) {
+    const wci = t?.view?.webContents;
+    if (!wci || wci.isDestroyed() || !t.inara) return;
+    const code = `globalThis.__edexoInaraSay?.(${JSON.stringify(String(text).slice(0, 300))}, ${ok ? "true" : "false"})`;
+    void wci.executeJavaScriptInIsolatedWorld(INARA_WORLD, [{ code }]).catch(() => {});
+  }
+
+  /**
+   * The pop-up's buttons: a console line with this page's Inara nonce, from the top frame. Read: the page is read
+   * and handed to the app window, which saves the sellers and answers with `inaraResult`.
+   */
+  function onInaraConsole(t, wc, message, frame) {
+    const inara = t.inara;
+    if (!inara || typeof message !== "string" || !message.startsWith(inara.nonce)) return;
+    if (frame && frame.parent) return;
+    let m;
+    try {
+      m = JSON.parse(message.slice(inara.nonce.length));
+    } catch {
+      return;
+    }
+    if (m?.t === "cancel") {
+      t.inara = null;
+      return;
+    }
+    if (m?.t !== "read") return;
+    void readInaraPage(t).then((r) => {
+      if (r.error) return inaraSay(t, r.error, false);
+      if (!host || host.isDestroyed()) return inaraSay(t, "Open EDEXO's Browser tab to read pages into Colonize.", false);
+      clearTimeout(t.inaraWait);
+      t.inaraWait = setTimeout(
+        () => inaraSay(t, "EDEXO did not answer. Open the Browser tab in EDEXO and press Read again.", false),
+        INARA_ANSWER_MS,
+      );
+      host.webContents.send("edexo:browser-event", { type: "inaraRead", data: { id: t.id, read: r } });
+    });
   }
 
   function send(type) {
@@ -622,6 +689,7 @@ function createBrowserTabs(o) {
       hostListeners.win.removeListener("closed", hostListeners.closed);
     }
     host = win;
+    waiting.delete(win.webContents);
     // The window's size changes as it goes in and out of fullscreen: the fullscreen page follows it.
     const resize = () => {
       if (fullscreen && host === win) placeViews();
@@ -630,6 +698,7 @@ function createBrowserTabs(o) {
       if (host === win) {
         host = null;
         armDetach();
+        offerToWaiting();
       }
     };
     win.on("resize", resize);
@@ -675,6 +744,13 @@ function createBrowserTabs(o) {
       blocked: 0,
       error: null,
       startPage: true,
+      pw: null,
+      pwField: false,
+      pwPrompt: null,
+      // Opened from EDEXO's Inara links: its Inara commodity searches get the pop-up (offerInara).
+      fromApp: false,
+      inara: null,
+      inaraWait: undefined,
     };
     tabs.set(t.id, t);
     const i = after != null ? order.indexOf(after) : -1;
@@ -691,17 +767,29 @@ function createBrowserTabs(o) {
     const t = tabs.get(id);
     if (!t) return;
     for (const x of t.passTimers.splice(0)) clearTimeout(x);
+    clearTimeout(t.inaraWait);
+    dropPrompt(t);
     if (fullscreen?.id === id) leaveFullscreen();
     tabs.delete(id);
     if (t.view) {
-      if (host && !host.isDestroyed()) host.contentView.removeChildView(t.view);
-      if (!t.view.webContents.isDestroyed()) t.view.webContents.close();
+      /*
+        At quit the page goes first and its "destroyed" handler lands here with the view already torn down: its
+        webContents reads undefined (owner, 2026-10-16: "Cannot read properties of undefined (reading
+        'isDestroyed') at closeTab" on closing the app). Nothing left to close then.
+      */
+      try {
+        if (host && !host.isDestroyed()) host.contentView.removeChildView(t.view);
+      } catch {
+        /* the window is going away with it */
+      }
+      const wc = t.view.webContents;
+      if (wc && !wc.isDestroyed()) wc.close();
     }
     const i = order.indexOf(id);
     order = order.filter((x) => x !== id);
     if (active === id) active = order[Math.min(i, order.length - 1)] ?? null;
-    // The last page closed: a fresh start page, so the Browser tab never shows nothing.
-    if (!order.length) openTab(null);
+    // The last page closed: a fresh start page, so the Browser tab never shows nothing — not while the window goes.
+    if (!order.length && host && !host.isDestroyed()) openTab(null);
     placeViews();
     changed();
   }
@@ -719,9 +807,17 @@ function createBrowserTabs(o) {
     leaveFullscreen();
     for (const t of tabs.values()) {
       for (const x of t.passTimers.splice(0)) clearTimeout(x);
+      clearTimeout(t.inaraWait);
+      dropPrompt(t);
       if (!t.view) continue;
-      if (host && !host.isDestroyed()) host.contentView.removeChildView(t.view);
-      if (!t.view.webContents.isDestroyed()) t.view.webContents.close();
+      try {
+        if (host && !host.isDestroyed()) host.contentView.removeChildView(t.view);
+      } catch {
+        /* the window is going away with it */
+      }
+      // Torn down already at quit (see closeTab).
+      const wc = t.view.webContents;
+      if (wc && !wc.isDestroyed()) wc.close();
     }
     tabs.clear();
     order = [];
@@ -751,6 +847,7 @@ function createBrowserTabs(o) {
     const op = typeof a?.op === "string" ? a.op : "";
     const id = idOf(a);
     const t = id != null ? tabs.get(id) : null;
+    if (tabPasswords.owns(op)) return tabPasswords.handle(op, a, t);
     switch (op) {
       case "state":
         return state();
@@ -758,6 +855,11 @@ function createBrowserTabs(o) {
         // The Browser tab is on screen in this window: its pages come here, the engine is read.
         clearTimeout(detachTimer);
         detachTimer = null;
+        // The window that had them (Compare and Colonize can both have a Browser tab) is told, so it says so.
+        if (host && host !== win && !host.isDestroyed()) {
+          host.webContents.send("edexo:browser-event", { type: "elsewhere" });
+          waiting.add(host.webContents);
+        }
         adopt(win);
         if (!cleared) {
           cleared = true;
@@ -776,6 +878,7 @@ function createBrowserTabs(o) {
         bounds = null;
         placeViews();
         armDetach();
+        offerToWaiting();
         return { ok: true };
       case "downloadLists": {
         const ok = await o.blocker.download();
@@ -783,8 +886,31 @@ function createBrowserTabs(o) {
         changed();
         return state();
       }
+      /*
+        A picture of the page in front (owner, 2026-10-17: a menu over the browser hid the page, the app's background
+        showed through). The page is a native layer above the app window, so anything drawn over it hides it; the app
+        shows this still in its place while a menu is open, and the live page comes back when the menu closes.
+      */
+      case "snapshot": {
+        const t2 = active != null ? tabs.get(active) : null;
+        const wcs = t2?.view?.webContents;
+        if (!wcs || wcs.isDestroyed() || !bounds) return { dataUrl: null };
+        try {
+          const img = await wcs.capturePage();
+          return { dataUrl: img.isEmpty() ? null : `data:image/jpeg;base64,${img.toJPEG(80).toString("base64")}` };
+        } catch {
+          return { dataUrl: null };
+        }
+      }
       case "bounds": {
-        if (win !== host) adopt(win);
+        /*
+          Only "start" (a Browser tab opened in that window) moves the pages: a box from another window that still has
+          a Browser tab open took them back on its next resize, and the two windows took turns (review 1.3.0).
+        */
+        if (win !== host) {
+          if (host && !host.isDestroyed()) return { ok: true, elsewhere: true };
+          adopt(win);
+        }
         const r = a?.rect;
         bounds =
           r && num(r.x) != null && num(r.y) != null && num(r.width) > 0 && num(r.height) > 0
@@ -827,7 +953,7 @@ function createBrowserTabs(o) {
         }
         return { ok: true };
       case "reload":
-        if (t?.view) t.view.webContents.reloadIgnoringCache();
+        if (t?.view) t.view.webContents.reload();
         return { ok: true };
       case "halt":
         if (t?.view) t.view.webContents.stop();
@@ -853,6 +979,14 @@ function createBrowserTabs(o) {
         const dom = t?.url ? domainOf(t.url) : null;
         if (!dom) return { error: "No site." };
         o.prefs.setBlocking(dom, a?.on !== false);
+        /*
+          A reload after blocking is switched on or off, or a site's data is cleared, skips the cache (owner,
+          2026-10-13: the change showed only in a new tab). A normal reload takes the page's scripts and images
+          from the page process's own memory cache, which never reaches webRequest, so the blocker was not asked
+          again; a new tab has a new process and an empty cache. F5, Ctrl+R and the Reload button are normal
+          reloads again (1.2.18, owner: "the browser is slow"): skipping the cache made every reload as slow as a
+          first visit — measured 357-514 ms against 142-300 ms (docs/perf/browser/timing.cjs, five sites).
+        */
         t.view?.webContents.reloadIgnoringCache();
         changed();
         return { ok: true };
@@ -897,6 +1031,26 @@ function createBrowserTabs(o) {
         return { ok: o.prefs.removeLink(String(a?.url ?? "")), state: state() };
       case "setEngine":
         return { ok: o.prefs.setEngine(String(a?.key ?? ""), a?.custom), state: state() };
+      case "setKeepCache":
+        o.prefs.setKeepCache(a?.on === true);
+        return { ok: true, state: state() };
+      case "openInara": {
+        // Colonize's Inara links (1.3.0, C5): Inara's commodity search only, in a tab that offers the pop-up.
+        if (!o.blocker.status().ready) return { error: "The blocklists are not there yet." };
+        const url = typeof a?.url === "string" ? a.url : "";
+        if (!isInaraCommodityPage(url)) return { error: "Not an Inara commodity search page." };
+        const nid = openTab(url);
+        const nt = nid != null ? tabs.get(nid) : null;
+        if (nt) nt.fromApp = true;
+        return { id: nid };
+      }
+      case "inaraResult": {
+        // The app window saved (or could not save) what the pop-up read: its answer goes in the pop-up.
+        if (!t) return { error: "No such page." };
+        clearTimeout(t.inaraWait);
+        inaraSay(t, typeof a?.text === "string" ? a.text : "", a?.ok === true);
+        return { ok: true };
+      }
       default:
         return { error: "Unknown call." };
     }
@@ -905,6 +1059,29 @@ function createBrowserTabs(o) {
   return {
     handle,
     isBrowserContents,
+    /**
+     * F5 while a browsed page is on screen in the window in front: reload it, true when one did (owner, 2026-10-16:
+     * F5 did nothing in the browser). The app's F5 key bind (Clear the notices) stays registered while the app is in
+     * front, so Windows hands F5 to the bind and the page never sees it; the bind asks here first. Not only when the
+     * page has the keyboard (owner, 2026-10-17: F5 cleared the notices instead): a click on the toolbar or a menu
+     * takes the keyboard from the page. A menu open over the page (no box) or another tab of the app: the notices.
+     */
+    reloadShown() {
+      const reload = (t) => {
+        const wc = t?.view?.webContents;
+        if (!wc || wc.isDestroyed()) return false;
+        wc.reload();
+        return true;
+      };
+      for (const t of tabs.values()) {
+        const wc = t.view?.webContents;
+        if (wc && !wc.isDestroyed() && wc.isFocused()) return reload(t);
+      }
+      if (!host || host.isDestroyed() || !host.isFocused()) return false;
+      if (fullscreen) return reload(tabs.get(fullscreen.id));
+      const t = active != null ? tabs.get(active) : null;
+      return !!(bounds && t && !t.startPage) && reload(t);
+    },
     /** Something the toolbar shows changed (the blocklists' download, from browserBlocker.cjs). */
     changed,
     /** At quit: what a site stored goes, as at the next start (best effort; the next start clears it anyway). */
@@ -914,4 +1091,17 @@ function createBrowserTabs(o) {
   };
 }
 
-module.exports = { createBrowserTabs, resolveTyped, isLocalHost, chromeUserAgent, cosmeticScript, PARTITION };
+module.exports = {
+  createBrowserTabs,
+  isInaraCommodityPage,
+  inaraReadScript,
+  inaraOfferScript,
+  resolveTyped,
+  isLocalHost,
+  chromeUserAgent,
+  cosmeticScript,
+  passwordCaptureScript,
+  passwordFillScript,
+  PARTITION,
+  DATA_TYPES_BUT_CACHE,
+};

@@ -33,11 +33,13 @@ if (winCodesign && !usePfx) {
   );
 }
 
-const copyright = process.env.EDEXO_COPYRIGHT || "Copyright © Bahuckel — ED Exo Compare";
+const copyright = process.env.EDEXO_COPYRIGHT || "Copyright © Bahuckel — EDEXO";
 
 const win = {
   target: [{ target: "portable", arch: ["x64"] }],
   icon: "build/icon.ico",
+  // The HUD's foreground watcher (native/src/fgwatch.rs, 1.3.1; scripts/build-native.mjs builds it): Windows only.
+  extraResources: [{ from: "build/native/edexo-fgwatch.exe", to: "edexo/edexo-fgwatch.exe" }],
 };
 
 if (usePfx) {
@@ -79,28 +81,47 @@ module.exports = {
     "electron/main.cjs",
     "electron/main.mac.cjs",
     "electron/preload.mac.cjs",
+    // Split out of main.cjs (1.3.1).
+    "electron/appWindows.cjs",
+    "electron/launcherIpc.cjs",
+    "electron/quitFlow.cjs",
     "electron/preload.cjs",
     "electron/windowState.cjs",
     "electron/hudWindows.cjs",
+    "electron/hudGeometry.cjs",
+    "electron/hudWindowOptions.cjs",
+    "electron/hudHost.cjs",
     "electron/tray.cjs",
     "electron/childWindows.cjs",
     "electron/foregroundWatch.cjs",
+    // Forked as a utility process by foregroundWatch.cjs (2026-10-19), not required: list it by hand.
+    "electron/foregroundHost.cjs",
     "electron/windowGuards.cjs",
     "electron/keybinds.cjs",
     "electron/tabWindows.cjs",
     // The EDEXO browser (plan 9).
     "electron/browserTabs.cjs",
+    "electron/browserTabPasswords.cjs",
+    "electron/browserPageScripts.cjs",
+    "electron/browserUrls.cjs",
     "electron/browserPrefs.cjs",
+    "electron/browserPasswords.cjs",
     "electron/browserBlocker.cjs",
     "electron/updater.cjs",
     // The server's own process (2026-10-09): main.cjs starts app.cjs through it.
     "electron/serverChild.cjs",
+    "electron/staticShell.cjs",
+    "electron/gpuWarmup.cjs",
     "electron/atomicWrite.cjs",
+    // Safe graphics mode (L1, Linux ticket 2026-10-23).
+    "electron/gpuSafeMode.cjs",
     ...(process.env.EDEXO_DIAG === "1" ? ["electron/diag.cjs"] : []),
     "package.json",
   ],
   extraResources: [
     { from: "build/app.cjs", to: "edexo/app.cjs" },
+    // The candidate search's worker thread (finderWorkerClient.ts looks for it beside app.cjs).
+    { from: "build/finder-worker.cjs", to: "edexo/finder-worker.cjs" },
     // The EDEXO browser's blocking engine (plan 9.1): outside the asar, a worker thread loads it.
     { from: "build/browser-adblock.cjs", to: "edexo/browser-adblock.cjs" },
     { from: "dist/eb-staging/web", to: "web" },
@@ -145,6 +166,8 @@ module.exports = {
   portable: {
     artifactName: "${productName}.exe",
     unpackDirName: "EDExoPortable",
+    // Shown while it unpacks (discuss item 16); made by scripts/make-splash.mjs before every Windows build.
+    splashImage: "build/portable-splash.bmp",
   },
   npmRebuild: false,
 };

@@ -19,11 +19,13 @@ const {
   utilityProcess,
 } = require("electron");
 const { startServerChild } = require("./serverChild.cjs");
+const { installStaticShell } = require("./staticShell.cjs");
+const { startGpuWarmup } = require("./gpuWarmup.cjs");
 const path = require("path");
 const fs = require("fs");
 const { writeFileAtomic } = require("./atomicWrite.cjs");
-const { WINDOW_MIN, createWindowState, enableZoom } = require("./windowState.cjs");
-const { childWindowKind, galaxyWindowBounds } = require("./childWindows.cjs");
+const gpuSafe = require("./gpuSafeMode.cjs");
+const { createWindowState, enableZoom } = require("./windowState.cjs");
 const {
   createHudWindows,
   hudPathFrom,
@@ -34,15 +36,27 @@ const { createTrayControl } = require("./tray.cjs");
 const { createKeybinds } = require("./keybinds.cjs");
 const { createTabWindows } = require("./tabWindows.cjs");
 const updater = require("./updater.cjs");
-const { watchForeground, isGameOrOwn, isGame } = require("./foregroundWatch.cjs");
+const { watchForegroundOffMain, isGameOrOwn, isGame, nativeWatcherPath } = require("./foregroundWatch.cjs");
 const { guardWindowNavigation, restrictPermissions, isOwnUrl } = require("./windowGuards.cjs");
-const { createBrowserPrefs } = require("./browserPrefs.cjs");
-const { createBrowserBlocker } = require("./browserBlocker.cjs");
-const { createBrowserTabs } = require("./browserTabs.cjs");
+const { APP_WINDOW_PARTITION, createAppWindows } = require("./appWindows.cjs");
+const { createQuitFlow } = require("./quitFlow.cjs");
+const { registerLauncherIpc } = require("./launcherIpc.cjs");
+
+/*
+  An isolated profile (`EDEXO_USER_DATA_DIR`) takes Electron's own directory with it (2026-10-17: an isolated
+  copy still wrote the real app's %APPDATA%\edexo-compare — page caches, the windows' local storage, the
+  browser's cookies). Set before anything reads it; the real profile is then neither written nor migrated from.
+*/
+if (process.env.EDEXO_USER_DATA_DIR) {
+  app.setPath("userData", path.join(process.env.EDEXO_USER_DATA_DIR, "electron"));
+}
 /** The app's own origin once the server listens (windowGuards.cjs). */
 const ownBase = () => (runtime ? runtime.getLocalBaseUrl() : null);
-/** The foreground watcher (foregroundWatch.cjs), started with the HUDs. */
+/** The foreground watcher (foregroundWatch.cjs), started a moment after the launcher. */
 let foreground = null;
+let foregroundStartTimer = null;
+/** Was 5 s while PowerShell compiled its helper on every start; the native watcher (1.3.1) needs only the launcher drawn. */
+const FOREGROUND_START_DELAY_MS = 1500;
 
 /*
   Diagnostics, in the diagnostic build only (`npm run dist:win:diag`; owner, 2026-09-25). A public
@@ -110,6 +124,8 @@ const huds = createHudWindows({
   getRuntime: () => runtime,
   getDiag: () => diag,
   preloadPath: path.join(__dirname, "preload.cjs"),
+  // One renderer process for all the HUD panel windows (hudHost.cjs).
+  shareRenderer: true,
   guardWindow: (win) => guardWindowNavigation(win, ownBase, shell),
   onChange: () => {
     trayControl.refresh();
@@ -138,15 +154,6 @@ function showLauncher() {
   mainWindow.focus();
 }
 
-/** The tray (tray.cjs): the launcher, the HUD toggle, the UI in the browser, quit. */
-/*
-  Key binds (owner, 2026-10-02): the HUD toggle and previous / next body tab, set in the launcher
-  (electron/keybinds.cjs). The body keys go through the server to every app page.
-*/
-/**
- * A key bind for the app pages: the app window by IPC (instant), browser tabs through the server's
- * socket — which the app window then ignores (useLiveSnapshot.ts), so nothing moves twice.
- */
 /*
   Key timing (owner, 2026-10-07): how long a body / screen tab key took to reach the page and be drawn,
   into hud-events.log — for the developer's own PC only. Key presses are not recorded for anyone else,
@@ -159,6 +166,10 @@ const keyTimingOn = () => {
     return false;
   }
 };
+/**
+ * A key bind for the app pages: the app window by IPC (instant), browser tabs through the server's
+ * socket — which the app window then ignores (useLiveSnapshot.ts), so nothing moves twice.
+ */
 function uiCommandEverywhere(cmd) {
   const timed = keyTimingOn();
   if (timed) huds.log(`key ${cmd.cmd} ${cmd.dir > 0 ? "next" : "previous"}`);
@@ -173,6 +184,10 @@ ipcMain.on("edexo:ui-ack", (_e, r) => {
   huds.log(`key ${String(r.cmd)} in the page: got it +${Number(r.got)} ms, drawn +${Number(r.drawn)} ms`);
 });
 
+/*
+  Key binds (owner, 2026-10-02): the HUD toggle and previous / next body tab, set in the launcher
+  (electron/keybinds.cjs). The body keys go through the server to every app page.
+*/
 const keybinds = createKeybinds({
   globalShortcut,
   fs,
@@ -184,7 +199,11 @@ const keybinds = createKeybinds({
     tabPrev: () => uiCommandEverywhere({ cmd: "screenTab", dir: -1 }),
     tabNext: () => uiCommandEverywhere({ cmd: "screenTab", dir: 1 }),
     // The server answers in its own process (serverChild.cjs); a key never waits for it.
-    noticesClear: () => void runtime?.clearNotices?.()?.catch?.(() => {}),
+    // F5 is also the browser's reload: a browsed page on screen gets it instead of the bell.
+    noticesClear: () => {
+      if (browserTabs?.reloadShown?.()) return;
+      void runtime?.clearNotices?.()?.catch?.(() => {});
+    },
     // Boxel scanning (server/boxelRun.ts): the server picks the system, the clipboard writer below copies it.
     boxelCopyNext: () => void runtime?.boxelCopyNext?.()?.catch?.(() => {}),
     boxelRun: () => {
@@ -199,6 +218,7 @@ const keybinds = createKeybinds({
   },
 });
 
+/** The tray (tray.cjs): the launcher, the HUD toggle, the UI in the browser, quit. */
 const trayControl = createTrayControl({
   showLauncher,
   huds,
@@ -216,9 +236,6 @@ const trayControl = createTrayControl({
 const { readWindowStates, readWindowState, trackWindowState, windowStatePath } = createWindowState(() =>
   path.dirname(huds.layoutPath()),
 );
-
-let appUiWindow = null;
-const APP_WINDOW_PARTITION = "persist:app-window";
 
 /** Tab view's detached windows (tabWindows.cjs): drag a tab out of the app window, or back in. */
 const tabWindows = createTabWindows({
@@ -239,143 +256,16 @@ const tabWindows = createTabWindows({
   onExternalLink: (url) => void shell.openExternal(url),
 });
 
-/**
- * The app window's session is new, so its view settings (body sort, last tab, …) start empty. Copy
- * the launcher session's localStorage across once — same site, so the launcher can read it — and
- * reload. Marked done in window-state.json so it never runs again.
- */
-async function carryAppStorageOver(win) {
-  const all = readWindowStates();
-  if (all.appStorageCarried === true) return;
-  try {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    const dump = await mainWindow.webContents.executeJavaScript(
-      "JSON.stringify(Object.assign({}, window.localStorage))",
-    );
-    const n = await win.webContents.executeJavaScript(
-      `(() => { const o = JSON.parse(${JSON.stringify(dump)}); let n = 0;` +
-        ` for (const k of Object.keys(o)) { if (localStorage.getItem(k) === null) { localStorage.setItem(k, o[k]); n++; } }` +
-        ` return n; })()`,
-    );
-    const now = readWindowStates();
-    now.appStorageCarried = true;
-    fs.mkdirSync(path.dirname(windowStatePath()), { recursive: true });
-    writeFileAtomic(windowStatePath(), JSON.stringify(now, null, 2), "utf8");
-    if (n > 0 && !win.isDestroyed()) win.webContents.reload();
-  } catch (e) {
-    console.warn("[edexo-compare] could not carry the app window's settings over:", e);
-  }
-}
-
-/** The galaxy map's window while it is open (one at a time; see childWindows.cjs). */
-let galaxyWindow = null;
-
-function openAppUiWindow(iconForChild) {
-  if (!runtime) return { opened: false, error: "Server not ready yet." };
-  if (appUiWindow && !appUiWindow.isDestroyed()) {
-    if (appUiWindow.isMinimized()) appUiWindow.restore();
-    appUiWindow.show();
-    appUiWindow.focus();
-    return { opened: true, focused: true };
-  }
-  const base = runtime.getLocalBaseUrl();
-  const saved = readWindowState("app");
-  const area = screen.getPrimaryDisplay().workArea;
-  const width = saved?.width ?? Math.min(1480, Math.round(area.width * 0.9));
-  const height = saved?.height ?? Math.min(940, Math.round(area.height * 0.9));
-  const preloadPath = path.join(__dirname, "preload.cjs");
-  /*
-    The app's own title bar (owner, 2026-10-06, Tab view): no Windows caption, Windows' own minimise /
-    maximise / close drawn over the page (titleBarOverlay), and the page's tab strip as the bar you drag.
-    The page knows from --edexo-custom-titlebar (preload.cjs). Windows only: elsewhere the frame stays.
-  */
-  const customTitleBar = process.platform === "win32";
-  const win = new BrowserWindow({
-    width,
-    height,
-    ...(saved ? { x: saved.x, y: saved.y } : {}),
-    minWidth: WINDOW_MIN.app.w,
-    minHeight: WINDOW_MIN.app.h,
-    backgroundColor: "#050507",
-    autoHideMenuBar: true,
-    title: "ED Exo Compare",
-    icon: iconForChild,
-    ...(customTitleBar
-      ? { titleBarStyle: "hidden", titleBarOverlay: { color: "#07060a", symbolColor: "#f0a050", height: 34 } }
-      : {}),
-    webPreferences: {
-      additionalArguments: customTitleBar ? ["--edexo-custom-titlebar"] : [],
-      /*
-        Full speed while the game is in front (owner, 2026-10-07: Shift+F1 / F2 took 2-3 s in game, at
-        once with the app in front). A window that is not in front gets throttled timers and painting;
-        this one is meant to be read beside the game, as the HUDs are (hudWindows.cjs).
-      */
-      backgroundThrottling: false,
-      // No spell-check: Electron can fetch its dictionaries from Google (owner, 2026-09-29).
-      spellcheck: false,
-      contextIsolation: true,
-      nodeIntegration: false,
-      partition: APP_WINDOW_PARTITION,
-      preload: fs.existsSync(preloadPath) ? preloadPath : undefined,
-    },
-  });
-  appUiWindow = win;
-  tabWindows.attachMain(win);
-  diag?.watchWindow(win, "app");
-  if (saved?.maximized) win.maximize();
-  trackWindowState("app", win);
-  enableZoom(win);
-  /*
-    Links out of the app (Spansh, EDSM, the site) go to the commander's browser; the app's own pages
-    may still open in a window of their own, as they did when the UI ran in the launcher.
-  */
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith(`${base}/`) || url === base) {
-      if (childWindowKind(url) !== "galaxy") return { action: "allow" };
-      // One map window: a second click brings the open one forward instead of loading another.
-      if (galaxyWindow && !galaxyWindow.isDestroyed()) {
-        if (galaxyWindow.isMinimized()) galaxyWindow.restore();
-        galaxyWindow.show();
-        galaxyWindow.focus();
-        return { action: "deny" };
-      }
-      const saved = readWindowState("galaxy");
-      const area = screen.getDisplayMatching(win.getBounds()).workArea;
-      return {
-        action: "allow",
-        overrideBrowserWindowOptions: {
-          ...galaxyWindowBounds(saved, area),
-          minWidth: WINDOW_MIN.galaxy.w,
-          minHeight: WINDOW_MIN.galaxy.h,
-          backgroundColor: "#050507",
-          autoHideMenuBar: true,
-          title: "Galaxy map — ED Exo Compare",
-          icon: iconForChild,
-        },
-      };
-    }
-    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
-    return { action: "deny" };
-  });
-  win.webContents.on("did-create-window", (child, { url }) => {
-    if (childWindowKind(url) !== "galaxy") return;
-    galaxyWindow = child;
-    if (readWindowState("galaxy")?.maximized) child.maximize();
-    trackWindowState("galaxy", child);
-    enableZoom(child);
-    child.on("closed", () => {
-      if (galaxyWindow === child) galaxyWindow = null;
-    });
-  });
-  win.webContents.once("did-finish-load", () => void carryAppStorageOver(win));
-  win.on("closed", () => {
-    if (appUiWindow === win) appUiWindow = null;
-  });
-  void win.loadURL(`${base}/`);
-  // The windows its tabs were dragged out into last time.
-  win.webContents.once("did-finish-load", () => tabWindows.restore());
-  return { opened: true, focused: false };
-}
+/** The app, Colonize and galaxy map windows (appWindows.cjs). */
+const appWindows = createAppWindows({
+  electron: { BrowserWindow, screen, shell },
+  getRuntime: () => runtime,
+  getMainWindow: () => mainWindow,
+  getDiag: () => diag,
+  tabWindows,
+  windowState: { readWindowStates, readWindowState, trackWindowState, windowStatePath },
+  ownBase,
+});
 
 /*
   Close to tray (owner, 2026-10-01; was "Minimise to tray" from 2026-09-28): an option in the
@@ -421,170 +311,83 @@ function setCloseToTray(on) {
   }
 }
 
+/** The launcher's and the HUD pages' requests (launcherIpc.cjs), registered once. */
 function registerFootOverlayIpc(iconForChild) {
   if (footOverlayIpcRegistered) return;
   footOverlayIpcRegistered = true;
-
-  ipcMain.handle("edexo:foot-overlay-state", () => ({
-    opened: huds.paths().length > 0,
-    paths: huds.paths(),
-  }));
-
-  ipcMain.handle("edexo:hud-overlay-state", () => ({ paths: huds.paths() }));
-
-  ipcMain.handle("edexo:open-app-window", () => openAppUiWindow(iconForChild));
-
-  ipcMain.handle("edexo:get-tray-pref", () => ({ enabled: closeToTray(), ...trayAvailability() }));
-  ipcMain.handle("edexo:set-tray-pref", (_evt, opts) => {
-    setCloseToTray(!!(opts && typeof opts === "object" && opts.enabled));
-    return { enabled: closeToTray(), ...trayAvailability() };
-  });
-  ipcMain.handle("edexo:hotkey-status", () => ({
-    shortcut: keybinds.bindFor("hudToggle"),
-    registered: hotkeyRegistered,
-  }));
-  ipcMain.handle("edexo:get-keybinds", () => keybinds.get());
-  ipcMain.handle("edexo:pause-keybinds", (_evt, opts) => keybinds.pause(!!(opts && typeof opts === "object" && opts.on)));
-  ipcMain.handle("edexo:set-keybinds", (_evt, next) => {
-    const r = keybinds.set(next && typeof next === "object" ? next : {});
-    hotkeyRegistered = keybinds.statusFor("hudToggle") === "ok";
-    trayControl.refresh();
-    return r;
-  });
-
-  ipcMain.handle("edexo:open-hud-overlay", async (_evt, opts) =>
-    huds.request(hudPathFrom(opts), hudWidthFrom(opts), hudHeightFrom(opts), iconForChild, "open"),
+  registerLauncherIpc(
+    {
+      electron: { app, dialog, ipcMain, BrowserWindow },
+      huds,
+      appWindows,
+      keybinds,
+      trayControl,
+      quitFlow,
+      tray: { closeToTray, setCloseToTray, trayAvailability },
+      graphics,
+      gpuSafeDir,
+      hotkey: {
+        get: () => hotkeyRegistered,
+        set: (registered) => {
+          hotkeyRegistered = registered;
+        },
+      },
+      getRuntime: () => runtime,
+      getMainWindow: () => mainWindow,
+    },
+    iconForChild,
   );
+}
 
-  ipcMain.handle("edexo:toggle-hud-overlay", async (_evt, opts) =>
-    huds.request(hudPathFrom(opts), hudWidthFrom(opts), hudHeightFrom(opts), iconForChild, "toggle"),
-  );
+/** The server child's options, kept for a restart (per-commander profiles, 1.3.1). */
+let serverOptions = null;
+let switchingCommander = false;
 
-  /*
-    The merged HUD. One window, its sections chosen by the query string; changing the sections is
-    a `set` (the open window navigates) rather than a close-and-reopen, so it does not blink.
-  */
-  ipcMain.handle("edexo:set-hud-overlay", async (_evt, opts) =>
-    huds.request(
-      hudPathFrom(opts, "/hud-overlay.html"),
-      hudWidthFrom(opts),
-      hudHeightFrom(opts),
-      iconForChild,
-      "set",
-    ),
-  );
-
-  ipcMain.handle("edexo:close-hud-overlay", async (_evt, opts) => {
-    const o = opts && typeof opts === "object" ? opts : {};
-    if (typeof o.pathname !== "string" || !o.pathname.trim()) {
-      return { closed: false, paths: huds.paths() };
-    }
-    return huds.close(hudPathFrom(o));
-  });
-
-  ipcMain.handle("edexo:get-hud-layout", () => huds.layout());
-  ipcMain.handle("edexo:set-hud-layout", (_evt, opts) =>
-    huds.setLayout(opts && typeof opts === "object" ? opts : {}),
-  );
-  ipcMain.handle("edexo:toggle-hud-visibility", (_evt, opts) => {
-    const o = opts && typeof opts === "object" ? opts : {};
-    return { hidden: huds.toggleVisibility(typeof o.hidden === "boolean" ? o.hidden : undefined) };
-  });
-
-  /*
-    Exomastery downloads (§S): a Save dialog rather than Chromium's download shelf, starting in
-    Downloads with the name the server chose. Only the launcher may ask, and only for text.
-  */
-  ipcMain.handle("edexo:save-text-file", async (evt, opts) => {
-    if (!mainWindow || evt.sender !== mainWindow.webContents) return { saved: false, error: "Not allowed." };
-    const text = opts && typeof opts.text === "string" ? opts.text : null;
-    const rawName = opts && typeof opts.defaultName === "string" ? opts.defaultName : "EDEXO.json";
-    const name = path.basename(rawName).replace(/[<>:"|?*]/g, "_") || "EDEXO.json";
-    if (text == null) return { saved: false, error: "Nothing to save." };
-    const r = await dialog.showSaveDialog(mainWindow, {
-      title: "Save",
-      defaultPath: path.join(app.getPath("downloads"), name),
-      filters: [{ name: "JSON", extensions: ["json"] }],
+/** What main listens to on the server's runtime; again after each restart. */
+function wireRuntime() {
+  // Boxel scanning: whatever the run, a jump or a boxel key picks goes on the clipboard.
+  if (runtime && typeof runtime.onBoxelNext === "function") runtime.onBoxelNext((name) => void Promise.resolve(clipboard.writeText(name)).catch(() => {}));
+  if (runtime && typeof runtime.onGameRunning === "function") {
+    if (runtime.gameRunning() === false) huds.setGameAway(true);
+    runtime.onGameRunning((running) => {
+      console.log(`[edexo-compare] Elite ${running ? "running" : "not running"}: overlays ${running ? "back" : "hidden"}`);
+      huds.setGameAway(!running);
     });
-    if (r.canceled || !r.filePath) return { saved: false };
-    try {
-      fs.writeFileSync(r.filePath, text, "utf8");
-      return { saved: true, path: r.filePath };
-    } catch (e) {
-      return { saved: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+/*
+  Show another commander (per-commander profiles, 1.3.1): the server runs for one commander at a time, so it is
+  stopped (it writes what it holds) and started again for this one, on the same address. The app's own windows load
+  again, so nothing on screen is the other commander's; browser tabs wait for the new commander and reload themselves.
+*/
+async function restartServerFor(fid) {
+  try {
+    process.env.EDEXO_COMMANDER = fid;
+    huds.log(`switching commander (${fid})`);
+    await runtime.shutdown();
+    runtime = await startServerChild(serverOptions);
+    wireRuntime();
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed()) continue;
+      let url = "";
+      try {
+        url = w.webContents.getURL();
+      } catch {
+        continue;
+      }
+      if (isOwnUrl(url, ownBase)) w.webContents.reload();
     }
-  });
-
-  /*
-    Backups (owner, 2026-09-28): a folder picker for where they go and where journals are restored,
-    and a restart that finishes a restore (it is applied at start, before anything reads the data).
-    The portable exe runs from a temporary copy; relaunching that copy would start an exe the
-    wrapper is about to delete, so the restart goes through the original file when there is one.
-  */
-  ipcMain.handle("edexo:pick-folder", async (evt, opts) => {
-    if (!mainWindow || evt.sender !== mainWindow.webContents) return { path: null };
-    const start = opts && typeof opts.defaultPath === "string" && opts.defaultPath ? opts.defaultPath : app.getPath("documents");
-    const r = await dialog.showOpenDialog(mainWindow, {
-      title: "Choose a folder",
-      defaultPath: start,
-      properties: ["openDirectory", "createDirectory"],
-    });
-    return { path: r.canceled || !r.filePaths[0] ? null : r.filePaths[0] };
-  });
-  /*
-    "Download & Install": the server has the newer release downloaded and checked; it goes in on the
-    way out (will-quit), and the new copy starts. With a backup running, quitting asks first, and
-    "Keep the app open" calls this off like a plain restart.
-  */
-  ipcMain.handle("edexo:install-update", async (evt) => {
-    if (!mainWindow || evt.sender !== mainWindow.webContents) return { ok: false };
-    const staged = runtime && typeof runtime.stagedUpdate === "function" ? await runtime.stagedUpdate().catch(() => null) : null;
-    if (!selfUpdateFormValue || !staged) return { ok: false, error: "No downloaded update is waiting." };
-    installUpdateOnQuit = staged;
-    relaunchOnQuit = false;
-    app.quit();
-    return { ok: true };
-  });
-  ipcMain.handle("edexo:relaunch", (evt) => {
-    if (!mainWindow || evt.sender !== mainWindow.webContents) return { ok: false };
-    /*
-      Armed here, registered in will-quit (combined plan 1.6c): with a backup running, quitting asks
-      first, and "Keep the app open" used to leave the relaunch armed for the next ordinary quit.
-    */
-    relaunchOnQuit = true;
-    app.quit();
-    return { ok: true };
-  });
-
-  // The launcher's HUD settings, forwarded to every overlay as they change (see preload `pushHudPrefs`).
-  ipcMain.on("edexo:push-hud-prefs", (evt, prefs) => {
-    if (!mainWindow || evt.sender !== mainWindow.webContents) return;
-    huds.pushPrefs(prefs);
-  });
-
-  // An overlay reporting how tall it actually is (hudWindows.cjs `resizeFromPage`).
-  ipcMain.handle("edexo:resize-hud-overlay", (evt, opts) =>
-    huds.resizeFromPage(BrowserWindow.fromWebContents(evt.sender), opts),
-  );
-  // Free move: the launcher starts and ends placing; a HUD page reports its drag (only HUD windows
-  // in placing mode are listened to, see hudWindows.dragFromPage).
-  ipcMain.handle("edexo:set-hud-move-mode", (_evt, opts) => ({
-    moving: huds.setMoveMode(!!(opts && typeof opts === "object" && opts.on === true)),
-  }));
-  ipcMain.handle("edexo:hud-drag", (evt, opts) => {
-    const phase = opts && typeof opts === "object" ? opts.phase : null;
-    if (!["start", "move", "end", "done", "frame", "hover"].includes(phase)) return { ok: false };
-    return huds.dragFromPage(BrowserWindow.fromWebContents(evt.sender), phase);
-  });
-
-  ipcMain.handle("edexo:toggle-foot-overlay", async () => {
+  } catch (e) {
+    console.error("[edexo-compare] could not start the server for the other commander:", e);
     try {
-      return await huds.request("/distance-overlay.html", 404, 330, iconForChild, "toggle");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return { opened: false, paths: huds.paths(), error: msg };
+      dialog.showErrorBox("EDEXO — switching commander failed", String(e && e.message ? e.message : e));
+    } catch {
+      /* ignore */
     }
-  });
+  } finally {
+    switchingCommander = false;
+  }
 }
 
 async function start() {
@@ -604,15 +407,25 @@ async function start() {
 
   applyPackagedResourcesEnv();
 
+  // The GPU readies the launcher's look while the server starts; the window closes once the launcher has loaded.
+  const packagedWeb = process.resourcesPath ? path.join(process.resourcesPath, "web") : null;
+  const gpuWarmup = startGpuWarmup({
+    BrowserWindow,
+    webRoot: packagedWeb && fs.existsSync(path.join(packagedWeb, "launcher.html")) ? packagedWeb : path.join(__dirname, "..", "dist", "web"),
+    log: (m) => console.warn(`[edexo-compare] ${m}`),
+  });
+
   /*
     Self-update (owner, 2026-10-02): only a packaged copy this file knows how to swap — the portable
     exe, the program folder, the AppImage (updater.cjs). The server downloads only when told so here.
     The copy the last update moved aside goes once this one has started (below).
   */
-  selfUpdateFormValue = updater.selfUpdateForm({
-    isPackaged: app.isPackaged || process.env.EDEXO_ELECTRON_PACKAGED === "1",
-  });
-  if (selfUpdateFormValue) {
+  quitFlow.setSelfUpdateForm(
+    updater.selfUpdateForm({
+      isPackaged: app.isPackaged || process.env.EDEXO_ELECTRON_PACKAGED === "1",
+    }),
+  );
+  if (quitFlow.selfUpdateForm()) {
     process.env.EDEXO_SELF_UPDATE = "1";
   }
 
@@ -625,7 +438,7 @@ async function start() {
       `__dirname=${__dirname}`,
     ].join("\n");
     try {
-      dialog.showErrorBox("ED Exo Compare — missing server bundle", detail);
+      dialog.showErrorBox("EDEXO — missing server bundle", detail);
     } catch {
       /* ignore */
     }
@@ -653,7 +466,22 @@ async function start() {
     discovery above now runs there, before its server starts.
   */
   const mode = detectMode();
-  runtime = await startServerChild({
+  /*
+    Colonize's Inara folders (1.3.0): Windows' own Documents and Downloads, which can be moved and which the
+    server's process cannot ask Electron for. A value already set (a test, a dev run) is kept.
+  */
+  for (const [env, kind] of [
+    ["EDEXO_DOCUMENTS_DIR", "documents"],
+    ["EDEXO_DOWNLOADS_DIR", "downloads"],
+  ]) {
+    if (process.env[env]) continue;
+    try {
+      process.env[env] = app.getPath(kind);
+    } catch {
+      /* the server falls back to the home folder's */
+    }
+  }
+  serverOptions = {
     utilityProcess,
     bundle,
     mode,
@@ -672,17 +500,39 @@ async function start() {
       huds.log(`server process ended (exit ${code})`);
       try {
         dialog.showErrorBox(
-          "ED Exo Compare — the server stopped",
+          "EDEXO — the server stopped",
           `The part of the app that reads your journals stopped unexpectedly (exit ${code}). The app will close; start it again.`,
         );
       } catch {
         /* ignore */
       }
-      exitAllowed = true;
+      quitFlow.allowExit();
       app.quit();
     },
-  });
+  };
+  runtime = await startServerChild(serverOptions);
   diag?.mark("server started");
+  /*
+    The pages' files from disk while the server's journal boot holds its thread (staticShell.cjs; owner,
+    2026-10-19: the launcher still drew late and an early app window stayed blank). Off again a while after
+    the boot, past the server's 20 s warm-up, so the API never runs through this process for the whole run.
+  */
+  if (runtime.webRoot() && runtime.contentSecurityPolicy()) {
+    const { session } = require("electron");
+    const staticShell = installStaticShell({
+      sessions: [session.defaultSession, session.fromPartition(APP_WINDOW_PARTITION), session.fromPartition("persist:hud")],
+      baseUrl: runtime.getLocalBaseUrl(),
+      webRoot: runtime.webRoot(),
+      csp: runtime.contentSecurityPolicy(),
+      log: (m) => console.warn(`[edexo-compare] ${m}`),
+    });
+    void runtime.booted.then(() => {
+      setTimeout(() => {
+        staticShell.remove();
+        diag?.mark(`static shell off (${staticShell.served()} file(s) served from disk)`);
+      }, 30_000).unref?.();
+    });
+  }
   // Where the HUD layout lives and whether GNOME has a tray, as the server's process found them.
   huds.setLayoutPathResolver(() => runtime.layoutPath());
   if (process.platform === "linux") linuxTrayHost = runtime.linuxTrayHost();
@@ -692,8 +542,8 @@ async function start() {
     behind for a commander who starts the app from a shortcut and never looks in the folder. Not
     before: if the new copy cannot start, the old one is still there to go back to.
   */
-  if (selfUpdateFormValue) {
-    const form = selfUpdateFormValue;
+  const form = quitFlow.selfUpdateForm();
+  if (form) {
     void runtime.ready.then(
       () => updater.removeOldCopy(form),
       () => {},
@@ -764,6 +614,15 @@ async function start() {
     toggleVisibility: (o) => ({
       hidden: huds.toggleVisibility(o && typeof o.hidden === "boolean" ? o.hidden : undefined),
     }),
+    // Per-commander profiles (1.3.1): answered now, the restart a moment later so the server's reply still goes out.
+    switchCommander: (o) => {
+      const fid = o && typeof o.fid === "string" ? o.fid : "";
+      if (!fid) return { ok: false, error: "No commander given." };
+      if (switchingCommander) return { ok: false, error: "Already switching." };
+      switchingCommander = true;
+      setTimeout(() => void restartServerFor(fid), 300);
+      return { ok: true };
+    },
   };
 
   huds.loadLayout();
@@ -820,24 +679,26 @@ async function start() {
   trayControl.create(winIcon);
   // Overlays step aside while Elite is not running and come back with it (server gamePresence.ts;
   // guild tester report, 2026-09-30). The hotkey still shows them on demand.
-  // Boxel scanning: whatever the run, a jump or a boxel key picks goes on the clipboard.
-  if (runtime && typeof runtime.onBoxelNext === "function") runtime.onBoxelNext((name) => clipboard.writeText(name));
-  if (runtime && typeof runtime.onGameRunning === "function") {
-    if (runtime.gameRunning() === false) huds.setGameAway(true);
-    runtime.onGameRunning((running) => {
-      console.log(`[edexo-compare] Elite ${running ? "running" : "not running"}: overlays ${running ? "back" : "hidden"}`);
-      huds.setGameAway(!running);
-    });
-  }
+  wireRuntime();
   /*
     ...and while it runs but another program is in front (owner, 2026-09-30). A short wait before
     hiding, so alt-tabbing past something does not flicker them; back at once with the game. This
     app's own windows count as the game's side: the app on a second screen keeps the overlays.
   */
-  {
+  /*
+    Started a moment in (discuss item 18, owner 2026-10-23): it was five seconds while the watcher compiled its C#
+    helper on every start (PowerShell Add-Type), which competed with the launcher's first paint; the native watcher
+    (1.3.1) has nothing to compile. Until then the overlays behave as before the game is seen in front: shown, keys
+    not narrowed.
+  */
+  foregroundStartTimer = setTimeout(() => {
+    foregroundStartTimer = null;
+    if (appQuitting) return;
     const own = [path.basename(process.execPath, ".exe").toLowerCase(), "electron"];
     let hideTimer = null;
-    foreground = watchForeground((name, at) => {
+    const watcherExe = nativeWatcherPath(process.resourcesPath);
+    huds.log(`foreground watcher: ${watcherExe ? "native" : "PowerShell (native helper not built)"}`);
+    foreground = watchForegroundOffMain(utilityProcess, path.join(__dirname, "foregroundHost.cjs"), (name, at) => {
       huds.log(`foreground ${name || "(unreadable)"}${at ? ` at ${at.x},${at.y}` : ""}`);
       // The body tabs and Clear the notices take their keys only while Elite or this app (the app
       // window, the launcher; owner, 2026-10-07) is in front (keybinds.cjs); every other program keeps
@@ -858,9 +719,24 @@ async function start() {
         hideTimer = null;
         huds.setFocusAway(true);
       }, 1500);
-    });
+    }, watcherExe);
+  }, FOREGROUND_START_DELAY_MS);
+  /*
+    The HUD windows come back once the launcher has drawn (discuss item 17): restored in the same first second they
+    made the launcher's first paint wait. A launcher that never finishes loading still gets them after a few seconds.
+  */
+  {
+    let restored = false;
+    const restoreHuds = () => {
+      if (restored) return;
+      restored = true;
+      void huds.restore(winIcon);
+    };
+    mainWindow.webContents.once("did-finish-load", () => setTimeout(restoreHuds, 250));
+    setTimeout(restoreHuds, 5000);
   }
-  void huds.restore(winIcon);
+  // Its first paint has the GPU warmed up (gpuWarmup.cjs); the hidden window goes a moment after.
+  mainWindow.webContents.once("did-finish-load", () => setTimeout(gpuWarmup.done, 500));
   mainWindow.on("close", (e) => {
     // With "Close to tray" on (and a tray to come back from), the X hides the launcher in the tray;
     // the server, the HUDs and the app window carry on. Quitting (tray menu) closes it for real.
@@ -870,18 +746,21 @@ async function start() {
       if (!closeToTrayExplained) {
         closeToTrayExplained = true;
         trayControl.notify(
-          "ED Exo Compare is still running",
+          "EDEXO is still running",
           "It is in the tray (the arrow next to the clock). Click its icon to bring the launcher back, or right-click it to quit.",
         );
       }
       return;
     }
     // A backup being written would be thrown away (owner, 2026-09-29): ask first.
-    if (holdExitForBackup(e)) return;
+    if (quitFlow.holdExitForBackup(e)) return;
     huds.dispose();
     trayControl.destroy();
-    // The launcher is still the app: closing it closes the app window too, as it always quit.
-    if (appUiWindow && !appUiWindow.isDestroyed()) appUiWindow.close();
+    // The launcher is still the app: closing it closes the app window too, as it always quit — and every other
+    // window (galaxy map, privacy page, torn-off tabs): one left open kept the app alive with no launcher and no tray,
+    // holding the single-instance lock so the next start did nothing (1.2.19 review).
+    appWindows.closeAppWindow();
+    for (const w of BrowserWindow.getAllWindows()) if (w !== mainWindow && !w.isDestroyed()) w.close();
   });
   /*
     Windows logoff or shutdown ends the app without before-quit (combined plan 1.6d), so the clean
@@ -899,18 +778,6 @@ async function start() {
   });
 }
 
-/**
- * Tell Windows who this application is, before any window exists.
- *
- * The taskbar keys a button's identity — its grouping, its pin, and the icon it draws — on the
- * Application User Model ID, not on the exe path. Without this call Electron leaves the default,
- * which for a portable build is derived from the running process, so Windows can hold an icon
- * association from an older run and redraw it over a window whose own icon has since changed. That
- * is the taskbar half of the icon report; the .ico above is the other half.
- *
- * `com.edexo.compare` is the same id `electron-builder.cjs` publishes as `appId`, deliberately: two
- * different ids would make the packaged app and the dev run two different applications to the shell.
- */
 /*
   Linux: run under XWayland (docs/linux-plan-28092026.md). Electron 38+ starts as a native Wayland
   client on a Wayland desktop, and Wayland lets no app place its windows or keep them above another —
@@ -928,12 +795,42 @@ if (
 }
 
 /*
+  Safe graphics mode (gpuSafeMode.cjs; L1, Linux ticket 2026-10-23: a hybrid NVIDIA laptop on Wayland lost the GPU
+  process at start and the app with it, and ran with --disable-gpu --disable-gpu-sandbox). Read before `ready`,
+  where these switches still count: the remembered mode, EDEXO_SAFE_GRAPHICS=1, or the commander's own flag.
+*/
+const appStartedAt = Date.now();
+const gpuSafeDir = app.getPath("userData");
+const graphics = gpuSafe.graphicsMode({
+  env: process.env,
+  argv: process.argv,
+  flag: gpuSafe.readGpuSafe(gpuSafeDir),
+});
+if (graphics.addSwitches) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-sandbox");
+}
+
+/*
   The app's pages keep their normal process priority while another program (the game) is in front
   (owner, 2026-10-07: tab keys took 2-3 s in game). Chromium otherwise lowers a background
   renderer's priority, and next to a game at full load that is seconds per redraw.
 */
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 
+/**
+ * Tell Windows who this application is, before any window exists.
+ *
+ * The taskbar keys a button's identity — its grouping, its pin, and the icon it draws — on the
+ * Application User Model ID, not on the exe path. Without this call Electron leaves the default,
+ * which for a portable build is derived from the running process, so Windows can hold an icon
+ * association from an older run and redraw it over a window whose own icon has since changed. That
+ * is the taskbar half of the icon report; the .ico above is the other half.
+ *
+ * `com.edexo.compare` is the same id `electron-builder.cjs` publishes as `appId`, deliberately: two
+ * different ids would make the packaged app and the dev run two different applications to the shell.
+ */
 if (process.platform === "win32") {
   try {
     app.setAppUserModelId("com.edexo.compare");
@@ -973,6 +870,26 @@ if (!separateCopy) {
 */
 app.on("child-process-gone", (_e, d) => {
   huds.log(`process gone: ${d && d.type} (${d && d.reason}${d && d.exitCode != null ? `, exit ${d.exitCode}` : ""})`);
+  /*
+    The GPU process gone at start on Linux (the ticket's exit 139): remember safe graphics mode and start again
+    once without the GPU, before the X connection takes the rest down. The retry argument stops a loop; the
+    launcher shows why the mode is on and can turn it off.
+  */
+  if (
+    gpuSafe.shouldSwitchToSafe({
+      platform: process.platform,
+      details: d,
+      sinceStartMs: Date.now() - appStartedAt,
+      safe: graphics.safe,
+      argv: process.argv,
+    })
+  ) {
+    const reason = `GPU process ${d.reason}${d.exitCode != null ? ` (exit ${d.exitCode})` : ""} at start`;
+    gpuSafe.writeGpuSafe(gpuSafeDir, { auto: true, reason, at: new Date().toISOString() });
+    huds.log(`safe graphics mode on: ${reason}; starting again without the GPU`);
+    quitFlow.relaunchAsUsual([gpuSafe.GPU_RETRY_ARG]);
+    app.exit(0);
+  }
 });
 /*
   A browsed page asking for a client certificate gets none (review 1.2.16: Electron's default sends the first one
@@ -995,12 +912,16 @@ app.on("render-process-gone", (_e, wc, d) => {
 
 /*
   The EDEXO browser (plan 9, browserTabs.cjs): made at the first call from the Browser tab, so a run that never
-  opens it loads nothing of it.
+  opens it loads nothing of it — its modules too (audit 2026-10-22: ~100 kB were required at every start).
 */
 let browserTabs = null;
 function getBrowserTabs() {
   if (browserTabs) return browserTabs;
-  const { session, net } = require("electron");
+  const { session, net, safeStorage } = require("electron");
+  const { createBrowserPrefs } = require("./browserPrefs.cjs");
+  const { createBrowserBlocker } = require("./browserBlocker.cjs");
+  const { createBrowserTabs } = require("./browserTabs.cjs");
+  const { createBrowserPasswords } = require("./browserPasswords.cjs");
   const dir = path.dirname(huds.layoutPath());
   const appSession = session.fromPartition(APP_WINDOW_PARTITION);
   const blocker = createBrowserBlocker({
@@ -1014,6 +935,8 @@ function getBrowserTabs() {
   browserTabs = createBrowserTabs({
     electron: require("electron"),
     prefs: createBrowserPrefs({ dir }),
+    // "Remember passwords": encrypted by the operating system (safeStorage), in browser/passwords.json.
+    passwords: createBrowserPasswords({ dir, safeStorage }),
     blocker,
     // The app window and the windows tabs were dragged into: the app's session, the app's own page.
     isAppWindow: (wc) => wc.session === appSession && isOwnUrl(wc.getURL(), ownBase),
@@ -1051,7 +974,7 @@ app.whenReady().then(() => {
           `\n\nPort ${port} is in use — often EDExoCompare-*-CLI.exe or another copy of this app. ` +
           `Close that copy, or start this one on a different port with --port <number>.`;
       }
-      dialog.showErrorBox("ED Exo Compare — startup failed", msg);
+      dialog.showErrorBox("EDEXO — startup failed", msg);
     } catch {
       /* ignore */
     }
@@ -1063,105 +986,15 @@ app.on("window-all-closed", () => {
   app.quit();
 });
 
-/*
-  Exit while a backup is being written (owner, 2026-09-29): a red warning, not a silent loss. The
-  launcher's close and every other way out (tray Quit, the restart after a restore) pass through here.
-  "Wait, then close" lets the backup finish and closes by itself; "Exit now" throws the backup away
-  (its half-written file is cleared at the next start).
-*/
-let exitAllowed = false;
-/** "Restart now" asked for a relaunch; done in will-quit, once the quit is really going ahead. */
-let relaunchOnQuit = false;
-/** "Download & Install" asked for this staged update to go in; installed in will-quit. */
-let installUpdateOnQuit = null;
-/** This copy's self-update form (updater.cjs), or null where it cannot replace itself. */
-let selfUpdateFormValue = null;
-
-function relaunchAsUsual() {
-  const portable = process.env.PORTABLE_EXECUTABLE_FILE;
-  app.relaunch(portable ? { execPath: portable, args: process.argv.slice(1) } : undefined);
-}
-
-app.on("will-quit", () => {
-  if (installUpdateOnQuit) {
-    const staged = installUpdateOnQuit;
-    installUpdateOnQuit = null;
-    try {
-      // From the update folder, not resources: the portable stub deletes its unpacked copy on exit.
-      const scriptPath = path.join(staged.dir, "update-apply.ps1");
-      if (process.platform === "win32") {
-        fs.copyFileSync(path.join(process.resourcesPath, "edexo", "update-apply.ps1"), scriptPath);
-      }
-      const r = updater.installOnQuit(staged, {
-        form: selfUpdateFormValue,
-        scriptPath,
-        logPath: path.join(staged.dir, "update.log"),
-        // The portable launcher stub waits for this process; its exe is the file being replaced.
-        pids: [process.pid, selfUpdateFormValue === "portable" ? process.ppid : 0],
-      });
-      if (r.how === "relaunch") app.relaunch({ execPath: r.execPath, args: process.argv.slice(1) });
-      else if (r.how === "none") relaunchAsUsual();
-    } catch (e) {
-      console.error("[edexo-compare] update install failed, restarting the installed copy:", e);
-      relaunchAsUsual();
-    }
-    return;
-  }
-  if (!relaunchOnQuit) return;
-  relaunchOnQuit = false;
-  relaunchAsUsual();
-});
-let exitAsking = false;
-let exitWhenBackupDone = false;
-
-function holdExitForBackup(e) {
-  if (exitAllowed || !runtime || typeof runtime.backupRunning !== "function" || !runtime.backupRunning()) return false;
-  e.preventDefault();
-  if (exitAsking || exitWhenBackupDone) return true;
-  exitAsking = true;
-  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-  if (parent) {
-    if (parent.isMinimized()) parent.restore();
-    parent.show();
-  }
-  const opts = {
-    type: "error",
-    title: "Backup in progress",
-    message: "A backup is being written right now.",
-    detail:
-      "If you exit now, this backup will be lost. Please wait — it usually takes a few seconds, and the app can close by itself when it is done.",
-    buttons: ["Wait, then close", "Keep the app open", "Exit now — lose this backup"],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true,
-  };
-  void (parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts)).then(({ response }) => {
-    exitAsking = false;
-    // "Keep the app open": a "Restart now" that started this quit is called off with it.
-    if (response === 1) {
-      relaunchOnQuit = false;
-      installUpdateOnQuit = null;
-    }
-    if (response === 2) {
-      exitAllowed = true;
-      app.quit();
-    } else if (response === 0) {
-      exitWhenBackupDone = true;
-      void runtime.whenBackupDone().then(() => {
-        exitAllowed = true;
-        app.quit();
-      });
-    }
-  });
-  return true;
-}
+// Quitting: the backup hold, a relaunch or an update install on the way out (quitFlow.cjs).
+const quitFlow = createQuitFlow({ app, dialog, getRuntime: () => runtime, getMainWindow: () => mainWindow });
 
 /** The server's process has stopped (or was given its few seconds); the quit can go ahead. */
 let serverStopped = false;
 let serverStopping = false;
 
 app.on("before-quit", (e) => {
-  if (holdExitForBackup(e)) return;
+  if (quitFlow.holdExitForBackup(e)) return;
   browserTabs?.clearOnQuit();
   /*
     Let the server write what it holds and stop, in its own process, before this one goes (it used to
@@ -1196,6 +1029,7 @@ function closeForQuit() {
     /* ignore */
   }
   huds.dispose();
+  if (foregroundStartTimer) clearTimeout(foregroundStartTimer);
   foreground?.stop();
   trayControl.destroy();
 }

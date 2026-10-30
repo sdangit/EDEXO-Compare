@@ -4,28 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#060608" />
-    <title>Privacy Policy — ED Exo Compare</title>
+    <title>Privacy Policy — EDEXO</title>
     <link rel="stylesheet" href="legal.css" />
   </head>
   <body>
     <div class="shell">
       <header class="site-header">
-        <p class="site-brand">ED Exo Compare</p>
+        <p class="site-brand">EDEXO</p>
         <p class="site-tag">Privacy Policy</p>
         <nav class="site-nav" aria-label="Legal">
           <a href="privacy.html">Privacy</a>
           <a href="terms.html">Terms</a>
-          <a href="https://github.com/bahuckel/EDEXO-Compare" target="_blank" rel="noopener noreferrer">Project on GitHub</a>
+          <a href="https://github.com/bahuckel/EDEXO" target="_blank" rel="noopener noreferrer">Project on GitHub</a>
         </nav>
       </header>
 
       <main class="site-main">
         <h1 class="legal-hed">Privacy Policy</h1>
-        <p class="legal-updated">Last updated: 13 October 2026 · applies to version 1.2.16 and later</p>
+        <p class="legal-updated">Last updated: 24 October 2026 · applies to version 1.3.0 and later</p>
 
         <div class="legal-box">
           <p>
-            <strong>Operator.</strong> ED Exo Compare (the application and its downloads) is owned and operated
+            <strong>Operator.</strong> EDEXO (the application and its downloads) is owned and operated
             by Bahuckel&trade; as an independent, single-developer project. Frontier Developments plc and its
             affiliates are not responsible for this software.
           </p>
@@ -38,12 +38,12 @@
 
         <h2>What stays on your computer</h2>
         <p>
-          ED Exo Compare reads the journal files Elite Dangerous writes on your computer and works on them there:
+          EDEXO reads the journal files Elite Dangerous writes on your computer and works on them there:
           merging scans, listing candidate species, estimating values. It never changes your journal files.
         </p>
         <p>
           Its own data &mdash; settings, the species you scanned on foot, surface marks, statistics, the miss log,
-          looked-up systems, your HUD layout &mdash; lives in its data folder
+          looked-up systems, your HUD layout, Colonize&rsquo;s sites, sellers and plans &mdash; lives in its data folder
           (<code>%LOCALAPPDATA%\ED Exo Compare</code> on Windows, <code>~/.config/edexo-compare</code> on Linux).
           <strong>Backups</strong> are written only to the folder you choose and are never sent anywhere.
           The exomastery and codex downloads are saved only where you save them.
@@ -88,6 +88,13 @@
             it already knows &mdash; how the app tells whether a first footfall may still be possible.
             Only the system names are sent: never your commander name or your EDSM key.
           </li>
+          <li>
+            <strong>Community Goals &mdash; Frontier</strong> (api.orerve.net). About 30 seconds after the app
+            starts and then once an hour, the app asks Frontier's public list of running Community Goals &mdash;
+            the list Frontier's own website reads &mdash; to give you a notice when a new one starts. It sends
+            nothing about you; the app's version is in the request's <em>User-Agent</em>. Switch it off in
+            <em>Options &rarr; Notify me &rarr; Community goals</em> and the request stops.
+          </li>
         </ul>
 
         <h3>When you do something</h3>
@@ -96,12 +103,22 @@
             <strong>System search &mdash; Spansh</strong> (spansh.co.uk). Typing three or more letters in the
             system search sends what you typed. Opening a result for a system you have not scanned yourself
             fetches that system's data by its number; it is kept on your computer for 30 days. The carrier
-            check in the Carriers screen sends a carrier's callsign when you press it.
+            check in the Carriers screen sends a carrier's callsign when you press it (after fetching EDAstro's
+            points-of-interest list once per session).
+          </li>
+          <li>
+            <strong>Find Tritium &mdash; Spansh.</strong> Pressing <em>Find Tritium</em> in Carriers &amp; Stations or
+            the galaxy map sends a position &mdash; the system you picked, or your ship&rsquo;s current coordinates
+            &mdash; to find the nearest rings with Tritium hotspots and the markets selling it. No name is sent;
+            answers are kept for 10 minutes.
           </li>
           <li>
             <strong>Carriers and points of interest &mdash; EDAstro</strong> (edastro.com). The download buttons
-            in the Carriers and Points of Interest screens fetch EDAstro's public lists. Nothing about you is
-            sent.
+            in the Carriers and Points of Interest screens fetch EDAstro's public lists (the carrier list with
+            EDAstro's DSSA list). Once you have fetched the carrier list, <em>Auto refresh</em> beside its button
+            fetches it again every 12 hours (6, 24, 48 or off), asking first whether it changed. The Notify me
+            panel's codex download and the Statistics screen's galactic records come from EDAstro too, on a button.
+            Nothing about you is sent.
           </li>
           <li>
             <strong>Your public address &mdash; ipify</strong> (api.ipify.org). Only when you click the eye icon
@@ -116,7 +133,66 @@
           <li>
             <strong>Galaxy index &mdash; GitHub</strong> (github.com). When you press <em>Download</em> in the
             galaxy map, its index (about 255 MB) is downloaded from this project's GitHub releases. Nothing about you
-            is sent.
+            is sent. Once you have the stations data, <em>Auto refresh</em> in the Stations screen checks that release
+            every 24 hours (6, 12, 48 or off) and downloads the stations again only when there is a newer copy; the
+            Stations screen and the map also check the release&rsquo;s file sizes, at most every 10 minutes.
+          </li>
+        </ul>
+
+        <h3>Colonize</h3>
+        <p>
+          Colonize&rsquo;s requests name the app as <em>edexo-colonize</em> in their <em>User-Agent</em>, and are queued
+          per service: Spansh two at a time, EDSM one at a time at least 0.35 seconds apart, Raven Colonial one at a
+          time at least 0.5 seconds apart. Your own commander name is never sent.
+        </p>
+        <ul>
+          <li>
+            <strong>Sellers &mdash; Spansh</strong> (spansh.co.uk). While Colonize&rsquo;s Plan tab is open and a site
+            still has materials without sellers, the app asks Spansh&rsquo;s station search for them in the background:
+            a commodity name with the construction site&rsquo;s system as the place to measure from, and the market
+            ids of stations in your journal (up to 40 per request, each at most once in 6 hours) to read their whole
+            markets. It starts a few seconds after you dock, load cargo or a site&rsquo;s needs change, then every few
+            minutes, and stops once every material has enough sellers. Switch it off in <em>Sources &rarr; Seller data
+            &rarr; Ask Spansh in the background</em>; <em>Look for sellers now</em>, <em>Ask Spansh</em> and
+            <em>Ask Spansh near</em> run the same search on a press. Before a search, a system&rsquo;s name may be sent to
+            Spansh once to get its spelling, which is then kept.
+          </li>
+          <li>
+            <strong>System positions &mdash; EDSM, then Spansh.</strong> To measure distances to sellers, a system that
+            is not in your journals, the stations data or the positions already saved is looked up by name: up to 50
+            names per request to EDSM, and one at a time to Spansh for any EDSM does not know. A position found is
+            kept for good; nothing else is sent.
+          </li>
+          <li>
+            <strong>Sellers further out &mdash; EDSM.</strong> When you press <em>Ask Spansh</em> on a material that
+            neither the saved sellers nor Spansh can place, the app asks EDSM for the systems within 30 to 100 ly of
+            the site, their stations and their markets (at most 48 markets a press). Only system names and market ids
+            are sent.
+          </li>
+          <li>
+            <strong>Your wing&rsquo;s cargo &mdash; EDSM.</strong> When you press <em>Ask EDSM again</em> in the Wing tab,
+            or, if you switch on <em>Ask EDSM when the wing changes</em> there (off by default), whenever the journal
+            shows your wing change while Colonize is open: each wingmate&rsquo;s commander name, as the game wrote it in
+            your journal, is sent to EDSM to read the cargo they share there. Your EDSM API key is sent only with the
+            commander name you saved it with, never with a wingmate&rsquo;s.
+          </li>
+          <li>
+            <strong>Trade party &mdash; Spansh.</strong> The carrier callsigns you list under Sources (up to 40) with
+            your reference system, when you open the Sources tab, every 5 minutes while it stays open, and on
+            <em>Look again</em>. Remove the callsigns and it stops.
+          </li>
+          <li>
+            <strong>Construction sites &mdash; Spansh and Raven Colonial.</strong> <em>Search &rarr; Sites</em> sends the
+            name you typed and a reference system to Spansh. Picking a result asks Raven Colonial
+            (ravencolonial.com&rsquo;s public API) for that system&rsquo;s registered projects and what one still needs,
+            by the system&rsquo;s name; kept 5 minutes. <em>Search &rarr; System &rarr; Ask Spansh for its markets</em>
+            sends that system&rsquo;s name and number to Spansh.
+          </li>
+          <li>
+            <strong>Inara.</strong> Colonize never contacts Inara by itself. Its Inara links open Inara&rsquo;s commodity
+            search in the EDEXO browser (or your own browser) with the commodity and the site&rsquo;s system in the
+            address, as any link would; <em>EDEXO &mdash; Read</em> reads the table on the page you have open and
+            saves it on your computer, with no further request.
           </li>
         </ul>
 
@@ -175,6 +251,25 @@
             there, apart from the app's.
           </li>
           <li>
+            <strong>Keep page cache</strong> (off by default): when you switch it on, the browser's page cache
+            (copies of pages, scripts and images it fetched) is kept between starts so sites you visited load
+            faster; cookies and site storage are still cleared as above. The cache stays on this PC and can show
+            which sites you visited; <em>Clear everything now</em> empties it.
+          </li>
+          <li>
+            <strong>Remember passwords</strong> (off by default): when you switch it on, the browser offers to save
+            the username and password you sign in with on an HTTPS site, and fills them in again on that same site
+            only: on its own when one login is saved for it, or with the key button when there are several. They are encrypted with your operating system's protection
+            (Windows' data protection, the macOS keychain or a Linux keyring, through Electron's safeStorage)
+            before they are written to <code>browser/passwords.json</code> in the app's data folder; where no such
+            protection exists nothing is saved. They are kept only on this PC and never sent anywhere. You can
+            delete them one by one or all at once in the browser's menu; switching the option off keeps them but
+            stops saving and filling. An optional <strong>master password</strong> adds a second lock: the logins are
+            then also encrypted with a key made from it (scrypt, AES-256-GCM), which is kept in memory only from the
+            moment you unlock until the app closes or you lock it. The master password itself is never stored.
+            Saved passwords are left out of the app's backups.
+          </li>
+          <li>
             <strong>Ads and trackers are blocked</strong> on every site unless you switch blocking off for one.
             The blocklists are downloaded only when you press <em>Download the blocklists</em> the first time,
             then again in the background, from their publishers: EasyList and EasyPrivacy (easylist.to) and
@@ -190,9 +285,9 @@
             unless you change it) and are subject to its privacy policy.
           </li>
           <li>
-            <strong>Downloads</strong> ask where to save every time and are never opened by the app. No password
-            saving, no autofill, no extensions. Sites get no camera, microphone, location, notifications or any
-            other permission.
+            <strong>Downloads</strong> ask where to save every time and are never opened by the app. No form
+            autofill beyond <em>Remember passwords</em>, no extensions. Sites get no camera, microphone, location,
+            notifications or any other permission.
           </li>
         </ul>
 
@@ -223,7 +318,7 @@
         <h2>Contact</h2>
         <p>
           Questions:
-          <a href="https://github.com/bahuckel/EDEXO-Compare/issues" target="_blank" rel="noopener noreferrer">GitHub issues</a>
+          <a href="https://github.com/bahuckel/EDEXO/issues" target="_blank" rel="noopener noreferrer">GitHub issues</a>
           or the project page on <a href="https://bahuckel.com/projects/edexo-compare" target="_blank" rel="noopener noreferrer">bahuckel.com</a>.
         </p>
       </main>

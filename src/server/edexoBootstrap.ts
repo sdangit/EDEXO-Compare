@@ -1,17 +1,11 @@
-import { flushNavRouteLog, navRouteLog, recordNavRoute } from "./navRouteLog.js";
+import { flushNavRouteLog, navRouteLog } from "./navRouteLog.js";
 import { enablePredictionAudit, flushPredictionAudit, predictionRecords } from "./predictionAuditLog.js";
 import { predictionQuality } from "./predictionQuality.js";
 import { cardVerdictsFor } from "./cardVerdicts.js";
-import { clearExpeditionCache } from "./expeditionService.js";
 import { flushSurfaceMarks } from "./surfaceMarksFile.js";
 import { startEddnLedgerWatch } from "./eddnLedger.js";
 import path from "node:path";
-import {
-  achievementDetail,
-  achievementExists,
-  achievementsList,
-  clearAchievementsCache,
-} from "./achievements.js";
+import { achievementDetail, achievementExists, achievementsList } from "./achievements.js";
 import { achievementNoticeText, createAchievementWatch } from "./achievementNotices.js";
 import {
   buildCodexExport,
@@ -22,19 +16,9 @@ import {
   ownCodexBackupKeys,
 } from "./sharedExomastery.js";
 import { ownFootEntriesWithBackups } from "./footScannedCatalog.js";
-import { existsSync, watchFile, unwatchFile, readFileSync, watch, statSync } from "node:fs";
-import type {
-  AppSnapshot,
-  AppStatusDTO,
-  ExoLiveDTO,
-  ImportDumpStatusDTO,
-  JournalBootProgressDTO,
-  JournalLine,
-  UiCommand,
-} from "../shared/types.js";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import type { AppSnapshot, ExoLiveDTO, JournalLine, UiCommand } from "../shared/types.js";
 import { journalHistoryCutoffUtcMs } from "../shared/journalHistoryPreset.js";
-import { clampStatusPollMs, pollRatesDto } from "../shared/pollRates.js";
-import { radarRadiusDto } from "../shared/radarRadius.js";
 import { mergeCollectionFocus } from "../shared/collectionFocus.js";
 import {
   clearCollectionFocusCache,
@@ -45,22 +29,23 @@ import {
 import { openUrlInBrowser, openLauncherShell, openLocalFile } from "./openUrl.js";
 import { GameStateStore } from "./gameState.js";
 import {
-  startJournalWatcher,
   readJournalFull,
-  readJournalFromOffset,
   listJournalFilesChronological,
+  type JournalLineAt,
   type JournalListFilterOpts,
-  type JournalTailSeed,
-  type JournalWatcherHandle,
 } from "./journalWatcher.js";
+import { emitLiveJournalLine } from "./journalTap.js";
+import { stopColonizeService } from "./colonize/colonizeService";
+import { onColonizeHudChange } from "./colonize/hudSummary";
 import { scanJournalsForStatistics } from "./statisticsScan.js";
 import { createHttpServer, getLanIPv4s } from "./httpServer.js";
+import { appViewUrl } from "./appViews.js";
 import { describeUserDataMigration, migrateLegacyUserData } from "./userDataMigration.js";
-import { readLanAccess, resolveLanAccess } from "./launcherPrefs.js";
+import { resolveLanAccess } from "./launcherPrefs.js";
 import { isLoopbackHostName } from "./lanAuth.js";
 import { applyPendingRestore } from "./backup.js";
 import { createBackupService } from "./backupService.js";
-import { APP_VERSION } from "./appVersion.js";
+import { APP_USER_AGENT, APP_VERSION } from "./appVersion.js";
 import os from "node:os";
 import {
   edsmCredentialsStatus,
@@ -68,16 +53,11 @@ import {
   readEdsmCredentials,
   saveEdsmCredentials,
 } from "./edsmCredentials.js";
-import { EdsmAutoFetcher } from "./edsmAutoFetch.js";
-import { CANONN_CLIENT_VERSION, CanonnUploader } from "./canonnUpload.js";
-import { EddnUploader } from "./eddnUpload.js";
 import { lanUrlWithKey, loadOrCreateLanKey } from "./lanAuth.js";
 import { buildEncyclopediaExomasteryPlanetsPayload } from "./exomasteryEdsmEncyclopedia.js";
 import {
   buildEncyclopediaPayload,
-  clearEncyclopediaPayloadCache,
   buildSnapshot,
-  organicLiveSummary,
   findSpeciesEntryForEncyclopedia,
   getCachedSpeciesDatabase,
   setCodexFirstLowChanceKept,
@@ -86,46 +66,24 @@ import {
 } from "./snapshot.js";
 import { writeExoDataAlertFixFiles } from "./exoDataAlertFix.js";
 import { buildFeederStatus } from "./feederStatus.js";
-import { openFeeder } from "../feeder/pipeline.js";
-import { formatImportReport, importSpanshExport } from "../feeder/spanshImport.js";
-import { feederDataDirExists } from "../feeder/paths.js";
-import { clearExomasteryProfileCache } from "./exomasteryProfile.js";
 import { regionalRarity } from "./speciesRarityData.js";
 import { createGamePresence } from "./gamePresence.js";
-import { buildFieldGuide, clearFieldGuideCache } from "./fieldGuide.js";
-import { clearSpeciesPhotoCache } from "./speciesPhotos.js";
+import { buildFieldGuide } from "./fieldGuide.js";
 import { buildDiscoveries } from "./discoveries.js";
-import {
-  clearFootCatalogSpeciesDb,
-  clearFootScannedCatalogCache,
-  flushFootScannedCatalog,
-} from "./footScannedCatalog.js";
-import { clearHostStarObservationsCache } from "./speciesHostStarObservations.js";
-import { clearPlanetClassObservationsCache } from "./speciesPlanetClassObservations.js";
-import { clearStarlightRangesCache } from "./starlightRanges.js";
-import { clearObservedEnvelopeCache } from "./observedEnvelope.js";
-import { clearBodyTypePriorCache } from "./bodyTypePrior.js";
-import { clearSpeciesSplitCache } from "./speciesSplit.js";
-import { clearGenusPriorCache } from "./genusPrior.js";
-import { resetGenusBodySplitCache } from "./genusBodySplit.js";
-import { clearLikelihoodDataCache } from "./likelihoodData.js";
-import { clearGenusPhotosFolderCache, getSpeciesDataWarnings } from "./speciesTreeLoader.js";
+import { flushFootScannedCatalog } from "./footScannedCatalog.js";
 import {
   parseStatusJsonDestination,
   parseStatusJsonFootFix,
   parseStatusJsonFuel,
   readStatusJsonFootFixText,
 } from "./footTravelStatus.js";
-import { parseNavRouteJson } from "./navRouteFuel.js";
 import {
   getProjectRoot,
+  resolveCommanderDataDir,
   resolveLanKeyPath,
   resolveUserSettingsJsonPath,
   resolveExoOutlierLogPath,
   USER_SETTINGS_FILENAME,
-  getSpeciesDataDir,
-  reapplySpeciesDataDirDiscoveryFromDisk,
-  resolveImportDumpLedgerPath,
 } from "./paths.js";
 import { guarded } from "./guarded.js";
 import {
@@ -139,20 +97,8 @@ import {
   ingestExoOrganicJournalLine,
   restoreOrganicSessionFromJournal,
 } from "./exoOrganicTracker.js";
-import { clearEddsnColourVariantsCache } from "./eddsnColourVariants.js";
-import { clearPhotoCreditsCache } from "./photoCredits.js";
-import { clearRegionSpeciesCache } from "./regionSpeciesData.js";
 import { perfTime, startPerfReporter } from "./perf.js";
-import {
-  flushPendingOrganicSampleSession,
-  loadOrganicSampleSessionFromDisk,
-} from "./organicSampleSessionFile.js";
-import {
-  buildJournalFileManifest,
-  removeJournalMergeCache,
-  saveJournalMergeCache,
-  tryPrepareJournalCacheLoad,
-} from "./journalMergeCache.js";
+import { flushPendingOrganicSampleSession } from "./organicSampleSessionFile.js";
 import { fetchEdsmBodiesAsExplorationRecords, searchEdsmSystemsByName } from "./edsmSystemHydration.js";
 import { fetchSpanshBodiesAsExplorationRecords, searchSpanshSystemsByName } from "./spanshSystemHydration.js";
 import { SessionLog } from "./sessionLog.js";
@@ -168,52 +114,54 @@ import { loadBioIndex, peekBioIndex } from "./bioIndex.js";
 import { importedSystems, loadVisitedImport } from "./visitedCache.js";
 import { mySystemDetail, mySystemsDto, sessionRouteDto, visitedSystemsDto } from "./galaxyMine.js";
 import { commanderSectorsDto } from "./galaxySectorTiers.js";
-import { runEdsmCatchUp, type EdsmCatchUpScope } from "./edsmCatchUp.js";
 import { createUpdateChecker, currentReleaseForm } from "./updateCheck.js";
 import { createMacUpdateChecker, currentMacReleaseForm } from "./macUpdateCheck.js";
 import { createAppUpdater, resolveUpdateDir } from "./appUpdater.js";
 import { createWhatsNew } from "./whatsNew.js";
-import { buildDiagnosticsText, installLogRing, loggedLines } from "./diagnostics.js";
+import { buildDiagnosticsText, installLogRing, loggedLines, serverMemory } from "./diagnostics.js";
+import { galaxyMemoryState } from "./galaxyMemory.js";
 import { createUnknownExobioLog } from "./exobioUnknown.js";
-import { fetchRemoteSystem, readRemoteSystemsCache, writeRemoteSystemToCache } from "./remoteSystems.js";
 import { parseHost, parsePort } from "./cliOptions.js";
 import type { CliOptions } from "./cliOptions.js";
 import { showEdexoNativeFixInfo, logFatal, assertResourceLayout } from "./startupChecks.js";
-import { backfillCommanderPosition } from "./commanderPositionBackfill.js";
-import { fullJumpRange } from "../shared/jumpRange.js";
 import { createGggResearch } from "./gggResearch.js";
-import { createNoticesService, type CodexFirstFind, type NoticesContext } from "./notices.js";
+import { createNoticesService, type CodexFirstFind, type RareColourFind } from "./notices.js";
+import { isRareColour } from "../shared/rareColour.js";
+import { communityGoalNoticeText, startCommunityGoalPoller } from "./communityGoals.js";
+import { startDataAutoRefresh } from "./dataAutoRefresh.js";
 import { createBookmarksService } from "./bookmarks.js";
 import { spawn } from "node:child_process";
 import { createBoxelRun } from "./boxelRun.js";
 import { createSavedBoxels } from "./savedBoxels.js";
-import { createNeutronLive, parseLiveHops } from "./neutronLive.js";
-import { neutronShip } from "./neutronShip.js";
-import { loadNeutronIndex } from "./neutronIndex.js";
-import { applyJumponium, planNeutronRoute } from "./neutronRoute.js";
-import { touchGalaxyMemory } from "./galaxyMemory.js";
-import { fsdWearEstimate, FSD_WARN } from "../shared/fsdWear.js";
-import { jumponiumView, recipeFor } from "../shared/jumponium.js";
-import { createGreenGiantMarks, greenGiantForRecord, type GreenGiantSources } from "./greenGiants.js";
-import { setNotableOptionsProvider } from "./notableOptions.js";
-import { BODY_FEATURES } from "../shared/bodyFeatures.js";
+import { createNeutronLive } from "./neutronLive.js";
+import { createNeutronReplanner } from "./neutronReplan.js";
+import { createGreenGiantMarks, greenGiantForRecord } from "./greenGiants.js";
+import { createNoticesWiring } from "./noticesWiring.js";
+import { addSnapshotExtras } from "./snapshotExtras.js";
+import { createJournalSideFiles } from "./journalSideFiles.js";
+import { createRemoteSystemView } from "./remoteSystemView.js";
+import { createStatusReader } from "./appStatus.js";
 import type { NotifySettingsDTO } from "../shared/notices.js";
-import { queryPoi, readPoiStatus } from "./edastroPoi.js";
-import { queryCarriers, readCarrierStatus } from "./edastroCarriers.js";
-import { edastroGreenFor, nearbyNsp, nspK10Systems } from "./edastroNsp.js";
-import { nspOutlook } from "./nspOutlook.js";
-import { regionForSystem } from "./regionMapData.js";
-import { fetchGalacticRecords, galacticRecords, readGalacticRecordsStatus } from "./galacticRecords.js";
+import { readPoiStatus } from "./edastroPoi.js";
+import { readCarrierStatus } from "./edastroCarriers.js";
+import { fetchGalacticRecords, readGalacticRecordsStatus } from "./galacticRecords.js";
 import { bodyKey } from "../shared/bodyKey.js";
-import { mainStarRecord } from "../shared/mainStar.js";
-import { journalFolderIsReadable, makeReplayLineApplier } from "./journalReplayGuards.js";
 import {
   applyPersistedUserPrefs as applyUserPrefs,
   persistUserPreferences as writeUserPrefs,
   tryReadUserPrefs,
   type PersistedUserPrefs,
 } from "./userPrefsFile.js";
-import { writeFileAtomic } from "./atomicWrite.js";
+import { createImportDumpJob } from "./importDumpJob.js";
+import { createCommunityUploads } from "./communityUploads.js";
+import { createStatusPoller } from "./statusPoller.js";
+import { createJournalPipeline } from "./journalPipeline.js";
+import { createSpeciesDataWatcher } from "./speciesDataWatcher.js";
+import { reloadSpeciesDerivedCaches } from "./speciesCacheReload.js";
+import { pickCommanderForRun } from "./commanderMigration.js";
+import { activeCommander } from "./activeCommander.js";
+import { createCommanderWatch } from "./commanderWatch.js";
+import { isOtherCommandersJournal } from "./journalCommanders.js";
 export { backfillCommanderPosition } from "./commanderPositionBackfill.js";
 export { logFatal, assertResourceLayout } from "./startupChecks.js";
 export { parseHost, parsePort, parseCli } from "./cliOptions.js";
@@ -221,6 +169,11 @@ export type { CliOptions } from "./cliOptions.js";
 
 export type EdexoRuntime = {
   ready: Promise<void>;
+  /**
+   * The journal boot is over (cache read or replay, the first push), or failed: the server's thread is free
+   * again. The desktop app serves its pages from disk until then (electron/staticShell.cjs).
+   */
+  booted: Promise<void>;
   shutdown: () => Promise<void>;
   /** A backup is being written: Electron asks before an exit throws it away (backupService.ts). */
   backupRunning: () => boolean;
@@ -255,44 +208,6 @@ export type EdexoRuntime = {
   stagedUpdate: () => { version: string; form: string; file: string; dir: string } | null;
 };
 
-/**
- * Everything read from the species tree and the exomastery profiles, forgotten in one place.
- *
- * Three reload paths (the species-tree watcher, "Refresh exomastery", and the Fix dialog's clear)
- * each kept their own list and the lists had drifted: after a refresh the host-star and planet-class
- * observations — built from the profiles — kept answering from the old ones until a restart, and the
- * watcher path dropped the foot catalog's unwritten rows (code review A8, 2026-09-27). The catalog is
- * written first now, so clearing its cache cannot lose a find.
- */
-function reloadSpeciesDerivedCaches(): void {
-  flushFootScannedCatalog();
-  clearFootScannedCatalogCache();
-  clearFootCatalogSpeciesDb();
-  clearExomasteryProfileCache();
-  clearEncyclopediaPayloadCache();
-  clearFieldGuideCache();
-  clearExpeditionCache();
-  clearSpeciesPhotoCache();
-  clearGenusPhotosFolderCache();
-  clearEddsnColourVariantsCache();
-  clearPhotoCreditsCache();
-  clearRegionSpeciesCache();
-  clearHostStarObservationsCache();
-  clearPlanetClassObservationsCache();
-  clearStarlightRangesCache();
-  clearObservedEnvelopeCache();
-  clearBodyTypePriorCache();
-  // The fitted which-of-the-genus tables (data/exomastery/species-split.json, speciesSplit.ts).
-  clearSpeciesSplitCache();
-  clearAchievementsCache();
-  // Code review B10 (2026-10-14): the genus chances and limits, the Brain Tree / Tubers split and the
-  // ranking's edges and prevalence were kept until a restart.
-  clearGenusPriorCache();
-  resetGenusBodySplitCache();
-  clearLikelihoodDataCache();
-}
-
-/** The journal folder is there and can be listed (a drive not mounted yet is not an empty folder). */
 export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   // The app's own prediction log (predictionAuditLog.ts); scripts that run the snapshot code never write it.
   enablePredictionAudit();
@@ -327,37 +242,11 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   });
 
   let journalDir = resolveInitialJournalDir(projectRoot);
-  let journalPath: string | null = null;
-  let journalFilesMerged = 0;
-
-  /** The live route into the store, and a new one into the NavRoute star finder's log (navRouteLog.ts). */
-  function applyNavRoute(waypoints: ReturnType<typeof readLiveNavRouteWaypoints>): boolean {
-    const changed = store.applyLiveNavRoute(waypoints);
-    if (changed && recordNavRoute(waypoints)) store.boxelsRevision++;
-    return changed;
-  }
   /*
-    Read on every Status tick (10 a second at the commander's 100 ms, plus every watch event), and a
-    plotted route makes it a large file: re-read only when its size or mtime moved, the last parse
-    standing in between (code review D6, 2026-10-14). A missing file still reads as no route.
+    Whose data this run shows (per-commander profiles, 1.3.1): picked from every journal before anything below reads
+    a journal or a commander's file, and the files from before 1.3.1 moved into that commander's folder once.
   */
-  let navRouteFileSeen: { key: string; waypoints: NonNullable<ReturnType<typeof parseNavRouteJson>> } | null =
-    null;
-  function readLiveNavRouteWaypoints() {
-    const file = path.join(journalDir, "NavRoute.json");
-    try {
-      const st = statSync(file);
-      const key = `${file}|${st.size}|${st.mtimeMs}`;
-      if (navRouteFileSeen?.key === key) return navRouteFileSeen.waypoints;
-      const waypoints = parseNavRouteJson(readFileSync(file, "utf8"));
-      // Only a route is kept: no route also reads as null for a file caught mid-write, and that must retry.
-      navRouteFileSeen = waypoints ? { key, waypoints } : null;
-      return waypoints;
-    } catch {
-      navRouteFileSeen = null;
-      return null;
-    }
-  }
+  await pickCommanderForRun(journalDir);
 
   const store = new GameStateStore();
   /*
@@ -372,18 +261,11 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     round.
   */
   store.loadSurfaceMarksFromDisk();
-
-  /** Re-read `NavRoute.json` + `Status.json` after a full journal replay (new log file / resync). */
-  function refreshLiveHudFromJournalDir(): void {
-    applyNavRoute(readLiveNavRouteWaypoints());
-    try {
-      const raw = readFileSync(path.join(journalDir, "Status.json"), "utf8");
-      const fuel = parseStatusJsonFuel(raw);
-      store.applyLiveShipFuel(fuel != null ? fuel.fuelMain : null, fuel != null ? fuel.fuelReserve : null);
-    } catch {
-      store.applyLiveShipFuel(null, null);
-    }
-  }
+  // NavRoute.json and Status.json beside the journals: the live route, the fuel, the per-batch read (journalSideFiles.ts).
+  const { applyNavRoute, readLiveNavRouteWaypoints, refreshLiveHudFromJournalDir, liveSideFiles } = createJournalSideFiles({
+    store,
+    getJournalDir: () => journalDir,
+  });
 
   const userSettingsPath = resolveUserSettingsJsonPath();
   const legacyUserSettingsPath = path.join(projectRoot, USER_SETTINGS_FILENAME);
@@ -391,6 +273,13 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   // The settings file lives in userPrefsFile.ts; these keep the old names for the wiring below.
   const persistUserPreferences = (): void => writeUserPrefs(store, userSettingsPath);
   const applyPersistedUserPrefs = (j: PersistedUserPrefs): void => applyUserPrefs(store, j);
+  /** A settings setter that writes the settings file after it (audit 2026-10-22: ten copies of the pair). */
+  const persisted =
+    <A extends unknown[]>(fn: (...a: A) => void) =>
+    (...a: A): void => {
+      fn(...a);
+      persistUserPreferences();
+    };
 
   {
     const primary = tryReadUserPrefs(userSettingsPath);
@@ -412,7 +301,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
    * wide gets an access key. A loopback bind gets none — there is nothing there a local process
    * could not already do.
    */
-  // Any address but this PC's own is the network, and needs the key: `--host 192.168.0.6` or `--host ::`
+  // Any address but this PC's own is the network, and needs the key: `--host 192.0.2.10` or `--host ::`
   // used to run with no key at all because only 0.0.0.0 counted (combined plan 1.4).
   const lanExposed = !isLoopbackHostName(bindHost);
   const lanKey = lanExposed ? loadOrCreateLanKey(resolveLanKeyPath()) : null;
@@ -428,14 +317,6 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       lanUrlsCache = { at: now, urls: getLanIPv4s(port).map((u) => lanUrlWithKey(u, lanKey)) };
     }
     return lanUrlsCache.urls;
-  };
-
-  let journalBootProgress: JournalBootProgressDTO | null = {
-    percent: 0,
-    phase: "starting",
-    filesDone: 0,
-    filesTotal: 0,
-    message: "Starting journal service…",
   };
 
   const sessionLog = new SessionLog();
@@ -457,7 +338,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     version: () => `${store.achievementDone.size}|${store.codexMapLogged.size}|${store.visitedSystems.size}`,
   });
   const notices = createNoticesService({
-    filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-notices.json"),
+    filePath: path.join(resolveCommanderDataDir(), "edexo-notices.json"),
   });
   setCodexFirstLowChanceKept(() => notices.prefs().codexFirstLowChance ?? true);
   /* The nudge research log: the developer's PC only, where `ggg-research.on` is (server/gggResearch.ts). */
@@ -466,7 +347,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     notify: (n, at) => notices.announceGggResearch(n, at),
   });
   const savedBoxels = createSavedBoxels({
-    filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-boxels.json"),
+    filePath: path.join(resolveCommanderDataDir(), "edexo-boxels.json"),
     // A boxel run takes the clipboard over from a neutron route being flown (plan 8.5).
     onRun: (id) => {
       if (id && neutronLive.active()) {
@@ -516,7 +397,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     jump onto a stop, the same way; starting one ends the boxel run.
   */
   const neutronLive = createNeutronLive({
-    filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-neutron-live.json"),
+    filePath: path.join(resolveCommanderDataDir(), "edexo-neutron-live.json"),
     deliver: (name) => deliverToClipboard(name, "neutron"),
     onStart: () => {
       if (savedBoxels.runId()) savedBoxels.setRun(null);
@@ -530,139 +411,21 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     store.boxelsRevision++;
     push();
   };
-  /*
-    Off the route (owner, 2026-10-13: "always taking into consideration your current location"): planned again from
-    where the ship is to the stops not reached yet, with the ship as the journals know it now. One at a time; the
-    HUD says "re-plotting" meanwhile, and the new next stop goes to the clipboard.
-  */
-  /*
-    One re-plot at a time, whatever the route does meanwhile (review 1.2.16): Stop cleared the route's own flag while
-    a search still ran, so a second one could start; and one that finished after a new route was started replaced
-    the new route — it lands only if the route is still the one it was asked for (its version).
-  */
-  let replanBusy = false;
-  const replanNeutron = async (): Promise<void> => {
-    if (replanBusy) return;
-    const here = shipHere();
-    const left = neutronLive.remaining();
-    if (!here.pos || !left) return;
-    replanBusy = true;
-    const version = neutronLive.version();
-    touchGalaxyMemory();
-    let index;
-    try {
-      index = loadNeutronIndex();
-    } catch {
-      return;
-    }
-    if (!index) return;
-    const s = neutronShip(store);
-    const jumpsPerTank = s.jumpsPerTank ?? 4;
-    neutronLive.setReplanning(true);
-    push();
-    try {
-      const route = await planNeutronRoute(
-        index,
-        [{ name: here.name ?? "Your ship", ...here.pos }, ...left.targets],
-        {
-          // The range the route was planned with (he may have typed one for another ship), else the journals'.
-          rangeLy: left.rangeLy ?? s.rangeLy,
-          boost: left.boost ?? s.boostFactor,
-          jumpsPerTank,
-          jumpsNow: Math.min(jumpsPerTank, Math.max(0, s.jumpsNow ?? jumpsPerTank)),
-          fsdHealth: s.fsdHealth,
-          wearPerBoost: s.wearPerBoost,
-        },
-      );
-      // Planned with FSD injections: the re-plot keeps them (shared/jumponium.ts).
-      const planned = left.useJumponium
-        ? applyJumponium(
-            route,
-            left.rangeLy ?? s.rangeLy ?? 50,
-            left.boost ?? s.boostFactor ?? 4,
-            (t) => recipeFor(store.jumponium, t),
-            store.jumponium?.raw ?? null,
-          ).route
-        : route;
-      const hops = parseLiveHops(planned.hops);
-      if (hops && neutronLive.active() && neutronLive.version() === version)
-        neutronLive.replace(hops, left.targets);
-    } catch (e) {
-      console.warn("[edexo-compare] neutron re-plot failed:", e);
-    } finally {
-      replanBusy = false;
-      if (neutronLive.version() === version) neutronLive.setReplanning(false);
-      touchGalaxyMemory();
-      push();
-    }
-  };
+  /* Off the route: planned again from where the ship is (server/neutronReplan.ts). */
+  const neutronReplanner = createNeutronReplanner({ store, neutronLive, push: () => push(), shipHere });
   const bookmarks = createBookmarksService({
-    filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-bookmarks.json"),
+    filePath: path.join(resolveCommanderDataDir(), "edexo-bookmarks.json"),
   });
   /* Green gas giants (owner, 2026-09-30): the commander's own calls, and what the verdict reads. */
   const greenMarks = createGreenGiantMarks({
     filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-ggg-marks.json"),
   });
-  const bodiesInSystem = function* (addr: number) {
-    yield* store.liveScansInSystem(addr);
-    yield* store.soldScansInSystem(addr);
-  };
-  const greenExtras = { k10FromEdastro: nspK10Systems, edastroGreenFor, bodiesInSystem, marks: greenMarks };
-  const greenSources = (): GreenGiantSources => ({
-    ...greenExtras,
-    greenCodexBodies: store.greenCodexBodies,
-    k10Systems: store.k10Systems,
+  // The green gas giants' sources, the Notable card's options and the notices' view of the store (noticesWiring.ts).
+  const { greenExtras, greenSources, scanOf, mainStarTypeOf, noticesContext } = createNoticesWiring({
+    store,
+    notices,
+    greenMarks,
   });
-  const scanOf = (k: string) => store.explorationScans.get(k) ?? store.soldExplorationScans.get(k) ?? null;
-  /** The arrival star's type (distance 0), else the lowest-numbered star scanned: the phenomena model's main star. */
-  const mainStarTypeOf = (addr: number): string | null =>
-    mainStarRecord([...store.liveScansInSystem(addr), ...store.soldScansInSystem(addr)])?.starType ?? null;
-  // The Notable card: green gas giants always (they are notable like an Earth-like), features as chosen.
-  setNotableOptionsProvider(() => {
-    const on = notices.prefs().features;
-    return {
-      green: greenExtras,
-      features: new Set(BODY_FEATURES.filter((f) => on[f.key]).map((f) => f.key)),
-    };
-  });
-  const noticesContext: NoticesContext = {
-    isKnownBody: (k) => store.explorationScans.has(k) || store.soldExplorationScans.has(k),
-    allScans: function* () {
-      yield* store.explorationScans.values();
-      yield* store.soldExplorationScans.values();
-    },
-    currentSystem: () => ({ name: store.currentSystem ?? "", address: store.currentSystemAddress ?? null }),
-    loadoutJumpLy: () => store.loadoutMaxJumpRangeLy,
-    fullJumpLy: () => fullJumpRange(store.jumpRange),
-    // Both read the commander's own EDAstro downloads; with none fetched they find nothing.
-    nearbyPois: (origin, radiusLy, groups) =>
-      queryPoi({ origin, groups, limit: 50 })
-        .filter((r) => r.distanceLy != null && r.distanceLy <= radiusLy)
-        .map((r) => ({
-          key: r.key,
-          name: r.name,
-          system: r.system,
-          typeLabel: r.typeLabel,
-          distanceLy: r.distanceLy!,
-        })),
-    nearbyCarriers: (origin, radiusLy) =>
-      queryCarriers({ origin, limit: 100 })
-        .filter((r) => r.distanceLy != null && r.distanceLy <= radiusLy)
-        .map((r) => ({
-          callsign: r.callsign,
-          name: r.name,
-          system: r.system,
-          systemAddress: r.systemAddress,
-          distanceLy: r.distanceLy!,
-          lastSeenDays: r.lastSeenDays,
-          services: r.services,
-        })),
-    nearbyNsps: (origin, radiusLy) => nearbyNsp(origin, radiusLy),
-    galacticRecord: (key) => galacticRecords().get(key) ?? null,
-    greenGiant: (rec) => greenGiantForRecord(rec, greenSources()),
-    scanOf,
-    rawStock: () => store.jumponium.raw,
-  };
   const notifySettings = (): NotifySettingsDTO => ({
     prefs: notices.prefs(),
     jumpLy: notices.jumpLy(noticesContext),
@@ -673,230 +436,65 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     perfTime("buildSnapshot", () => {
       const snap = buildSnapshot(
         store,
-        journalPath,
+        journal.path(),
         journalDir,
         bindHost,
         port,
         lanExposed ? lanUrlsWithKey() : [],
-        journalFilesMerged,
-        journalBootProgress,
+        journal.filesMerged(),
+        journal.bootProgress(),
         sessionLog.toDto(),
       );
-      // Neither while the history replays: the boot screen covers both (plan 2.3, Opus 20).
-      snap.notices = snap.journalBoot
-        ? undefined
-        : notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
-      {
-        // The NSP card (2026-09-30): what he saw, what EDAstro has, else a guess from the neighbourhood.
-        const addr = store.viewingSystemAddress ?? store.currentSystemAddress ?? null;
-        snap.nspOutlook =
-          addr == null || snap.journalBoot
-            ? null
-            : perfTime("snap.nspOutlook", () =>
-                nspOutlook({
-                  systemAddress: addr,
-                  position: store.systemPositions.get(addr) ?? null,
-                  seen: store.nspSeen.get(addr) ?? [],
-                  region: (() => {
-                    const pos = store.systemPositions.get(addr);
-                    return pos
-                      ? regionForSystem(getProjectRoot(), pos.x, pos.y, pos.z)
-                      : (snap.currentRegion?.name ?? null);
-                  })(),
-                  starType: mainStarTypeOf(addr),
-                }),
-              );
-      }
-      snap.neutronLive = snap.journalBoot ? null : neutronLive.view(shipHere());
-      {
-        const w = fsdWearEstimate(store.fsdWear);
-        snap.fsdHealth =
-          snap.journalBoot || w.health == null
-            ? null
-            : {
-                health: w.health,
-                warn: w.health < FSD_WARN,
-                boostsSince: w.boostsSince,
-                estimate: w.boostsSince > 0 && w.wearIsDefault,
-              };
-      }
-      snap.jumponium = snap.journalBoot ? null : jumponiumView(store.jumponium);
-      snap.bookmarksHere = bookmarks.forSystem(
-        store.viewingSystemAddress ?? store.currentSystemAddress ?? null,
-        snap.viewingSystemName ?? store.currentSystem ?? null,
-      );
+      // What the journal store does not hold: notices, the NSP card, the neutron route, the FSD, bookmarks (snapshotExtras.ts).
+      addSnapshotExtras(snap, { store, notices, neutronLive, shipHere, bookmarks, commanderWatch, mainStarTypeOf });
       return snap;
     });
 
-  /**
-   * Launcher-sized status. Reads store fields directly — no snapshot build, no one-shot state.
-   */
-  /*
-    "Import Spansh export" from the launcher. Same importer and gates as `feeder -- import-dump`;
-    runs in the background because the file is gigabytes, and one at a time because the feeder
-    store is a single in-memory database written back on persist.
-  */
-  let importDump: ImportDumpStatusDTO = {
-    running: false,
-    file: null,
-    apply: false,
-    startedAt: null,
-    finishedAt: null,
-    report: null,
-    error: null,
-    lastImport: readImportDumpLedger(),
-  };
-  function readImportDumpLedger(): ImportDumpStatusDTO["lastImport"] {
-    try {
-      const j = JSON.parse(readFileSync(resolveImportDumpLedgerPath(), "utf8")) as Record<string, unknown>;
-      if (j && typeof j.file === "string" && typeof j.finishedAt === "string") {
-        return {
-          file: j.file,
-          finishedAt: j.finishedAt,
-          fileMtimeIso: typeof j.fileMtimeIso === "string" ? j.fileMtimeIso : null,
-          apply: j.apply === true,
-        };
-      }
-    } catch {
-      /* no import yet */
-    }
-    return null;
-  }
-  function fileMtimeIso(file: string | null | undefined): string | null {
-    if (!file) return null;
-    try {
-      return statSync(file).mtime.toISOString();
-    } catch {
-      return null;
-    }
-  }
-  function importDumpStatusFor(file?: string | null): ImportDumpStatusDTO {
-    const last = importDump.lastImport ?? null;
-    const asked = file && file.trim() ? file.trim() : (last?.file ?? null);
-    const mtime = fileMtimeIso(asked);
-    const newerOnDisk =
-      !!last && !!asked && !!mtime && !!last.fileMtimeIso && asked === last.file && mtime > last.fileMtimeIso;
-    return { ...importDump, fileMtimeIso: mtime, newerOnDisk };
-  }
-  const startImportDump = (file: string, apply: boolean): { ok: boolean; error?: string } => {
-    if (importDump.running) return { ok: false, error: "An import is already running." };
-    if (!feederDataDirExists())
-      return { ok: false, error: "No feeder corpus on this machine — this is a build-side tool." };
-    if (!existsSync(file)) return { ok: false, error: `File not found: ${file}` };
-    importDump = {
-      running: true,
-      file,
-      apply,
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      report: null,
-      error: null,
-    };
-    void (async () => {
-      try {
-        const ctx = await openFeeder();
-        const report = await importSpanshExport(ctx.store, file, { apply });
-        const finishedAt = new Date().toISOString();
-        const lastImport = { file, finishedAt, fileMtimeIso: fileMtimeIso(file), apply };
-        try {
-          writeFileAtomic(resolveImportDumpLedgerPath(), JSON.stringify(lastImport), "utf8");
-        } catch {
-          /* the status still says it; only the memory across runs is lost */
-        }
-        importDump = {
-          ...importDump,
-          running: false,
-          finishedAt,
-          report: formatImportReport(report, apply),
-          failures: report.failures.length,
-          matched: report.matched,
-          changed: report.changed,
-          lastImport,
-        };
-      } catch (e) {
-        importDump = {
-          ...importDump,
-          running: false,
-          finishedAt: new Date().toISOString(),
-          error: e instanceof Error ? e.message : String(e),
-        };
-      }
-    })();
-    return { ok: true };
-  };
+  // "Import Spansh export" from the launcher (importDumpJob.ts).
+  const importDump = createImportDumpJob();
 
-  /**
-   * Show a system the journals know nothing about, from Spansh (owner, 2026-09-25). The 30-day cache
-   * answers first; a fetch is marked "loading" so the screen can say so, and a failure says why.
-   * A system with any bio body or mappable scan of his own is never replaced by somebody else's data.
-   */
-  async function ensureRemoteSystem(systemAddress: number, starSystem: string): Promise<void> {
-    if (store.hasMappableJournalExplorationForSystem(systemAddress)) return;
-    if (store.remoteSystems.has(systemAddress)) return;
-    if (store.remoteLookups.get(systemAddress)?.state === "loading") return;
-    const cached = readRemoteSystemsCache().find((r) => r.systemAddress === systemAddress);
-    if (cached) {
-      store.remoteSystems.set(systemAddress, cached);
-      push();
-      return;
-    }
-    store.remoteLookups.set(systemAddress, { starSystem, state: "loading" });
-    push();
-    const r = await fetchRemoteSystem(systemAddress, starSystem);
-    if (r.ok) {
-      store.remoteSystems.set(systemAddress, r.system);
-      store.remoteLookups.delete(systemAddress);
-      writeRemoteSystemToCache(r.system);
-    } else {
-      store.remoteLookups.set(systemAddress, { starSystem, state: "error", error: r.error });
-    }
-    push();
-  }
-
-  /** The same two rules before either galaxy source fills a system's map. */
-  function hydrateGate(systemAddress: number, source: string): { ok: false; error: string } | null {
-    if (!store.isKnownJournalSystem(systemAddress)) {
-      return { ok: false, error: "That system is not present in merged journal data." };
-    }
-    if (store.hasMappableJournalExplorationForSystem(systemAddress)) {
-      return {
-        ok: false,
-        error: `Journal already has mappable scan data for this system — no ${source} supplement needed.`,
-      };
-    }
-    return null;
-  }
-
-  const getStatus = (): AppStatusDTO => {
-    let journalDirConfiguredOk = false;
-    try {
-      journalDirConfiguredOk = existsSync(journalDir) && statSync(journalDir).isDirectory();
-    } catch {
-      journalDirConfiguredOk = false;
-    }
-    return {
-      mode: lanExposed ? "server" : "client",
-      bindHost,
-      port,
-      lanUrls: lanExposed ? lanUrlsWithKey() : [],
-      lanKeyRequired: lanKey != null,
-      lanAccess: cli.lanToggle ? { saved: readLanAccess() ?? lanExposed, active: lanExposed } : null,
-      journalDir,
-      journalDirConfiguredOk,
-      journalPath,
-      journalFileCount: journalFilesMerged,
-      journalHistoryPreset: store.journalHistoryPreset,
-      lastJournalEventIso: store.lastEventIso,
-      commanderName: store.commanderName,
-      journalBoot: journalBootProgress,
-      speciesDataWarnings: getSpeciesDataWarnings(),
-      pollRates: pollRatesDto(store.statusPollMs, store.journalPollMs),
-      radarRadius: radarRadiusDto(store.minimapRadiusM),
-      live: organicLiveSummary(store),
-    };
-  };
+  // A system the journals do not know, from Spansh; the gate before a galaxy source fills a map (remoteSystemView.ts).
+  const { ensureRemoteSystem, hydrateGate } = createRemoteSystemView({ store, push: () => push() });
 
   let broadcast: (s: AppSnapshot) => void = () => {};
+
+  /*
+    The codex-first announcement writes the notices file, so it runs with the push, never on a read:
+    GET /api/state used to write it too (code review 2026-10-10, A6), the same reason the one-shot
+    auto-select moved out of the snapshot.
+  */
+  const announceCodexFirstIn = (snap: ReturnType<typeof getSnapshot>) => {
+    // [CODEX FIRST] candidates (owner, 2026-09-30) and rare colours (1.2.19) in the system he is in go to the bell, once
+    // each, and leave it when the body's candidates no longer hold them (owner, 2026-10-04). One walk for both.
+    const prefs = notices.prefs();
+    if (snap.journalBoot || store.currentSystemAddress == null || (!prefs.codexFirst && !prefs.rareColours)) return;
+    const firsts: CodexFirstFind[] = [];
+    const rare: RareColourFind[] = [];
+    const evaluated = new Set<string>();
+    for (const b of snap.bodies ?? []) {
+      if (b.state.systemAddress !== store.currentSystemAddress) continue;
+      evaluated.add(b.state.key);
+      const where = {
+        bodyKey: b.state.key,
+        systemAddress: b.state.systemAddress,
+        system: b.state.starSystem || store.currentSystem || "",
+        body: b.tabLabel || b.state.bodyName,
+      };
+      for (const m of b.matches ?? []) {
+        if (m.unlikely) continue;
+        const who = { species: m.entry.displayName, speciesId: m.entry.id };
+        if (m.codexFirst && m.codexRegion)
+          firsts.push({ ...where, ...who, colours: m.codexFirstColours ?? [], region: m.codexRegion });
+        for (const r of (m.colourRarity ?? []).filter(isRareColour)) rare.push({ ...r, ...where, ...who });
+      }
+    }
+    const at = new Date().toISOString();
+    const changed = [
+      prefs.codexFirst && notices.announceCodexFirst(firsts, at, evaluated),
+      prefs.rareColours && notices.announceRareColours(rare, at, evaluated),
+    ].some(Boolean);
+    if (changed) snap.notices = notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
+  };
 
   /**
    * Broadcast, then consume the one-shot UI auto-select key.
@@ -905,40 +503,6 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
    * called — whichever poller arrived first swallowed the key, so "focus the body you just
    * scanned" silently failed and, with two clients, at most one ever saw it.
    */
-  /*
-    The codex-first announcement writes the notices file, so it runs with the push, never on a read:
-    GET /api/state used to write it too (code review 2026-10-10, A6), the same reason the one-shot
-    auto-select moved out of the snapshot.
-  */
-  const announceCodexFirstIn = (snap: ReturnType<typeof getSnapshot>) => {
-    // [CODEX FIRST] candidates in the system he is in go to the bell, once each (owner, 2026-09-30),
-    // and leave it when the body's candidates no longer hold them (owner, 2026-10-04).
-    if (!snap.journalBoot && store.currentSystemAddress != null && notices.prefs().codexFirst) {
-      const finds: CodexFirstFind[] = [];
-      const evaluated = new Set<string>();
-      for (const b of snap.bodies ?? []) {
-        if (b.state.systemAddress !== store.currentSystemAddress) continue;
-        evaluated.add(b.state.key);
-        for (const m of b.matches ?? []) {
-          if (!m.codexFirst || m.unlikely || !m.codexRegion) continue;
-          finds.push({
-            bodyKey: b.state.key,
-            systemAddress: b.state.systemAddress,
-            system: b.state.starSystem || store.currentSystem || "",
-            body: b.tabLabel || b.state.bodyName,
-            species: m.entry.displayName,
-            speciesId: m.entry.id,
-            colours: m.codexFirstColours ?? [],
-            region: m.codexRegion,
-          });
-        }
-      }
-      if (notices.announceCodexFirst(finds, new Date().toISOString(), evaluated)) {
-        snap.notices = notices.snapshot(store.viewingSystemAddress ?? store.currentSystemAddress ?? null);
-      }
-    }
-  };
-
   // Guarded: it runs on timers too, and a throw there would end the server process (guarded.ts).
   const broadcastSnapshot = guarded("snapshot push", () => {
     const snap = getSnapshot();
@@ -976,23 +540,11 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     }, PUSH_WINDOW_MS - sinceLast);
   };
 
-  let bootMergeLastFlush = 0;
-  const pushMergeProgress = () => {
-    const t = Date.now();
-    if (t - bootMergeLastFlush < 110) return;
-    bootMergeLastFlush = t;
-    pushFlush();
-  };
+  // The HUD's Colonize section follows the Colonize store and its saved plan, not the journal store.
+  const offColonizeHud = onColonizeHudChange(push);
+  // Who the game is playing and every commander the journals name (per-commander profiles, 1.3.1).
+  const commanderWatch = createCommanderWatch({ getJournalDir: () => journalDir, onChange: () => push() });
 
-  let watcher: JournalWatcherHandle | null = null;
-  let footStatusPollTimer: ReturnType<typeof setInterval> | null = null;
-  /**
-   * The `Status.json` tick, kept as a value so the interval can be re-armed at a new rate without
-   * rebuilding the closure it lives in (it owns the jump-key memo, which must survive a retime).
-   */
-  let footStatusTick: (() => void) | null = null;
-  /** The interval the armed timer was created with; see {@link armFootStatusPoll}. */
-  let footStatusArmedMs = 0;
 
   /**
    * The radar's frame, for {@link ExoLiveDTO}.
@@ -1010,71 +562,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     ),
   });
 
-  /**
-   * `Status.json`, driven by the game's own writes instead of by the clock.
-   *
-   * A poll can only ever be a guess at when the game wrote: slower and the HUD lags, faster and it
-   * re-reads bytes that have not changed. Watching the directory turns it round — the read happens
-   * because the game wrote, and lands within milliseconds of it.
-   *
-   * It does not make the data fast, because the data is not fast. measured on 2026-09-18 while running, jumping and turning on foot: the file is rewritten about 0.7 times a second and its *contents* change about 0.33 times a second, median gap 3.0 s, fastest 2.0 s.
-   * So this is about *latency*, not rate: it removes the delay we were adding, and nothing more.
-   * Anything smoother than 0.33 Hz on screen has to be predicted, not polled for.
-   *
-   * The **directory** rather than the file: a watch on the file itself dies if the game ever
-   * replaces it rather than rewriting in place, and comes back attached to an inode nobody writes
-   * to again, which is a HUD that silently stops updating.
-   *
-   * The interval stays as a backstop. `fs.watch` is best-effort on Windows — it can miss events
-   * under load, and it does not exist at all on some network paths — so the poll is what guarantees
-   * the HUD keeps moving; the watch is what makes it prompt.
-   */
-  let footStatusFsWatcher: ReturnType<typeof watch> | null = null;
-  /** Coalesces the duplicate events one write produces, and caps the work a busy file can cause. */
-  let lastFootStatusRunAt = 0;
-  const FOOT_STATUS_MIN_GAP_MS = 40;
-
-  function runFootStatusTickFromWatch(): void {
-    if (footStatusTick == null) return;
-    const now = Date.now();
-    if (now - lastFootStatusRunAt < FOOT_STATUS_MIN_GAP_MS) return;
-    lastFootStatusRunAt = now;
-    try {
-      footStatusTick();
-    } catch (e) {
-      console.error("[edexo-compare] Status.json watch tick:", e);
-    }
-  }
-
-  function startFootStatusWatch(): void {
-    footStatusFsWatcher?.close();
-    footStatusFsWatcher = null;
-    try {
-      footStatusFsWatcher = watch(journalDir, { persistent: false }, (_ev, name) => {
-        if (name && String(name).toLowerCase() !== "status.json") return;
-        runFootStatusTickFromWatch();
-      });
-    } catch {
-      /* no watch on this path; the interval below is still doing the job */
-    }
-  }
-
-  /** (Re-)arm the `Status.json` poll at `store.statusPollMs`. A no-op when nothing moved. */
-  function armFootStatusPoll(force = false): void {
-    if (footStatusTick == null) return;
-    const next = clampStatusPollMs(store.statusPollMs);
-    if (!force && footStatusPollTimer != null && next === footStatusArmedMs) return;
-    if (footStatusPollTimer != null) {
-      clearInterval(footStatusPollTimer);
-      footStatusPollTimer = null;
-    }
-    footStatusArmedMs = next;
-    const tick = footStatusTick;
-    footStatusPollTimer = setInterval(
-      guarded("Status.json poll", () => tick()),
-      next,
-    );
-  }
+  // `Status.json`: the game's writes, with an interval as the backstop (statusPoller.ts).
+  const statusPoller = createStatusPoller({ store, getJournalDir: () => journalDir });
 
   /**
    * Both live-file poll rates, applied to the running timers at once.
@@ -1089,8 +578,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   ): { statusPollMs: number; journalPollMs: number } {
     const changed = store.setPollRates(statusRaw, journalRaw);
     if (changed) {
-      armFootStatusPoll();
-      watcher?.retimePoll();
+      statusPoller.arm();
+      journal.retimePoll();
       persistUserPreferences();
     }
     return { statusPollMs: store.statusPollMs, journalPollMs: store.journalPollMs };
@@ -1100,229 +589,44 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     return { minFileStartUtcMs: journalHistoryCutoffUtcMs(store.journalHistoryPreset) };
   }
 
-  /**
-   * Auto-hydration on jump (§50). Enabled only when the toggle is on **and** the commander has
-   * stored their own EDSM key — the key is the consent, the toggle is the switch.
-   */
-  const edsmAutoFetcher = new EdsmAutoFetcher({
-    isEnabled: () => store.edsmAutoFetchEnabled && readEdsmCredentials() !== null,
-    needsHydration: (systemAddress, arrived) =>
+  // EDSM, Canonn and EDDN: hydration on jump, the upload catch-up and live loop, the live-tail senders.
+  const uploads = createCommunityUploads({
+    store,
+    push: () => push(),
+    getJournalDir: () => journalDir,
+    getJournalPath: () => journal.path(),
+  });
+  const { canonnUploader, eddnUploader, maybeAutoFetchOnArrival, primeEddnFromNewestJournal } = uploads;
+
+  // Community Goals: Frontier's public list, hourly while Notify me → Community goals is on (communityGoals.ts).
+  startCommunityGoalPoller({
+    enabled: () => notices.prefs().communityGoals,
+    userAgent: APP_USER_AGENT,
+    onGoals: (goals) => {
+      const at = new Date().toISOString();
+      let added = false;
+      for (const g of goals) {
+        if (notices.announceCommunityGoal({ id: g.id, title: g.title, system: g.system, text: communityGoalNoticeText(g) }, at))
+          added = true;
+      }
+      if (added) push();
+    },
+  });
+
+  // Carriers & Stations refresh themselves once fetched (dataAutoRefresh.ts): 12 h / 24 h unless changed.
+  const dataAutoRefresh = startDataAutoRefresh(() => push());
+
+  function createLiveJournalLine(): (line: JournalLine, at: JournalLineAt) => void {
+    return (line: JournalLine, at: JournalLineAt) => {
       /*
-       * On arrival the system is in the journal, so not knowing it means something is off and we
-       * leave it alone. A jump destination is somewhere the commander has *not* been — that is the
-       * whole point of asking early — so the journal-knows-it half of the gate cannot apply.
-       */
-      (arrived ? store.isKnownJournalSystem(systemAddress) : true) &&
-      !store.hasMappableJournalExplorationForSystem(systemAddress),
-    hydrate: async (systemAddress, systemName) => {
-      const edsm = await fetchEdsmBodiesAsExplorationRecords(
-        systemName,
-        systemAddress,
-        readEdsmCredentials(),
-      );
-      if (!edsm.ok) return { ok: false, error: edsm.error };
-      store.replaceEdsmExplorationForSystem(systemAddress, edsm.records);
-      push();
-      return { ok: true };
-    },
-  });
-
-  /**
-   * One catch-up at a time.
-   *
-   * Two concurrent runs would both start from the same watermark and send the whole history twice —
-   * harmless to EDSM, which discards duplicates, and exactly the kind of traffic a volunteer service
-   * should not have to absorb from one client.
-   */
-  let edsmCatchUpRunning = false;
-  let edsmCatchUpCancelled = false;
-
-  /**
-   * How often the live upload looks for new journal lines, and how far back it reaches.
-   *
-   * Three minutes because exploration data is not time-critical and a quiet tick costs nothing: the
-   * discard list is cached for a day and unchanged journals are never opened, so a tick with no new
-   * play makes no network request at all.
-   *
-   * A **week**, not everything. Wide enough to heal a gap from an app that was closed for a few days,
-   * narrow enough that switching this on cannot silently start uploading four years — that is what
-   * the button and its dropdown are for, and it should stay a deliberate act.
-   */
-  const EDSM_LIVE_INTERVAL_MS = 3 * 60 * 1000;
-  const EDSM_LIVE_SCOPE = "week" as const;
-
-  /**
-   * One catch-up, whoever asked for it.
-   *
-   * The button and the timer go through here so there is exactly one place that decides whether a
-   * run may start. Two runs would read the same watermark and send the history twice.
-   */
-  function startEdsmRun(scope: EdsmCatchUpScope, silent = false): { ok: boolean; error?: string } {
-    if (!store.edsmUploadEnabled) return { ok: false, error: "Turn EDSM upload on first." };
-    const credentials = readEdsmCredentials();
-    if (!credentials) return { ok: false, error: "Store your EDSM commander name and API key first." };
-    if (edsmCatchUpRunning) return { ok: false, error: "A catch-up is already running." };
-    edsmCatchUpRunning = true;
-    edsmCatchUpCancelled = false;
-    void runEdsmCatchUp({
-      journalDir,
-      credentials,
-      scope,
-      isCancelled: () => edsmCatchUpCancelled,
-      onProgress: (p) => {
-        /*
-          A live tick that found nothing does not touch the panel.
-
-          Otherwise every three minutes the progress line would blink through "0 / 214 journals" and
-          back, which reads as something going wrong. A tick that actually sends is worth showing.
-        */
-        if (silent && p.eventsSent === 0 && !p.error) return;
-        store.setEdsmUploadProgress(p);
-        push();
-      },
-    })
-      .catch((e: unknown) => {
-        // `runEdsmCatchUp` does not throw, so this is belt and braces — but a rejected promise that
-        // left the flag set would make the button dead until a restart.
-        console.error("[edsm] catch-up:", e);
-      })
-      .finally(() => {
-        edsmCatchUpRunning = false;
-        push();
-      });
-    return { ok: true };
-  }
-
-  /**
-   * The live loop.
-   *
-   * Unref'd so it never holds the process open, and it asks `startEdsmRun` rather than checking the
-   * switches itself — a commander who turns the upload off mid-tick gets the same refusal the button
-   * would get.
-   */
-  const edsmLiveTimer = setInterval(() => {
-    if (!store.edsmLiveUploadEnabled) return;
-    startEdsmRun(EDSM_LIVE_SCOPE, true);
-  }, EDSM_LIVE_INTERVAL_MS);
-  edsmLiveTimer.unref?.();
-
-  // The EDDN collector's codex ledger, when one runs on this machine: fresher [CODEX FIRST] (eddnLedger.ts).
-  startEddnLedgerWatch(getProjectRoot());
-
-  /**
-   * Contributing discoveries back to Canonn, when the commander has asked for it.
-   *
-   * Off unless the toggle says otherwise, and fed only from the live tail — the historical replay
-   * calls `store.apply` directly, which is what keeps switching it on from uploading four years of
-   * journals in one burst. See `canonnUpload.ts` for what is sent and what the commander gives up.
-   */
-  const canonnUploader = new CanonnUploader({
-    isEnabled: () => store.canonnUploadEnabled,
-    cmdrName: () => store.commanderName,
-    onResult: (ok) => store.recordCanonnUploadResult(ok),
-    gameState: () => {
-      const addr = store.currentSystemAddress;
-      const pos = addr != null ? store.systemPositions.get(addr) : undefined;
-      const name = store.currentSystem?.trim();
-      if (!name) return null;
-      return {
-        systemName: name,
-        ...(pos ? { systemCoordinates: [pos.x, pos.y, pos.z] as [number, number, number] } : {}),
-        clientVersion: CANONN_CLIENT_VERSION,
-        isBeta: false,
-        platform: "PC" as const,
-      };
-    },
-  });
-  if (store.canonnUploadEnabled) void canonnUploader.loadWhitelist();
-
-  /**
-   * Sending live events to EDDN, when the commander has asked for it. Same live-only arrangement as
-   * Canonn: `offer` is called from the live tail only. After every re-merge the sender re-learns the
-   * session (game version, expansion flags, current system) from the newest journal file through
-   * `observe` — see `primeEddnFromNewestJournal` — and that path never sends.
-   */
-  const eddnUploader = new EddnUploader({
-    isEnabled: () => store.eddnUploadEnabled,
-    cmdrName: () => store.commanderName,
-    onResult: (ok) => store.recordEddnUploadResult(ok),
-    testMode: process.env.EDEXO_EDDN_TEST === "1",
-    readStatus: () => {
-      try {
-        return JSON.parse(readFileSync(path.join(journalDir, "Status.json"), "utf8")) as Record<
-          string,
-          unknown
-        >;
-      } catch {
-        return null;
-      }
-    },
-    readNavRoute: () => {
-      try {
-        return JSON.parse(readFileSync(path.join(journalDir, "NavRoute.json"), "utf8")) as unknown;
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  /** Re-learn the session from the newest log without sending anything. */
-  async function primeEddnFromNewestJournal(): Promise<void> {
-    eddnUploader.resetSession();
-    if (!journalPath) return;
-    try {
-      await readJournalFull(journalPath, (line) => eddnUploader.observe(line));
-    } catch {
-      /* the sender stays unprimed, which means it sends nothing until the next Fileheader */
-    }
-  }
-
-  /**
-   * `StartJump` is the countdown and names the destination; the rest are arrivals.
-   *
-   * Asking at the countdown spends the hyperspace transit on the request instead of making the
-   * commander wait once they are already there. A `StartJump` with `JumpType: "Supercruise"` names
-   * no system and is ignored.
-   */
-  function maybeAutoFetchOnArrival(line: JournalLine): void {
-    const event = line.event;
-    const systemName = typeof line.StarSystem === "string" ? line.StarSystem : "";
-    const systemAddress = typeof line.SystemAddress === "number" ? line.SystemAddress : NaN;
-    if (!systemName || !Number.isFinite(systemAddress)) return;
-    if (event === "StartJump") {
-      if (line.JumpType !== "Hyperspace") return;
-      edsmAutoFetcher.onJumpStarted(systemAddress, systemName);
-      return;
-    }
-    if (event !== "FSDJump" && event !== "CarrierJump" && event !== "Location") return;
-    edsmAutoFetcher.onArrivedInSystem(systemAddress, systemName);
-  }
-
-  /*
-    Status.json and NavRoute.json for the live lines, read once per batch (plan 2.3, O-22 + F-8.2). A
-    honk writes dozens of Scan lines in one go, they arrive in one tail chunk and are applied in one
-    synchronous loop, and each line read both files from disk again. Forgotten on the next turn of the
-    event loop, so the next chunk reads them fresh.
-  */
-  let sideFiles: { status: string | null; route: ReturnType<typeof readLiveNavRouteWaypoints> } | null = null;
-  function liveSideFiles() {
-    if (!sideFiles) {
-      let status: string | null = null;
-      try {
-        status = readFileSync(path.join(journalDir, "Status.json"), "utf8");
-      } catch {
-        status = null;
-      }
-      sideFiles = { status, route: readLiveNavRouteWaypoints() };
-      setImmediate(() => {
-        sideFiles = null;
-      });
-    }
-    return sideFiles;
-  }
-
-  function createLiveJournalLine(): (line: JournalLine) => void {
-    return (line: JournalLine) => {
+        Another commander's session (1.3.1): the lists leave other commanders' files out, but a file the game has just
+        started names nobody until its Commander line, and the tail may be following it then. Nothing from it is
+        this run's, not even for Colonize.
+      */
+      const cmdr = activeCommander();
+      if (cmdr && isOtherCommandersJournal(at.path, cmdr.fid)) return;
+      // Colonize and any other follower first (journalTap.ts): a failure below must not cost them the line.
+      emitLiveJournalLine(line, at);
       try {
         // Before the store applies it: a body the store already has is a re-scan, not a find.
         notices.observe(line, noticesContext);
@@ -1351,7 +655,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
           // A neutron route being flown owns the clipboard; else the boxel run or the saved boxel's next.
           const flying = neutronLive.active();
           const onStop = neutronLive.onJump(shipHere()) != null;
-          if (flying && !onStop && neutronLive.offRoute(shipHere())) void replanNeutron();
+          if (flying && !onStop && neutronLive.offRoute(shipHere())) void neutronReplanner.replan();
           if (!flying) boxelRun.onJump();
           // A run can end on a jump (its last system flown): the HUD line says so.
           if (store.boxelCopied) store.boxelCopied.run = savedBoxels.runId() != null;
@@ -1369,329 +673,34 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     };
   }
 
-  /*
-    Boot timing (owner, 2026-09-13, "startup speed"): every phase of the journal resync is clocked
-    and one console line reports them, so a slow start can be read off the log instead of guessed.
-  */
-  const bootClock = { t0: 0, marks: [] as Array<[string, number]>, last: 0 };
-  const bootStart = (): void => {
-    bootClock.t0 = performance.now();
-    bootClock.last = bootClock.t0;
-    bootClock.marks = [];
-  };
-  const bootMark = (label: string): void => {
-    const now = performance.now();
-    bootClock.marks.push([label, now - bootClock.last]);
-    bootClock.last = now;
-  };
-  /** The last journal boot's path and timings, for Copy diagnostics. */
-  let lastBoot: { path: string; summary: string; at: string } | null = null;
-  const bootReport = (path: string): void => {
-    const total = performance.now() - bootClock.t0;
-    const parts = bootClock.marks.map(
-      ([l, ms]) => `${l} ${ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms) + " ms"}`,
-    );
-    const summary = `${parts.join(" · ")} · total ${(total / 1000).toFixed(1)} s`;
-    lastBoot = { path, summary, at: new Date().toISOString() };
-    if (quietConsole) return;
-    console.info(`Journal boot (${path}): ${summary}`);
-  };
+  // The journal replay, its cache and the live tail (journalPipeline.ts).
+  const journal = createJournalPipeline({
+    store,
+    projectRoot,
+    quietConsole,
+    getJournalDir: () => journalDir,
+    getJournalListFilterOpts,
+    createLiveJournalLine,
+    notices,
+    unknownExobio,
+    pushFlush,
+    refreshLiveHudFromJournalDir,
+    primeEddnFromNewestJournal,
+  });
 
-  /**
-   * The in-flight full re-merge, so two callers can never run one at once.
-   *
-   * {@link resyncAllJournalFilesInner} begins with `store.resetAll()` and then spends about fifteen
-   * seconds re-reading every log into that store. Two of them overlapping is not slow, it is
-   * **destructive**: the second wipes what the first has built, and whichever finishes last writes
-   * the remains to the cache as a complete merge. The commander's 19,000-body history came back as
-   * 215 bodies and one codex species that way, recorded as all 271 files merged.
-   *
-   * The watcher is the usual source of a second call (see its own guard), but it is not the only
-   * one — `restartJournalPipeline` and a journal-folder change call this too, and a guard that only
-   * lives in the watcher would leave those free to collide with it. Callers share the running
-   * promise instead of starting a rival: they all want the same thing, which is a store that has
-   * finished merging.
-   */
-  let resyncInFlight: { inputs: string; run: Promise<JournalTailSeed | null> } | null = null;
-
-  /** What a resync reads: the folder and the history window. A run for other inputs is not shared. */
-  const resyncInputs = (): string => `${path.normalize(journalDir)}|${store.journalHistoryPreset}`;
-
-  /**
-   * Resolves with where the live tail must start in the newest journal: the byte the replay reached
-   * (combined plan 1.1b), so the watcher neither skips nor repeats what the game wrote meanwhile.
-   */
-  function resyncAllJournalFiles(): Promise<JournalTailSeed | null> {
-    if (resyncInFlight) {
-      if (resyncInFlight.inputs === resyncInputs()) return resyncInFlight.run;
-      /*
-        The folder or the history window changed after the running resync listed its files (combined
-        plan 1.2). Joining it would leave the store merged from the old set, and its cache saved under
-        the new preset: wait for it, then run again for what is asked now.
-      */
-      return resyncInFlight.run.catch(() => null).then(() => resyncAllJournalFiles());
-    }
-    // The EDDN sender learns the session from the newest file after every re-merge: a rotation
-    // replays the new file's Fileheader and LoadGame here, where the live tail never sees them.
-    const run = resyncAllJournalFilesInner()
-      .then(primeEddnFromNewestJournal)
-      .then((): JournalTailSeed | null =>
-        journalPath !== null ? { path: journalPath, size: journalSeedBytes } : null,
-      )
-      .finally(() => {
-        if (resyncInFlight?.run === run) resyncInFlight = null;
-      });
-    resyncInFlight = { inputs: resyncInputs(), run };
-    return run;
-  }
-
-  /** Let the event loop run (the launcher, the tray, HTTP) between the long steps of a start. */
-  const nextTurn = (): Promise<void> => new Promise((r) => setImmediate(r));
-
-  /** Where the live tail starts in the newest journal: the byte the last resync reached (1.1b). */
-  let journalSeedBytes = 0;
-
-  async function resyncAllJournalFilesInner(): Promise<void> {
-    bootStart();
-    store.resetAll();
-    notices.invalidate();
-    journalBootProgress = {
-      percent: 4,
-      phase: "listing",
-      filesDone: 0,
-      filesTotal: 0,
-      message: "Reading Elite Dangerous journal folder…",
-    };
-    pushFlush();
-    const files = await listJournalFilesChronological(journalDir, getJournalListFilterOpts());
-    bootMark(`list ${files.length} files`);
-    journalFilesMerged = files.length;
-    if (files.length === 0) {
-      journalPath = null;
-      journalBootProgress = null;
-      // Only a folder that is really there and empty: a journal drive not mounted yet must not cost
-      // the cache, and a full replay, at the next start (combined plan 1.2).
-      if (journalFolderIsReadable(journalDir)) removeJournalMergeCache(projectRoot);
-      refreshLiveHudFromJournalDir();
-      pushFlush();
-      return;
-    }
-
-    const journalDirNorm = path.normalize(journalDir);
-    journalBootProgress = {
-      percent: 12,
-      phase: "listing",
-      filesDone: 0,
-      filesTotal: files.length,
-      message: `Checking ${files.length} journal log file(s) against the cache…`,
-    };
-    pushFlush();
-    const manifest = await buildJournalFileManifest(files);
-    /*
-      Where reading stopped, per file (combined plan 1.1b). The manifest's sizes are taken before the
-      replay, and the newest journal can grow while it runs: the cache must record the byte the replay
-      actually reached, and the live tail must start there, or lines are applied twice or never.
-    */
-    const consumed = new Map<string, number>();
-    // One bad line must not end the merge (combined plan 1.2; journalReplayGuards.ts).
-    const replayApplier = makeReplayLineApplier((line) => {
-      store.apply(line);
-      unknownExobio.offer(line);
-    });
-    const applyReplayLine = replayApplier.apply;
-    const settleManifest = (): void => {
-      for (let i = 0; i < files.length; i++) {
-        const end = consumed.get(files[i]!);
-        if (end !== undefined) manifest[i] = { ...manifest[i]!, size: end };
-      }
-      journalSeedBytes = manifest[manifest.length - 1]!.size;
-    };
-    /** The end of a replay, from the cache or from every file: tail the newest log, restore the session, push. */
-    const finishReplay = (): void => {
-      settleManifest();
-      journalPath = files[files.length - 1]!;
-      store.resetFootTravelRuntime();
-      loadOrganicSampleSessionFromDisk(projectRoot, store, getCachedSpeciesDatabase());
-      journalBootProgress = null;
-      refreshLiveHudFromJournalDir();
-      pushFlush();
-    };
-    bootMark("manifest");
-    const cacheResult =
-      process.env.EDEXO_DISABLE_JOURNAL_CACHE === "1"
-        ? { hit: false as const }
-        : await tryPrepareJournalCacheLoad(
-            projectRoot,
-            journalDirNorm,
-            files,
-            manifest,
-            store.journalHistoryPreset,
-          );
-
-    if (cacheResult.hit) {
-      journalBootProgress = {
-        percent: 35,
-        phase: "merging",
-        filesDone: 0,
-        filesTotal: files.length,
-        message: "Restoring merged journal state from cache…",
-      };
-      pushFlush();
-      /**
-       * A payload the store cannot read is a cache miss, not an empty history. Falling through to
-       * the full replay is the only safe answer: carrying on would apply the new journal lines to an
-       * empty store and then save that over a good cache.
-       */
-      bootMark("cache read");
-      // A turn between the steps of a start (plan F): the windows run on this thread too.
-      await nextTurn();
-      const hydrated = store.hydrateJournalMergePayload(cacheResult.payload);
-      bootMark("hydrate");
-      await nextTurn();
-      if (!hydrated) {
-        // Leave the store as `resyncAllJournalFiles` found it and fall through to the full replay.
-        store.resetAll();
-        if (!quietConsole) {
-          console.warn("Journal cache could not be read — rebuilding from the logs.");
-        }
-      } else {
-        if (cacheResult.steps.length > 0) {
-          const stepCount = cacheResult.steps.length;
-          let stepsDone = 0;
-          journalBootProgress = {
-            percent: 70,
-            phase: "merging",
-            filesDone: 0,
-            filesTotal: stepCount,
-            message: `Applying ${stepCount} journal log file(s) written since the last run…`,
-          };
-          pushFlush();
-          for (const step of cacheResult.steps) {
-            if (step.kind === "tail") {
-              consumed.set(
-                step.path,
-                await readJournalFromOffset(step.path, step.startByte, applyReplayLine),
-              );
-            } else {
-              consumed.set(step.path, await readJournalFull(step.path, applyReplayLine));
-            }
-            stepsDone += 1;
-            journalBootProgress = {
-              percent: 70 + Math.floor((25 * stepsDone) / stepCount),
-              phase: "merging",
-              filesDone: stepsDone,
-              filesTotal: stepCount,
-              message: `Applying new journal lines — file ${stepsDone} of ${stepCount}…`,
-            };
-            pushMergeProgress();
-          }
-          bootMark(`replay ${stepCount} new file(s)`);
-        } else {
-          journalBootProgress = {
-            percent: 90,
-            phase: "merging",
-            filesDone: files.length,
-            filesTotal: files.length,
-            message: "Journal unchanged since the last run — finishing up…",
-          };
-          pushFlush();
-        }
-        await backfillCommanderPosition(store, files);
-        bootMark("position backfill");
-        finishReplay();
-        bootMark("session + first push");
-        if (cacheResult.steps.length > 0 || cacheResult.loadedFromLegacy) {
-          await saveJournalMergeCache(
-            journalDirNorm,
-            manifest,
-            store,
-            projectRoot,
-            store.journalHistoryPreset,
-          );
-          bootMark("cache save");
-        }
-        bootReport("cache");
-        if (!quietConsole) {
-          const s = cacheResult.steps.length;
-          if (s === 0 && !cacheResult.loadedFromLegacy) {
-            console.info(
-              "Journal fast path: full cache hit (log set unchanged) — skipped replaying all files.",
-            );
-          } else if (s === 0 && cacheResult.loadedFromLegacy) {
-            console.info(
-              "Journal fast path: full cache hit — journal cache moved to app data (survives rebuilds).",
-            );
-          } else {
-            console.info(
-              `Journal fast path: cache + ${s} incremental replay step(s); state saved to app data cache.`,
-            );
-          }
-        }
-        return;
-      }
-    }
-
-    journalBootProgress = {
-      percent: 15,
-      phase: "merging",
-      filesDone: 0,
-      filesTotal: files.length,
-      message: `Merging ${files.length} journal log file(s) (oldest → newest)…`,
-    };
-    pushFlush();
-    bootMergeLastFlush = Date.now();
-    for (let i = 0; i < files.length; i++) {
-      consumed.set(files[i]!, await readJournalFull(files[i]!, applyReplayLine));
-      const done = i + 1;
-      const pct = 15 + Math.floor((80 * done) / files.length);
-      journalBootProgress = {
-        percent: Math.min(pct, 95),
-        phase: "merging",
-        filesDone: done,
-        filesTotal: files.length,
-        message: `Merging journal logs — file ${done} of ${files.length}…`,
-      };
-      pushMergeProgress();
-    }
-    finishReplay();
-    bootMark(`replay ${files.length} file(s)`);
-    await saveJournalMergeCache(journalDirNorm, manifest, store, projectRoot, store.journalHistoryPreset);
-    bootMark("cache save");
-    bootReport("full read");
-  }
-
-  /*
-    Restarts run one at a time (combined plan 1.2). Boot, a journal-folder change and a history-window
-    change all restart the pipeline, and since the replay yields to the event loop the launcher can ask
-    for one while another runs: both saw no watcher, both started one, and every live line was applied
-    twice.
-  */
-  let pipelineChain: Promise<void> = Promise.resolve();
-
-  function restartJournalPipeline(): Promise<void> {
-    const run = pipelineChain.then(restartJournalPipelineNow, restartJournalPipelineNow);
-    pipelineChain = run.catch(() => undefined);
-    return run;
-  }
-
-  async function restartJournalPipelineNow(): Promise<void> {
-    if (watcher) {
-      await watcher.close();
-      watcher = null;
-    }
-    // The byte the replay reached in the newest journal (1.1b), not its size now: lines written since
-    // are the watcher's to apply.
-    const seed = await resyncAllJournalFiles();
-    if (watcher) await (watcher as JournalWatcherHandle).close();
-    watcher = startJournalWatcher(
-      journalDir,
-      createLiveJournalLine(),
-      resyncAllJournalFiles,
-      seed,
-      getJournalListFilterOpts,
-      () => store.journalPollMs,
-    );
-  }
+  // The launcher's status (appStatus.ts).
+  const getStatus = createStatusReader({
+    store,
+    journal,
+    commanderWatch,
+    getJournalDir: () => journalDir,
+    bindHost,
+    port,
+    lanExposed,
+    lanKeyRequired: lanKey != null,
+    lanToggle: cli.lanToggle === true,
+    lanUrlsWithKey,
+  });
 
   async function applyNewJournalDirectory(nextRaw: string): Promise<{ ok: boolean; error?: string }> {
     const next = path.normalize(nextRaw.trim());
@@ -1712,60 +721,16 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     persistJournalDirPreference(next);
     process.env.ED_JOURNAL_DIR = next;
 
-    await restartJournalPipeline();
+    await journal.restart();
     // The Status.json watch is bound to the old folder; without this the HUD would keep waiting for
     // writes that now happen somewhere else, and fall back to the interval without saying so.
-    startFootStatusWatch();
+    statusPoller.watch();
     pushFlush();
     return { ok: true };
   }
 
-  let speciesDataWatchRoot = getSpeciesDataDir(projectRoot);
-  const priceListPath = path.join(projectRoot, "data", "price-list.json");
-
-  /**
-   * The recursive fs.watch on data/species fires once per touched file — boot alone reloaded the
-   * species database ~110 times, each pass re-parsing all 19 genus JSON files and forcing a push.
-   * Coalesce bursts into one reload.
-   */
-  const SPECIES_RELOAD_DEBOUNCE_MS = 300;
-  let speciesReloadTimer: ReturnType<typeof setTimeout> | null = null;
-  const onSpeciesTreeOrPricesChange = () => {
-    if (speciesReloadTimer) clearTimeout(speciesReloadTimer);
-    speciesReloadTimer = setTimeout(() => {
-      speciesReloadTimer = null;
-      reloadSpeciesDerivedCaches();
-      loadSpeciesDatabase();
-      push();
-    }, SPECIES_RELOAD_DEBOUNCE_MS);
-  };
-
-  let speciesFsWatcher: ReturnType<typeof watch> | null = null;
-  let speciesPollFallback = false;
-
-  /** Re-scan portable / species-data-dir.json, then move the species tree watcher if the dir changed. */
-  function retargetSpeciesDataWatcherIfNeeded(): void {
-    reapplySpeciesDataDirDiscoveryFromDisk();
-    const next = getSpeciesDataDir(projectRoot);
-    if (next === speciesDataWatchRoot) return;
-    speciesFsWatcher?.close();
-    speciesFsWatcher = null;
-    if (speciesPollFallback) {
-      try {
-        unwatchFile(speciesDataWatchRoot, onSpeciesTreeOrPricesChange);
-      } catch {
-        /* ignore */
-      }
-      speciesPollFallback = false;
-    }
-    speciesDataWatchRoot = next;
-    try {
-      speciesFsWatcher = watch(speciesDataWatchRoot, { recursive: true }, onSpeciesTreeOrPricesChange);
-    } catch {
-      watchFile(speciesDataWatchRoot, { interval: 1500 }, onSpeciesTreeOrPricesChange);
-      speciesPollFallback = true;
-    }
-  }
+  // The species tree and price list on disk: a change reloads the database (speciesDataWatcher.ts).
+  const speciesWatch = createSpeciesDataWatcher({ projectRoot, push: () => push() });
 
   /** The launcher's Exomastery downloads; the backups put the same two files in every zip. */
   const exportOwn = (kind: "exomastery" | "codex") => {
@@ -1836,6 +801,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     getSnapshot,
     getJournalDir: () => journalDir,
     getStatus,
+    getCommanders: () => commanderWatch.state(),
     getCommanderPosition: () => store.commanderPos,
     getFirstDiscoveryBacklog: () => firstDiscoveryBacklogWithDistance(store),
     getBacklogMap: async () => backlogMap(store, await firstDiscoveryBacklogSliced(store)),
@@ -1884,10 +850,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       return true;
     },
     getCommanderSystem: () => store.currentSystem,
-    setHudPrefs: (raw) => {
-      store.setHudPrefs(raw);
-      persistUserPreferences();
-    },
+    setHudPrefs: persisted((raw) => store.setHudPrefs(raw)),
     setPollRates: (statusMs, journalMs) => applyPollRates(statusMs, journalMs),
     getCollectionFocus: () => loadCollectionFocusConfig(),
     getNotifySettings: notifySettings,
@@ -1978,57 +941,28 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       */
       if (store.setMinimapRadiusM(raw)) {
         persistUserPreferences();
-        lastFootStatusRunAt = Date.now();
+        statusPoller.noteRan();
         if (process.platform !== "darwin" && (store.exoOrganicTracker || store.overlayTouchdownBodyKey)) broadcastExoLive(buildExoLive());
         push();
       }
       return store.minimapRadiusM;
     },
-    setIncludeBacterium: (v) => {
-      store.setIncludeBacteriumInSearch(v);
-      persistUserPreferences();
-    },
-    setIncludeExplorationScanData: (v) => {
-      store.setIncludeExplorationScanDataInDataValue(v);
-      persistUserPreferences();
-    },
-    setPranavAntalBonus: (v) => {
-      store.setPranavAntalBonus(v);
-      persistUserPreferences();
-    },
-    setSellAtFleetCarrier: (v) => {
-      store.setSellAtFleetCarrier(v);
-      persistUserPreferences();
-    },
-    setFleetCarrierIsOwn: (v) => {
-      store.setFleetCarrierIsOwn(v);
-      persistUserPreferences();
-    },
-    setFootTravelOdometer: (v) => {
-      store.setFootTravelOdometerEnabled(v);
-      persistUserPreferences();
-    },
-    setPhotoStamp: (p) => {
-      store.setPhotoStamp(p);
-      persistUserPreferences();
-    },
-    setExoMapTierThresholds: (plus, pp) => {
-      store.setExoMapTierThresholds(plus, pp);
-      persistUserPreferences();
-    },
+    setIncludeBacterium: persisted((v) => store.setIncludeBacteriumInSearch(v)),
+    setIncludeExplorationScanData: persisted((v) => store.setIncludeExplorationScanDataInDataValue(v)),
+    setPranavAntalBonus: persisted((v) => store.setPranavAntalBonus(v)),
+    setSellAtFleetCarrier: persisted((v) => store.setSellAtFleetCarrier(v)),
+    setFeederEnabled: persisted((v) => store.setFeederEnabled(v)),
+    setFleetCarrierIsOwn: persisted((v) => store.setFleetCarrierIsOwn(v)),
+    setFootTravelOdometer: persisted((v) => store.setFootTravelOdometerEnabled(v)),
+    setPhotoStamp: persisted((p) => store.setPhotoStamp(p)),
+    setExoMapTierThresholds: persisted((plus, pp) => store.setExoMapTierThresholds(plus, pp)),
     /*
-      The launcher's "open in browser" and "phone view". The path is chosen here from a two-value
-      enum rather than taken from the caller, so the route cannot be used to launch anything but
-      this app's own views.
+      The launcher's "open in browser" and "phone view". The path is chosen here from the views'
+      own table (appViews.ts) rather than taken from the caller, so the route cannot be used to
+      launch anything but this app's own views.
     */
     openAppView: (view) => {
-      const url =
-        view === "phone"
-          ? `http://127.0.0.1:${port}/?screen=triage`
-          : view === "stream"
-            ? `http://127.0.0.1:${port}/?view=stream`
-            : `http://127.0.0.1:${port}/`;
-      openUrlInBrowser(url);
+      openUrlInBrowser(appViewUrl(port, view));
       return { ok: true };
     },
     openExoMissLog: () => {
@@ -2055,7 +989,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     exportExomastery: exportOwn,
     reloadExomastery: () => {
       clearSharedExomasteryCache();
-      retargetSpeciesDataWatcherIfNeeded();
+      speciesWatch.retarget();
       reloadSpeciesDerivedCaches();
       loadSpeciesDatabase();
       pushFlush();
@@ -2085,6 +1019,12 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       void ensureRemoteSystem(systemAddress, starSystem);
     },
     setUiSelectedBodyKey: (key) => store.setUiSelectedBodyKeyFromClient(key),
+    focusUiBody: (key) => {
+      const sep = key.indexOf(":");
+      const systemAddress = Number(key.slice(0, sep));
+      const bodyId = Number(key.slice(sep + 1));
+      if (sep > 0 && Number.isFinite(systemAddress) && Number.isFinite(bodyId)) store.requestUiAutoSelectBody(systemAddress, bodyId);
+    },
     setJournalDirectory: applyNewJournalDirectory,
     setJournalHistoryPreset: async (preset) => {
       if (store.journalHistoryPreset === preset) {
@@ -2093,7 +1033,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       }
       store.setJournalHistoryPreset(preset);
       persistUserPreferences();
-      await restartJournalPipeline();
+      await journal.restart();
       pushFlush();
     },
     searchEdsmSystems: (query) => searchEdsmSystemsByName(query),
@@ -2163,7 +1103,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       persistUserPreferences();
       return { ok: true };
     },
-    startEdsmCatchUp: (scope) => startEdsmRun(scope),
+    startEdsmCatchUp: (scope) => uploads.startEdsmRun(scope),
     setEdsmLiveUploadEnabled: (enabled) => {
       if (enabled && !store.edsmUploadEnabled) {
         return { ok: false, error: "Turn EDSM upload on first." };
@@ -2172,9 +1112,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       persistUserPreferences();
       return { ok: true };
     },
-    cancelEdsmCatchUp: () => {
-      edsmCatchUpCancelled = true;
-    },
+    cancelEdsmCatchUp: uploads.cancelEdsmRun,
     setCanonnUploadEnabled: (enabled) => {
       store.setCanonnUploadEnabled(enabled);
       persistUserPreferences();
@@ -2235,7 +1173,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         currentJournal: st.journalPath ? path.basename(st.journalPath) : null,
         historyPreset: st.journalHistoryPreset ?? "all",
         lastEventIso: st.lastJournalEventIso,
-        boot: lastBoot,
+        boot: journal.lastBoot(),
         booting: st.journalBoot ? `${st.journalBoot.phase} ${st.journalBoot.percent} %` : null,
         mode: st.mode,
         port: st.port,
@@ -2258,6 +1196,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         speciesDataWarnings: st.speciesDataWarnings?.length ?? 0,
         commander: store.commanderName,
         log: loggedLines(),
+        memory: serverMemory(galaxyMemoryState()),
       });
     },
     markWhatsNewSeen: () => whatsNew.seen(),
@@ -2267,8 +1206,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       openUrlInBrowser(url);
       return { ok: true };
     },
-    startImportDump,
-    getImportDumpStatus: (file?: string | null) => importDumpStatusFor(file),
+    startImportDump: importDump.start,
+    getImportDumpStatus: importDump.statusFor,
     getEncyclopediaExomastery: (genusDir, speciesEntryId, focusBodyKey) => {
       const entry = findSpeciesEntryForEncyclopedia(genusDir, speciesEntryId);
       if (!entry) return null;
@@ -2285,6 +1224,13 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     readyResolve = res;
     readyReject = rej;
   });
+  let bootedResolve!: () => void;
+  const booted = new Promise<void>((res) => {
+    bootedResolve = res;
+  });
+  // The EDDN collector's codex ledger, when one runs on this machine: fresher [CODEX FIRST] (eddnLedger.ts). After
+  // the journal boot: its first answer is the whole export (43 MB on the owner's PC).
+  startEddnLedgerWatch(getProjectRoot(), booted);
 
   /** Must await `listening` immediately — if it rejects before a consumer attaches, devEntry's
    * `unhandledRejection` handler exits the process and Electron shows nothing. */
@@ -2319,12 +1265,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
       readyResolve();
 
-      await restartJournalPipeline();
+      await journal.restart();
 
-      if (footStatusPollTimer != null) {
-        clearInterval(footStatusPollTimer);
-        footStatusPollTimer = null;
-      }
       let lastJumpKey: string | null = null;
       const jumpChangedNow = (): boolean => {
         const jt = store.nextJumpTarget();
@@ -2333,7 +1275,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         lastJumpKey = key;
         return true;
       };
-      footStatusTick = () => {
+      statusPoller.setTick(() => {
+        // Status.json and NavRoute.json are the game's commander's: while that is another commander, not ours (1.3.1).
+        if (commanderWatch.gameIsAnotherCommander()) return;
         const navChanged = applyNavRoute(readLiveNavRouteWaypoints());
         const jumpChanged = jumpChangedNow();
         const statusPath = path.join(journalDir, "Status.json");
@@ -2397,9 +1341,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         const footHud = store.footTravelOdometerEnabled && store.footTravelOdometerTracking;
         if (footHud || store.exoOrganicTracker || fuelChanged || navChanged || destChanged || jumpChanged)
           push();
-      };
-      armFootStatusPoll(true);
-      startFootStatusWatch();
+      });
+      statusPoller.arm(true);
+      statusPoller.watch();
 
       /*
         A sample already in progress when the app started.
@@ -2411,6 +1355,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         Only the newest log, and only back to the last landing: a sample happens in one visit to one
         surface. Count only — the positions are not in the journal and must not be guessed.
       */
+      const journalPath = journal.path();
       if (journalPath) {
         try {
           const tail: JournalLine[] = [];
@@ -2426,15 +1371,17 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       pushFlush();
 
       if (!quietConsole) {
-        console.info(`Merged ${journalFilesMerged} journal log file(s) (oldest → newest), tailing latest.`);
+        console.info(`Merged ${journal.filesMerged()} journal log file(s) (oldest → newest), tailing latest.`);
       }
       scheduleWarmUp();
+      bootedResolve();
     } catch (e) {
+      bootedResolve();
       if (!listeningSettled) {
         readyReject(e);
       } else {
         console.error(e);
-        journalBootProgress = null;
+        journal.endBootProgress();
         pushFlush();
       }
       if (process.env.EDEXO_ELECTRON === "1") {
@@ -2447,16 +1394,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     }
   })();
 
-  try {
-    speciesFsWatcher = watch(speciesDataWatchRoot, { recursive: true }, onSpeciesTreeOrPricesChange);
-  } catch {
-    watchFile(speciesDataWatchRoot, { interval: 1500 }, onSpeciesTreeOrPricesChange);
-    speciesPollFallback = true;
-  }
-
-  if (existsSync(priceListPath)) {
-    watchFile(priceListPath, { interval: 800 }, onSpeciesTreeOrPricesChange);
-  }
+  speciesWatch.start();
 
   await ready;
 
@@ -2471,16 +1409,14 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     flushNavRouteLog();
     backupService.dispose();
     gamePresence.dispose();
-    if (footStatusPollTimer != null) {
-      clearInterval(footStatusPollTimer);
-      footStatusPollTimer = null;
-    }
-    footStatusFsWatcher?.close();
-    footStatusFsWatcher = null;
-    speciesFsWatcher?.close();
-    if (speciesPollFallback) unwatchFile(speciesDataWatchRoot, onSpeciesTreeOrPricesChange);
-    if (existsSync(priceListPath)) unwatchFile(priceListPath, onSpeciesTreeOrPricesChange);
-    if (watcher) await watcher.close();
+    dataAutoRefresh.stop();
+    statusPoller.stop();
+    commanderWatch.stop();
+    speciesWatch.stop();
+    await journal.close();
+    // Colonize, if a window started it: its depot state and buy index are saved on a debounce.
+    offColonizeHud();
+    await stopColonizeService().catch((e) => console.error("[colonize] stop failed:", e));
     // Open sockets (a phone, a browser tab) would otherwise hold the close until the app ends the process.
     closeConnections();
     await new Promise<void>((res) => {
@@ -2490,6 +1426,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
   return {
     ready,
+    booted,
     shutdown,
     getLocalBaseUrl: () => `http://127.0.0.1:${port}`,
     openMainAppInBrowser: () => openUrlInBrowser(`http://127.0.0.1:${port}/`),

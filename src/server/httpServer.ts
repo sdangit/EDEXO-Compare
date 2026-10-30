@@ -1,98 +1,44 @@
-import type { SpanshSystemHit } from "./spanshSystemHydration.js";
-import type { GreenGiantVerdict } from "../shared/greenGasGiant.js";
-import type { OwnGreenGiant } from "./galaxyLayers.js";
-import type { SavedBoxelsService } from "./savedBoxels.js";
-import type { Here, NeutronLive } from "./neutronLive.js";
-import type { FieldGuideDTO } from "../shared/fieldGuide.js";
-import type { RegionalRarity } from "../shared/speciesRarity.js";
-import type { EstimatedSurfaceTempBand, PlanetScan, SpeciesMatchContext } from "../shared/types.js";
-import type { EncyclopediaCardVerdict } from "../shared/speciesSpawnConditionCards.js";
-import { findMatchDetail, parseWsChannel, slimSnapshotForChannel, type WsChannel } from "./wsChannels.js";
-import { eliteDisplaySettingsPath, eliteDisplayWarning, readEliteDisplayMode } from "./eliteDisplayMode.js";
-import { linuxCheckForThisMachine } from "./linuxProbes.js";
 import { platformFeatures } from "./platformFeatures.js";
 import http from "node:http";
 import os from "node:os";
 import express from "express";
-import { WebSocketServer } from "ws";
-import type {
-  AchievementDetailDTO,
-  AchievementsDTO,
-  AppSnapshot,
-  AppStatusDTO,
-  ExoLiveDTO,
-  UiCommand,
-  EncyclopediaExomasteryPlanetsResponseDTO,
-  EncyclopediaSpeciesRowDTO,
-  FeederStatusDTO,
-  UpdateDownloadDTO,
-  WhatsNewDTO,
-  UpdateInfoDTO,
-  ImportDumpStatusDTO,
-  BacklogMapDTO,
-  CommanderSectorsDTO,
-  GalaxySpeciesCatalogueDTO,
-  GalaxyBodyScanDTO,
-  GalaxyBodyScanQueryDTO,
-  GalaxyRegionsDTO,
-  GalaxyValueQueryDTO,
-  GalaxyValueSearchDTO,
-  FirstDiscoveryBacklogDTO,
-  ExoDataAlertDTO,
-  DiscoveriesDTO,
-  PhotoStampPrefs,
-  GalaxyMineDTO,
-  GalaxyMySystemDTO,
-  GalaxyRouteDTO,
-  GalaxyVisitedDTO,
-} from "../shared/types.js";
-import type { JournalHistoryPreset } from "../shared/journalHistoryPreset.js";
-import type { GameStateStore } from "./gameState.js";
+import type { AppSnapshot, ExoLiveDTO, UiCommand } from "../shared/types.js";
 import { getProjectRoot, getWebRoot } from "./paths.js";
-import type { CollectionFocusConfig } from "./collectionFocus.js";
-import { perfBytes, perfCount, perfTime } from "./perf.js";
-import {
-  createLanAuthGuard,
-  createOriginGuard,
-  isLoopbackAddress,
-  localOnly,
-  requestIsAuthorized,
-  requestOriginIsAllowed,
-} from "./lanAuth.js";
-import type { JournalScan } from "./statisticsScan.js";
-import type { PredictionQualityDTO } from "../shared/dto/predictions.js";
-import {
-  isLauncherOpenMode,
-  readLauncherOpenMode,
-  writeLanAccess,
-  writeLauncherOpenMode,
-} from "./launcherPrefs.js";
-import { type EdsmCatchUpScope } from "./edsmCatchUp.js";
+import { createLanAuthGuard, createOriginGuard } from "./lanAuth.js";
+import type { HttpServerOptions, RouteContext } from "./httpServerTypes.js";
+import { dropDeflateOfferFromThisPc } from "./wsCompression.js";
+import { createWsHub } from "./wsHub.js";
 
-import { GZIP_MIN_BYTES, sendJson } from "./routes/httpHelpers.js";
+import { catchAsyncRejections } from "./routes/asyncErrors.js";
 import { registerSpeciesFilesRoutes } from "./routes/speciesFilesRoutes.js";
 import { registerGalaxyRoutes } from "./routes/galaxyRoutes.js";
+import { registerBoxelRoutes } from "./routes/boxelRoutes.js";
+import { registerDiscoveriesRoutes } from "./routes/discoveriesRoutes.js";
 import { registerExpeditionRoutes } from "./routes/expeditionRoutes.js";
 import { registerNeutronRoutes } from "./routes/neutronRoutes.js";
+import { registerFinderRoutes } from "./routes/finderRoutes.js";
+import { registerColonizeRoutes } from "./routes/colonizeRoutes.js";
+import { registerSystemInfoRoutes } from "./routes/systemInfoRoutes.js";
 import { registerCarriersPoiRoutes } from "./routes/carriersPoiRoutes.js";
 import { registerJumponiumRoutes } from "./routes/jumponiumRoutes.js";
 import { registerServerStatusRoutes } from "./routes/serverStatusRoutes.js";
+import { registerEncyclopediaRoutes } from "./routes/encyclopediaRoutes.js";
+import { registerLauncherRoutes } from "./routes/launcherRoutes.js";
+import { registerAppInfoRoutes } from "./routes/appInfoRoutes.js";
+import { registerFeederRoutes } from "./routes/feederRoutes.js";
 import { registerSettingsRoutes } from "./routes/settingsRoutes.js";
+import { registerExoDataRoutes } from "./routes/exoDataRoutes.js";
 import { registerHudRoutes } from "./routes/hudRoutes.js";
 import { registerExomasteryRoutes } from "./routes/exomasteryRoutes.js";
 import { registerBackupRoutes } from "./routes/backupRoutes.js";
-import type { BackupService } from "./backupService.js";
-import type { BookmarksService } from "./bookmarks.js";
 import { registerBookmarksRoutes } from "./routes/bookmarksRoutes.js";
 import { registerGreenGiantRoutes } from "./routes/greenGiantRoutes.js";
 import { registerRecordsRoutes } from "./routes/recordsRoutes.js";
-import type { NotifySettingsDTO, RecordRowDTO } from "../shared/notices.js";
-import type { GalacticRecordsStatusDTO } from "./galacticRecords.js";
+import { registerStateRoutes } from "./routes/stateRoutes.js";
 
-export interface RecordsDTO {
-  rows: RecordRowDTO[];
-  galactic: GalacticRecordsStatusDTO;
-}
+// The options and route types live in httpServerTypes.ts (audit 2026-10-22); kept importable from here.
+export type { HttpServerOptions, RouteContext } from "./httpServerTypes.js";
+
 export function getLanIPv4s(port: number): string[] {
   const nets = os.networkInterfaces();
   const out: string[] = [];
@@ -107,322 +53,6 @@ export function getLanIPv4s(port: number): string[] {
     }
   }
   return [...new Set(out)].sort();
-}
-
-export interface HttpServerOptions {
-  port: number;
-  bindHost: string;
-  /**
-   * Shared access key required of every non-loopback client. `null` disables the check, which is
-   * correct for a loopback-only bind. See lanAuth.ts.
-   */
-  lanKey?: string | null;
-  getSnapshot: () => AppSnapshot;
-  /** The journal folder in use, without building a snapshot for it. */
-  getJournalDir?: () => string;
-  /** The game's visited list beyond the journals (visitedCache.ts), placed; light — for Find. */
-  getImportedSystems?: () => readonly { addr: number; name: string; x: number; y: number; z: number }[];
-  /** GET /api/status — launcher-sized status; must not rebuild the snapshot. */
-  getStatus: () => AppStatusDTO;
-  /** §10.3 — the commander's own coordinates, or null before the first jump this session. */
-  getCommanderPosition: () => { x: number; y: number; z: number } | null;
-  getCommanderSystem: () => string | null;
-  /** GET /api/species-encyclopedia — species rows including exomastery flags */
-  getEncyclopedia?: () => EncyclopediaSpeciesRowDTO[];
-  /** GET /api/field-guide — published conditions + measured charts per species (shared/fieldGuide.ts). */
-  getFieldGuide?: () => FieldGuideDTO;
-  /** GET /api/encyclopedia-region?name= — every species' rarity in one region (null = no data). */
-  getEncyclopediaRegion?: (name: string) => Record<string, RegionalRarity | null>;
-  /** POST /api/encyclopedia/card-verdicts — the matcher's grade of every species' condition cards on a body (plan 1.10). */
-  getCardVerdicts?: (
-    scan: PlanetScan,
-    est: EstimatedSurfaceTempBand | null,
-    ctx: SpeciesMatchContext | null,
-  ) => Record<string, Record<string, EncyclopediaCardVerdict>>;
-  /**
-   * GET /api/first-discovery-backlog — biology left uncollected in systems this commander found.
-   *
-   * Its own endpoint rather than a snapshot field because it costs ~15 s over this commander's
-   * history, and the snapshot rebuilds on every journal line. Absent on a build with no store
-   * behind it, in which case the panel hides itself.
-   */
-  getFirstDiscoveryBacklog?: () => FirstDiscoveryBacklogDTO | Promise<FirstDiscoveryBacklogDTO>;
-  /** GET /api/backlog-map — the same backlog rolled up to placed systems, for the galaxy map. */
-  getBacklogMap?: () => BacklogMapDTO | Promise<BacklogMapDTO>;
-  /** Everything scanned, for the "My discoveries" panel. Built on request; see discoveries.ts. */
-  getDiscoveries?: () => DiscoveriesDTO;
-  /**
-   * GET /api/galaxy/worth — systems the codex says hold a species worth at least `minCr`.
-   *
-   * Absent on a build with no galaxy index, which is every install until the index ships; the caller
-   * hides the control rather than showing an empty answer.
-   */
-  searchGalaxyByValue?: (query: GalaxyValueQueryDTO, limit: number) => GalaxyValueSearchDTO;
-  /** GET /api/galaxy/species — what the genus/species picker can offer, with per-species coverage. */
-  getGalaxySpecies?: () => GalaxySpeciesCatalogueDTO;
-  /**
-   * GET /api/galaxy/regions — the regions the body file holds, for the predicted search's picker.
-   *
-   * Absent on a build with no body file, which is every install but the one that built it; the
-   * panel hides the whole predicted mode rather than offering a picker with nothing behind it.
-   */
-  getGalaxyRegions?: () => GalaxyRegionsDTO;
-  /**
-   * GET /api/galaxy/possible — bodies whose conditions suit a species, in systems nobody has walked.
-   *
-   * Async because it is seconds of work, not milliseconds: a region is up to 3.2 M bodies and the
-   * scan yields to the event loop as it goes so the journal watcher keeps running underneath it.
-   */
-  scanGalaxyBodies?: (query: GalaxyBodyScanQueryDTO, limit: number) => Promise<GalaxyBodyScanDTO>;
-  /** GET /api/galaxy/my-sectors — this commander's own state per sector, for colouring the map. */
-  getCommanderSectors?: () => CommanderSectorsDTO;
-  /** The 3D map's "your systems" layer, its detail panel, and this session's route (galaxyMine.ts). */
-  getMySystems?: () => GalaxyMineDTO;
-  getMySystem?: (addr: number) => GalaxyMySystemDTO | null;
-  getSessionRoute?: () => GalaxyRouteDTO;
-  getVisitedSystems?: (days: number) => GalaxyVisitedDTO;
-  /** The journal store itself, for the map's Find box (the commander's own system names). */
-  getJournalStore?: () => GameStateStore;
-  /** Codex map: the commander's codex entries, `regionJoinKey|entryKey` (see codexMap.ts). */
-  getCodexMapLogged?: () => ReadonlySet<string>;
-  /** Achievements: the list, one set's entries, and which one is tracked (false = no such id). */
-  getAchievements?: () => AchievementsDTO;
-  getAchievementDetail?: (id: string) => AchievementDetailDTO | null;
-  trackAchievement?: (id: string | null) => boolean;
-  /**
-   * GET /api/feeder/status — feeder corpus vs installed profiles.
-   *
-   * Absent on a build with no feeder corpus, which is every normal install; the panel hides itself
-   * rather than showing empty numbers.
-   */
-  getFeederStatus?: () => Promise<FeederStatusDTO>;
-  /** GET /api/app/update (`?force=1` asks GitHub again) — running version vs newest release. */
-  getUpdateInfo?: (force: boolean) => Promise<UpdateInfoDTO>;
-  /**
-   * POST /api/app/open-update — open the newer release's page in the system browser. No URL is
-   * taken from the caller; the server opens the page it found itself, on github.com, or nothing.
-   */
-  openUpdatePage?: () => { ok: boolean; error?: string };
-  /**
-   * POST /api/app/update/download — download the newer release for an install on restart
-   * (appUpdater.ts). Answers at once with the status; GET /api/app/update carries the progress.
-   */
-  startUpdateDownload?: () => UpdateDownloadDTO;
-  /**
-   * GET /api/app/whats-new (`?any=1`: this version's notes even when seen) and POST
-   * /api/app/whats-new/seen — the launcher's notes after an update (whatsNew.ts).
-   */
-  getWhatsNew?: (any: boolean) => Promise<WhatsNewDTO>;
-  markWhatsNewSeen?: () => void;
-  /** GET /api/app/diagnostics — Options' Copy diagnostics, plain text with nothing private (diagnostics.ts). */
-  getDiagnostics?: () => Promise<string>;
-  /**
-   * POST /api/feeder/import-dump — start a Spansh JSONL export import into the feeder corpus
-   * (`{ file, apply }`); GET /api/feeder/import-dump/status — its progress and last report.
-   * Absent on a build with no feeder corpus.
-   */
-  startImportDump?: (file: string, apply: boolean) => { ok: boolean; error?: string };
-  getImportDumpStatus?: (file?: string | null) => ImportDumpStatusDTO;
-  /** POST /api/settings/include-bacterium */
-  /** POST /api/settings/hud-prefs */
-  setHudPrefs?: (raw: unknown) => void;
-  /**
-   * POST /api/settings/poll-rates — JSON `{ statusPollMs, journalPollMs }`.
-   *
-   * Applied to the running timers, not queued for the next launch: that is the entire request. The
-   * implementation clamps, so the reply is the accepted pair and the launcher shows that rather
-   * than what it sent.
-   */
-  setPollRates?: (
-    statusPollMs: unknown,
-    journalPollMs: unknown,
-  ) => { statusPollMs: number; journalPollMs: number };
-  /**
-   * POST /api/settings/radar-radius — JSON `{ radiusM }`. Returns the accepted (clamped) value.
-   *
-   * Applied to the live radar, not queued: the commander changing this is looking at the thing it
-   * changes.
-   */
-  setRadarRadiusM?: (radiusM: unknown) => number;
-  /**
-   * GET/POST `/api/settings/collection-focus` — the thresholds behind the ⌖ mark.
-   *
-   * Local-only state (`edexo-collection-focus.json` beside the user settings), so it is read back
-   * from the server rather than mirrored into the snapshot: it changes when somebody edits it and
-   * at no other time, and the snapshot is already the biggest thing on the wire.
-   */
-  getCollectionFocus?: () => CollectionFocusConfig;
-  /** GET/POST `/api/settings/notify` — the "Notify me" toggles and what the radius works out to (shared/notices.ts). */
-  getNotifySettings?: () => NotifySettingsDTO;
-  /** GET `/api/records` — every type's records, his and EDAstro's (Statistics → Records). */
-  getRecords?: () => RecordsDTO;
-  /** POST `/api/records/fetch-galactic` — download EDAstro's records pages (galacticRecords.ts). */
-  fetchGalacticRecords?: (force: boolean) => Promise<RecordsDTO>;
-  /** The commander's bookmarks (`/api/bookmarks`, server/bookmarks.ts). */
-  bookmarks?: BookmarksService;
-  /**
-   * The commander's green gas giant call on a scanned body (`/api/ggg/mark`, server/greenGiants.ts).
-   * Returns the body's verdict after the call, or false when there is no scan of that body.
-   */
-  setGreenGiantMark?: (
-    systemAddress: number,
-    bodyId: number,
-    mark: "yes" | "no" | null,
-  ) => GreenGiantVerdict | null | false;
-  /** Boxels the commander is scanning (`/api/boxels`, server/savedBoxels.ts). */
-  savedBoxels?: SavedBoxelsService;
-  /** The neutron route being flown (`/api/neutron/live`, server/neutronLive.ts), and where the ship is. */
-  neutronLive?: NeutronLive;
-  shipHere?: () => Here;
-  /** The route being flown was stopped: what it put on the HUD goes too. */
-  onNeutronStopped?: () => void;
-  /** Green gas giants the commander confirmed that edGGG does not list, for the galaxy map's layer. */
-  ownGreenGiants?: () => readonly OwnGreenGiant[];
-  /** Where a system is, from the journals' StarPos, for a new bookmark. */
-  systemPositionOf?: (systemAddress: number) => { x: number; y: number; z: number } | null;
-  setNotifyPrefs?: (raw: unknown) => NotifySettingsDTO;
-  /** POST `/api/notices/read` — `{ ids: string[] }` or `{ all: true }`; returns how many changed. */
-  markNoticesRead?: (ids: readonly string[] | "all") => number;
-  /** POST `/api/notices/unread` — `{ ids: string[] }`. */
-  markNoticesUnread?: (ids: readonly string[]) => number;
-  /** POST `/api/notices/clear-read` — deletes the read ones. */
-  clearReadNotices?: () => number;
-  /** POST `/api/notices/test` — one test notice (Options → Notify me). */
-  sendTestNotice?: () => void;
-  setCollectionFocus?: (raw: unknown) => CollectionFocusConfig;
-  setIncludeBacterium?: (value: boolean) => void;
-  setIncludeExplorationScanData?: (value: boolean) => void;
-  /** POST /api/settings/pranav-antal-bonus — `{ value: boolean }`. */
-  setPranavAntalBonus?: (value: boolean) => void;
-  setSellAtFleetCarrier?: (value: boolean) => void;
-  /** POST /api/settings/fleet-carrier-own: `{ value: boolean }`, the carrier is his own (-15 %). */
-  setFleetCarrierIsOwn?: (value: boolean) => void;
-  /** POST /api/settings/photo-stamp — JSON { commander?, system?, timestamp?: boolean } */
-  setPhotoStamp?: (p: Partial<PhotoStampPrefs>) => void;
-  /** POST /api/settings/foot-travel-odometer — JSON { value: boolean } */
-  setFootTravelOdometer?: (value: boolean) => void;
-  /** POST /api/settings/exo-map-tiers — JSON { plusMinCr: number, plusPlusMinCr: number } */
-  setExoMapTierThresholds?: (plusMinCr: number, plusPlusMinCr: number) => void;
-  /**
-   * POST /api/ui/open-external — open one of this app's own views in the system browser.
-   *
-   * The launcher's "Open exobiology UI" used to navigate the launcher window itself, which is the
-   * one place the commander cannot get back from. The owner asked for a choice, with the browser
-   * as the default.
-   *
-   * The view is an **enum, not a URL**. The server builds the address from its own port, so this
-   * can never be talked into launching something else — a route that takes a URL and hands it to
-   * the shell is an open redirect with a browser on the end of it.
-   *
-   * Loopback only, for the same reason as the miss log: the window opens on the PC running the
-   * app, so a phone pressing this would open something on a screen it cannot see.
-   */
-  openAppView?: (view: "app" | "phone" | "stream") => { ok: boolean; error?: string };
-  /**
-   * POST /api/settings/open-miss-log — hand `edexo-outliers.jsonl` to the desktop.
-   *
-   * **Loopback only**, and not because the file is a secret to the commander: it is *their* miss log
-   * and it never leaves the machine. The point is that the window that opens would open on the PC
-   * running the app, so a phone on the LAN pressing this would make a window appear on a screen it
-   * cannot see and cannot close. The route refuses rather than doing that.
-   */
-  openExoMissLog?: () => { ok: boolean; error?: string };
-  /** POST /api/exobiology/reset with confirm: true */
-  resetExobiology?: () => void;
-  /** POST /api/system/hydrate-from-edsm — JSON { systemAddress: number, systemName: string } (known systems only). */
-  hydrateSystemFromEdsm?: (
-    systemAddress: number,
-    systemName: string,
-  ) => Promise<{ ok: boolean; error?: string }>;
-  /** GET /api/settings/edsm-credentials — commander name + whether a key is stored. Never the key. */
-  getEdsmCredentialsStatus?: () => { commanderName: string | null; hasKey: boolean; keyHint: string | null };
-  /** POST /api/settings/edsm-credentials — JSON { commanderName, apiKey }. */
-  setEdsmCredentials?: (commanderName: string, apiKey: string) => { ok: boolean; error?: string };
-  /** DELETE /api/settings/edsm-credentials — also switches auto-fetch off. */
-  forgetEdsmCredentials?: () => void;
-  /** POST /api/settings/edsm-auto-fetch — JSON { enabled }. Refused without stored credentials. */
-  setEdsmAutoFetchEnabled?: (enabled: boolean) => { ok: boolean; error?: string };
-  /** POST /api/settings/canonn-upload — JSON { enabled }. The switch is the whole consent. */
-  setCanonnUploadEnabled?: (enabled: boolean) => { ok: boolean; error?: string };
-  /** POST /api/settings/eddn-upload — JSON { enabled }. The switch is the whole consent. */
-  setEddnUploadEnabled?: (enabled: boolean) => { ok: boolean; error?: string };
-  /** GET /api/system/edsm-search?q= — galaxy name prefix via EDSM (returns id64 as systemAddress). */
-  searchEdsmSystems?: (
-    query: string,
-  ) => Promise<
-    { ok: true; systems: { systemAddress: number; starSystem: string }[] } | { ok: false; error: string }
-  >;
-  /** GET /api/system/spansh-search?q= — the same shape from Spansh (id64 = SystemAddress). */
-  searchSpanshSystems?: (
-    query: string,
-  ) => Promise<{ ok: true; systems: SpanshSystemHit[] } | { ok: false; error: string }>;
-  /**
-   * The statistics scan: three years of journals reduced to totals.
-   *
-   * A callback rather than a path, because the http layer has no business listing the commander's
-   * journal folder — the bootstrap already knows where it is and which files count.
-   */
-  getStatisticsScan?: () => Promise<JournalScan>;
-  /** GET /api/predictions/quality — the prediction log scored (plan 1.9, predictionQuality.ts). */
-  getPredictionQuality?: () => PredictionQualityDTO;
-  /** POST /api/system/hydrate-from-spansh — bodies from Spansh's dump for a system the journal never scanned. */
-  hydrateSystemFromSpansh?: (
-    systemAddress: number,
-    systemName: string,
-  ) => Promise<{ ok: boolean; error?: string }>;
-  /** POST /api/ui/view-system — JSON { systemAddress: number | null, starSystem?: string } */
-  setViewingSystem?: (systemAddress: number | null) => void;
-  /** Optional: remember system name when client provides it (journal row or EDSM pick). */
-  rememberVisitedSystem?: (starSystem: string, systemAddress: number) => void;
-  /**
-   * A system chosen from the header search: when the journals know nothing about it, fetch it from
-   * Spansh (cache first, 30 days) — see `remoteSystems.ts`. Replaces writing the pasted name into the
-   * visited-systems list, which put systems he had never flown to into "My discoveries".
-   */
-  lookupSystem?: (systemAddress: number, starSystem: string) => void;
-  /** POST /api/ui/selected-body — JSON { bodyKey: string | null } */
-  setUiSelectedBodyKey?: (bodyKey: string | null) => boolean | void;
-  /** POST /api/settings/journal-directory — JSON { journalDir: string } */
-  setJournalDirectory?: (dir: string) => Promise<{ ok: boolean; error?: string }>;
-  /** POST /api/settings/journal-history — JSON { preset: JournalHistoryPreset } */
-  setJournalHistoryPreset?: (preset: JournalHistoryPreset) => Promise<void>;
-  /** POST /api/settings/edsm-upload — JSON { enabled }. Refused without stored credentials. */
-  setEdsmUploadEnabled?: (enabled: boolean) => { ok: boolean; error?: string };
-  /** Kick off a catch-up. Refused when one is already running or the switch is off. */
-  startEdsmCatchUp?: (scope: EdsmCatchUpScope) => { ok: boolean; error?: string };
-  cancelEdsmCatchUp?: () => void;
-  /** POST /api/settings/edsm-live-upload — JSON { enabled }. Refused unless upload is on. */
-  setEdsmLiveUploadEnabled?: (enabled: boolean) => { ok: boolean; error?: string };
-  /** After mutating server state, refresh WebSocket clients (e.g. debounced push). */
-  scheduleBroadcast?: () => void;
-  /** GET /api/encyclopedia-exomastery/:genusDir/:speciesEntryId — feeder profile or per-body EDSM rows. */
-  getEncyclopediaExomastery?: (
-    genusDir: string,
-    speciesEntryId: string,
-    focusBodyKey?: string | null,
-  ) => EncyclopediaExomasteryPlanetsResponseDTO | null;
-  /** POST /api/exomastery/reload — re-read species DB + clear exomastery JSON cache; then call {@link scheduleBroadcast}. */
-  reloadExomastery?: () => void;
-  /** The commander's own exomastery (on-foot finds) or codex record, as a download (§S). */
-  exportExomastery?: (kind: "exomastery" | "codex") => { fileName: string; body: unknown };
-  /** The launcher's Backups row (backupService.ts); absent where backups are not wired. */
-  backup?: BackupService;
-  /** Clear in-memory exomastery JSON cache only (used by encyclopedia `?force=1`). */
-  clearExomasteryProfileCache?: () => void;
-  /** POST /api/exo-data-alerts/fix — write fixes_*.json stubs next to codex / feeder JSON. */
-  writeExoDataAlertFix?: (alert: ExoDataAlertDTO) => {
-    ok: boolean;
-    written?: { root: string; relativePath: string; absolutePath: string }[];
-    error?: string;
-  };
-  /** When set (e.g. Electron main process), successful Fix can show a native dialog instead of the browser. */
-  showFixStubNativeDialog?: (message: string) => boolean;
-}
-
-/** What the route modules read from the server's own scope. */
-export interface RouteContext {
-  root: string;
-  webRoot: string;
 }
 
 export function createHttpServer(opts: HttpServerOptions): {
@@ -441,37 +71,9 @@ export function createHttpServer(opts: HttpServerOptions): {
   closeConnections: () => void;
 } {
   const app = express();
-  /*
-    Express 4 does not catch a rejected async handler: the rejection goes unhandled and the dev entry
-    exits the process on it (combined plan 1.4). Every route handler that returns a promise has its
-    rejection passed to `next`, which answers 500. `app.get(name)` with one argument is the settings
-    getter and is left alone.
-  */
-  for (const method of ["get", "post", "put", "delete", "patch"] as const) {
-    const register = app[method].bind(app) as (...args: unknown[]) => unknown;
-    (app as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => {
-      if (args.length < 2) return register(...args);
-      return register(
-        ...args.map((h) =>
-          typeof h === "function" && h.length <= 3
-            ? (req: express.Request, res: express.Response, next: express.NextFunction) => {
-                try {
-                  const r = (h as (a: unknown, b: unknown, c: unknown) => unknown)(req, res, next);
-                  if (r && typeof (r as Promise<unknown>).catch === "function")
-                    (r as Promise<unknown>).catch(next);
-                } catch (e) {
-                  next(e);
-                }
-              }
-            : h,
-        ),
-      );
-    };
-  }
+  catchAsyncRejections(app);
   const root = getProjectRoot();
   const webRoot = getWebRoot(root);
-  const routeCtx: RouteContext = { root, webRoot };
-
   /**
    * First middleware on purpose: an unpaired LAN client must not reach a route handler, and must
    * not get its request body parsed either.
@@ -494,6 +96,19 @@ export function createHttpServer(opts: HttpServerOptions): {
   app.use(createOriginGuard(isOwnLanHost));
   app.use(createLanAuthGuard(lanKey));
 
+  /*
+    The live sockets (wsHub.ts, split out in 1.3.1): made before the routes, which hold Colonize's pushes, the change
+    topics and the state; attached to the HTTP server once it exists, below.
+  */
+  const hub = createWsHub({ getSnapshot: opts.getSnapshot, lanKey, isOwnLanHost });
+  const routeCtx: RouteContext = {
+    root,
+    webRoot,
+    pushColonize: hub.pushColonize,
+    watchTopic: hub.watchTopic,
+    topicsMayHaveChanged: hub.topicsMayHaveChanged,
+  };
+
   /**
    * A route export needs more room than everything else combined.
    *
@@ -506,34 +121,9 @@ export function createHttpServer(opts: HttpServerOptions): {
   app.use("/api/feeder/import", express.json({ limit: "8mb" }));
   // The streamer view's settings mirror (uiMirror.ts): every edexo.* setting of the app at once.
   app.use("/api/ui/mirror", express.json({ limit: "512kb" }));
+  // Colonize's checkout plans carry market snapshots (colonizeRoutes.ts).
+  app.use("/api/colonize", express.json({ limit: "8mb" }));
   app.use(express.json({ limit: "48kb" }));
-
-  registerSpeciesFilesRoutes(app, opts, routeCtx);
-
-  registerGalaxyRoutes(app, opts, routeCtx);
-  registerExpeditionRoutes(app, opts, routeCtx);
-  registerNeutronRoutes(app, opts, routeCtx);
-
-  /**
-   * Where the commander is (§10.3).
-   *
-   * Its own endpoint rather than a field on the snapshot: the sector map is a separate screen with no
-   * WebSocket, and it wants one small thing on a slow poll. `/api/state` rebuilds the whole snapshot
-   * (~186 ms, ~630 kB) and would be absurd for three numbers.
-   *
-   * Null is a real answer — the app may not have seen a jump yet — and the map draws nothing rather
-   * than guessing the origin.
-   */
-  app.get("/api/commander-position", (_req, res) => {
-    perfCount("http.commanderPosition");
-    const pos = opts.getCommanderPosition();
-    res.json({ position: pos, system: opts.getCommanderSystem() });
-  });
-
-  app.get("/api/status", (_req, res) => {
-    perfCount("http.apiStatus");
-    res.json(opts.getStatus());
-  });
 
   // Loaded before launcher initialization, including through Vite's /api proxy.
   app.get("/api/platform.js", (_req, res) => {
@@ -552,6 +142,22 @@ export function createHttpServer(opts: HttpServerOptions): {
     });
   }
 
+  registerSpeciesFilesRoutes(app, opts, routeCtx);
+
+  registerGalaxyRoutes(app, opts, routeCtx);
+  registerBoxelRoutes(app, opts, routeCtx);
+  registerDiscoveriesRoutes(app, opts, routeCtx);
+  registerExpeditionRoutes(app, opts, routeCtx);
+  registerNeutronRoutes(app, opts, routeCtx);
+  registerFinderRoutes(app, opts, routeCtx);
+  registerColonizeRoutes(app, opts, routeCtx);
+
+  /*
+    The routes that were inline between the modules sit in modules of their own now (audit 2026-10-22). Each group
+    is registered where its first route was; none of their paths is matched by a route registered in between.
+  */
+  registerSystemInfoRoutes(app, opts, routeCtx);
+
   /*
     Fleet carriers, from EDAstro. Three routes, and none of them runs by itself.
 
@@ -564,375 +170,19 @@ export function createHttpServer(opts: HttpServerOptions): {
   registerCarriersPoiRoutes(app, opts, routeCtx);
   registerJumponiumRoutes(app, opts);
 
-  /**
-   * Whether Elite is in a display mode the HUDs can be drawn over.
-   *
-   * Read fresh on every call rather than cached at boot: the commander changes this while the app is
-   * running, and a cached "borderless" would keep telling him everything is fine while he stares at
-   * a screen with no overlay on it.
-   */
-  /**
-   * The Linux start-up check (linuxCheck.ts): what is missing here and the command to install it on
-   * this distro. `{ applicable: false }` off Linux. The HUD rows only for the Electron app.
-   */
-  app.get("/api/system/linux-check", (_req, res) => {
-    const r = linuxCheckForThisMachine(process.env.EDEXO_ELECTRON === "1");
-    res.json(r ? { applicable: true, ...r } : { applicable: false });
-  });
-
-  app.get("/api/elite-display-mode", (_req, res) => {
-    const status = readEliteDisplayMode(eliteDisplaySettingsPath(opts.getSnapshot().journalDir));
-    res.json({ ...status, warning: eliteDisplayWarning(status) });
-  });
-
-  /**
-   * The revision of the last push on the app channel — a few bytes the client asks for every 10 s
-   * instead of the whole snapshot (UI review P2). A different number than the last push it saw means a
-   * push was missed (a half-open socket), and only then does it fetch `/api/state`.
-   */
-  app.get("/api/state/rev", (_req, res) => {
-    res.json({ rev: pushRev });
-  });
-
-  /**
-   * A candidate's habitat detail, variety hints and other-details cards, which the app channel leaves
-   * out of every push (UI review P1b): the species card asks for them when its modal or drawer opens.
-   */
-  app.get("/api/match-detail", (req, res) => {
-    const body = typeof req.query.body === "string" ? req.query.body : "";
-    const species = typeof req.query.species === "string" ? req.query.species : "";
-    if (!body || !species) {
-      res.status(400).json({ error: "body and species are required" });
-      return;
-    }
-    const hit = findMatchDetail(lastAppSnap ?? opts.getSnapshot(), body, species);
-    if (!hit) {
-      res.status(404).json({ error: "That candidate is no longer on this body." });
-      return;
-    }
-    res.json(hit);
-  });
-
-  /** The last full snapshot pushed or served, for `/api/match-detail` (building one is not free). */
-  let lastAppSnap: AppSnapshot | null = null;
-
-  app.get("/api/state", (req, res) => {
-    perfCount("http.apiState");
-    res.setHeader("X-Edexo-Rev", String(pushRev));
-    const chq = parseWsChannel(req.query?.channel) ?? "app";
-    if (chq === "hud" && !platformFeatures().hud) {
-      res.status(404).json({ error: "HUD overlays are not included on macOS." });
-      return;
-    }
-    /*
-      The snapshot a push or another request built in the last second, as a new socket gets it (code
-      review D7, 2026-10-14): a poller, a phone and the client's HTTP backup each used to cost a full
-      rebuild. A push replaces it, so a client fetching after the revision moved still gets the new one.
-    */
-    const snap = recentSnapshot();
-    const body = perfTime("http.apiState.serialize", () => JSON.stringify(slimSnapshotForChannel(snap, chq)));
-    sendJson(req, res, body, (raw, sent) => {
-      perfBytes("http.apiState.bytes", raw);
-      perfBytes("http.apiState.sent", sent);
-    });
-  });
+  // The live state over HTTP: /api/state, its revision, a candidate's detail, the on-foot scans (stateRoutes.ts).
+  registerStateRoutes(app, opts, hub);
 
   registerServerStatusRoutes(app, opts, routeCtx);
 
-  app.get("/api/species-encyclopedia", (req, res) => {
-    if (typeof opts.getEncyclopedia !== "function") {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    try {
-      sendJson(req, res, JSON.stringify({ species: opts.getEncyclopedia() }), (raw, sent) => {
-        perfBytes("http.encyclopedia.bytes", raw);
-        perfBytes("http.encyclopedia.sent", sent);
-      });
-    } catch {
-      res.status(500).json({ error: "Could not load species database." });
-    }
-  });
-
-  /*
-    Every species' standing in one region, for the Encyclopedia's region marks and filter (guild tester
-    report, 2026-09-30: "have it default to or at least highlight the current region").
-  */
-  app.get("/api/encyclopedia-region", (req, res) => {
-    const name = typeof req.query.name === "string" ? req.query.name.trim().slice(0, 80) : "";
-    if (!name || typeof opts.getEncyclopediaRegion !== "function") {
-      res.status(400).json({ error: "name is required" });
-      return;
-    }
-    res.json({ region: name, species: opts.getEncyclopediaRegion(name) });
-  });
-
-  /*
-    The body comes from the client, which already holds it (the Encyclopedia's "vs this body"), so the
-    route needs no lookup and grades exactly the scan the cards are drawn from.
-  */
-  app.post("/api/encyclopedia/card-verdicts", (req, res) => {
-    const b = (req.body ?? {}) as { scan?: unknown; est?: unknown; ctx?: unknown };
-    if (typeof opts.getCardVerdicts !== "function" || !b.scan || typeof b.scan !== "object") {
-      res.status(400).json({ error: "scan is required" });
-      return;
-    }
-    try {
-      res.json({
-        verdicts: opts.getCardVerdicts(
-          b.scan as PlanetScan,
-          (b.est && typeof b.est === "object" ? b.est : null) as EstimatedSurfaceTempBand | null,
-          (b.ctx && typeof b.ctx === "object" ? b.ctx : null) as SpeciesMatchContext | null,
-        ),
-      });
-    } catch (e) {
-      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  app.get("/api/field-guide", (req, res) => {
-    if (typeof opts.getFieldGuide !== "function") {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    try {
-      sendJson(req, res, JSON.stringify(opts.getFieldGuide()), (raw, sent) => {
-        perfBytes("http.fieldGuide.bytes", raw);
-        perfBytes("http.fieldGuide.sent", sent);
-      });
-    } catch {
-      res.status(500).json({ error: "Could not build the field guide." });
-    }
-  });
-
-  /**
-   * Whether the data the app ranks with is the data the corpus holds. Before the feeder merge the
-   * answer was no on 72 of 79 profiles and nothing in the app said so.
-   */
-  /** Where the launcher opens the UI — saved in user data so a rebuilt exe keeps it (launcherPrefs.ts). */
-  app.get("/api/launcher/open-mode", (_req, res) => {
-    res.json({ ok: true, mode: readLauncherOpenMode() });
-  });
-
-  app.post("/api/launcher/open-mode", (req, res) => {
-    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
-    if (!isLauncherOpenMode(mode)) {
-      res.status(400).json({ ok: false, error: "mode must be browser, window or phone." });
-      return;
-    }
-    try {
-      writeLauncherOpenMode(mode);
-      res.json({ ok: true, mode });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  /** The launcher's "LAN access" switch; applies at the next start. From this PC only. */
-  app.post("/api/launcher/lan-access", (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
-      res.status(403).json({ ok: false, error: "LAN access can only be changed on the PC running the app." });
-      return;
-    }
-    const enabled = (req.body as { enabled?: unknown } | undefined)?.enabled;
-    if (typeof enabled !== "boolean") {
-      res.status(400).json({ ok: false, error: "enabled must be true or false." });
-      return;
-    }
-    try {
-      writeLanAccess(enabled);
-      res.json({ ok: true, lanAccess: opts.getStatus().lanAccess });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  app.get("/api/app/update", async (req, res) => {
-    if (typeof opts.getUpdateInfo !== "function") {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    res.json(await opts.getUpdateInfo(req.query.force === "1"));
-  });
-
-  // This PC only: what it writes is a program for this PC to run.
-  app.post("/api/app/update/download", localOnly, (_req, res) => {
-    if (typeof opts.startUpdateDownload !== "function") {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    res.json(opts.startUpdateDownload());
-  });
-
-  app.get("/api/app/whats-new", async (req, res) => {
-    if (typeof opts.getWhatsNew !== "function") {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    res.json(await opts.getWhatsNew(req.query.any === "1"));
-  });
-
-  app.get("/api/app/diagnostics", async (_req, res) => {
-    if (typeof opts.getDiagnostics !== "function") {
-      res.status(501).type("text/plain").send("Not available");
-      return;
-    }
-    res
-      .type("text/plain")
-      .set("Cache-Control", "no-store")
-      .send(await opts.getDiagnostics());
-  });
-
-  app.post("/api/app/whats-new/seen", localOnly, (_req, res) => {
-    if (typeof opts.markWhatsNewSeen !== "function") {
-      res.status(501).json({ ok: false, error: "Not available" });
-      return;
-    }
-    try {
-      opts.markWhatsNewSeen();
-      res.json({ ok: true });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  app.post("/api/app/open-update", (req, res) => {
-    if (typeof opts.openUpdatePage !== "function") {
-      res.status(501).json({ ok: false, error: "Not available" });
-      return;
-    }
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
-      res.status(403).json({
-        ok: false,
-        error: "A browser opens on the PC running the app, so it can only be opened from there.",
-      });
-      return;
-    }
-    res.json(opts.openUpdatePage());
-  });
-
-  app.get("/api/feeder/status", async (_req, res) => {
-    if (typeof opts.getFeederStatus !== "function") {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    try {
-      res.json(await opts.getFeederStatus());
-    } catch (e) {
-      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  /*
-    The launcher's "Import Spansh export" button. The import streams a multi-gigabyte file through
-    the same four gates the CLI uses, so it runs as a background job and the launcher polls the
-    status route; only one at a time.
-  */
-  app.post("/api/feeder/import-dump", localOnly, (req, res) => {
-    if (typeof opts.startImportDump !== "function") {
-      res.status(501).json({ ok: false, error: "Not available on this build" });
-      return;
-    }
-    const body = (req.body ?? {}) as { file?: unknown; apply?: unknown };
-    const file = typeof body.file === "string" ? body.file.trim() : "";
-    if (!file) {
-      res.status(400).json({ ok: false, error: "Send JSON { file, apply }" });
-      return;
-    }
-    const r = opts.startImportDump(file, body.apply === true);
-    res.status(r.ok ? 200 : 409).json(r);
-  });
-  app.get("/api/feeder/import-dump/status", localOnly, (req, res) => {
-    if (typeof opts.getImportDumpStatus !== "function") {
-      res.status(501).json({ error: "Not available on this build" });
-      return;
-    }
-    const f = typeof req.query.file === "string" ? req.query.file : null;
-    res.json(opts.getImportDumpStatus(f));
-  });
-
-  app.get("/api/encyclopedia-exomastery/:genusDir/:speciesEntryId", (req, res) => {
-    if (typeof opts.getEncyclopediaExomastery !== "function") {
-      res.status(501).json({ error: "Not available" });
-      return;
-    }
-    const genusDir = decodeURIComponent(String(req.params.genusDir));
-    const speciesEntryId = decodeURIComponent(String(req.params.speciesEntryId));
-    const fq = req.query?.force;
-    const force =
-      fq === "1" ||
-      (typeof fq === "string" && fq.toLowerCase() === "true") ||
-      (Array.isArray(fq) && fq.some((x) => x === "1" || String(x).toLowerCase() === "true"));
-    const rawFocus = req.query?.focusBodyKey;
-    const focusBodyKey = typeof rawFocus === "string" && rawFocus.trim().length > 0 ? rawFocus.trim() : null;
-    if (force && typeof opts.clearExomasteryProfileCache === "function") {
-      opts.clearExomasteryProfileCache();
-    }
-    try {
-      const payload = opts.getEncyclopediaExomastery(genusDir, speciesEntryId, focusBodyKey);
-      if (!payload) {
-        res
-          .status(404)
-          .json({ error: "No exomastery data for this species (feeder profile or at least one EDSM row)." });
-        return;
-      }
-      res.json(payload);
-    } catch {
-      res.status(500).json({ error: "Could not load exomastery encyclopedia data." });
-    }
-  });
+  registerEncyclopediaRoutes(app, opts, routeCtx);
+  registerLauncherRoutes(app, opts, routeCtx);
+  registerAppInfoRoutes(app, opts, routeCtx);
+  registerFeederRoutes(app, opts, routeCtx);
 
   registerSettingsRoutes(app, opts, routeCtx);
 
-  app.post("/api/exo-data-alerts/fix", localOnly, (req, res) => {
-    if (typeof opts.writeExoDataAlertFix !== "function") {
-      res.status(501).json({ ok: false, error: "Fix stubs are not available in this build." });
-      return;
-    }
-    const alert = req.body?.alert as ExoDataAlertDTO | undefined;
-    if (!alert?.id || !alert.speciesEntryId || !alert.genusDataDir) {
-      res.status(400).json({
-        ok: false,
-        error: 'Send JSON { "alert": { ... full ExoDataAlertDTO with speciesEntryId + genusDataDir } }.',
-      });
-      return;
-    }
-    try {
-      const out = opts.writeExoDataAlertFix(alert);
-      const lines =
-        out.ok && out.written?.length
-          ? [
-              "Wrote or updated fixes_*.json in your user data folder, and next to the codex where that folder is writable (original JSON unchanged).",
-              "Species data was reloaded — criteriaPatch entries (e.g. volcanism) apply immediately.",
-              "",
-              ...out.written.map((w) => `${w.relativePath}\n  (${w.root})`),
-            ].join("\n")
-          : "";
-      let notifyTarget: "native" | "browser" = "browser";
-      if (out.ok && lines && opts.showFixStubNativeDialog?.(lines)) notifyTarget = "native";
-      res.json({ ...out, notifyTarget });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
-  app.post("/api/exobiology/reset", localOnly, (req, res) => {
-    if (typeof opts.resetExobiology !== "function") {
-      res.status(501).json({ ok: false, error: "Not available" });
-      return;
-    }
-    if (req.body?.confirm !== true) {
-      res.status(400).json({
-        ok: false,
-        error:
-          'Send JSON { "confirm": true } to clear organic progress, pending data value, and footfall flags in this session.',
-      });
-      return;
-    }
-    opts.resetExobiology();
-    opts.scheduleBroadcast?.();
-    res.json({ ok: true });
-  });
+  registerExoDataRoutes(app, opts, routeCtx);
 
   /*
     The HUD overlay windows, for anything that is not the app's own UI.
@@ -951,6 +201,8 @@ export function createHttpServer(opts: HttpServerOptions): {
   registerExomasteryRoutes(app, opts, routeCtx);
 
   const server = http.createServer(app);
+  // Before the hub's WebSocketServer adds its own upgrade listener: this PC's windows agree no deflate.
+  server.on("upgrade", dropDeflateOfferFromThisPc);
 
   const listening = new Promise<void>((resolve, reject) => {
     server.once("listening", () => resolve());
@@ -965,318 +217,20 @@ export function createHttpServer(opts: HttpServerOptions): {
     });
   });
 
-  /**
-   * Compress large frames only. A snapshot push is ~630 KB of repetitive JSON (~85% smaller
-   * deflated), which matters for LAN clients; small boot-progress frames stay raw so they are not
-   * slowed down by framing overhead.
-   */
-  const wss = new WebSocketServer({
-    server,
-    path: "/ws",
-    perMessageDeflate: { threshold: GZIP_MIN_BYTES, zlibDeflateOptions: { level: 4 } },
-    // A client only ever sends a hello: the 100 MiB default would let one frame tie up the main thread.
-    maxPayload: 64 * 1024,
-    // The upgrade bypasses Express, so the same key check runs here. A paired browser sends the
-    // cookie on the handshake; a script can pass ?k= or the header.
-    verifyClient: ({ req }, done) => {
-      // A web page can open a WebSocket to 127.0.0.1 from anywhere: its Origin must be ours (1.4).
-      if (!requestOriginIsAllowed(req, isOwnLanHost, { checkOrigin: true }))
-        done(false, 403, "Foreign origin");
-      else if (requestIsAuthorized(req, lanKey)) done(true);
-      else done(false, 401, "Access key required");
-    },
-  });
-  const clients = new Set<import("ws").WebSocket>();
-  /** What each socket asked for with its hello; "app" (the full state) until it says otherwise. */
-  const channelOf = new WeakMap<import("ws").WebSocket, WsChannel>();
-  /*
-    Sockets that must get a whole frame on the next push, not a delta (combined plan 1.3). Pushes leave
-    out what did not change since the previous *push*, but a socket that just connected (or changed
-    channel) holds the snapshot it was sent then, and one that skipped a push for back-pressure holds
-    an older one: a field that changed and changed back would stay stale for it.
-  */
-  const needsFull = new WeakSet<import("ws").WebSocket>();
-  /** Answered the last ping; a socket that misses one interval is a dead connection (a sleeping phone). */
-  const alive = new WeakSet<import("ws").WebSocket>();
-  /** A slow LAN client gets no push while this much is still unsent to it. */
-  const WS_BACKLOG_LIMIT = 8 * 1024 * 1024;
-  wss.on("error", (e) =>
-    console.error("[edexo-compare] WebSocket server:", e instanceof Error ? e.message : e),
-  );
-  const stateMessage = (snap: AppSnapshot, channel: WsChannel): string =>
-    JSON.stringify({ type: "state", channel, rev: pushRev, payload: slimSnapshotForChannel(snap, channel) });
-
-  /*
-    Pushes carry only what changed (UI review P1, owner 2026-09-29). A snapshot is ~0.8 MB and, in a
-    system full of bio bodies, ~10 MB — and while the commander plays, most pushes change nothing but
-    the fuel. So on the app channel every field of at least OMIT_UNCHANGED_MIN_BYTES that is identical
-    to the one in the previous push is left out and named in `unchanged`; the client keeps its copy.
-    A socket always gets the full snapshot first (on connect, and on a channel change), so it has
-    every field before a push can leave one out. The launcher and HUD channels are small and unchanged.
-  */
-  const OMIT_UNCHANGED_MIN_BYTES = 2048;
-  const lastFieldJson = new Map<WsChannel, Map<string, string>>();
-  /** Counts pushes that went out on the app channel; `/api/state/rev` lets a client check it cheaply (P2). */
-  let pushRev = 0;
-  /*
-    `bodies` one level deeper (UI review P1b): a scan or a sample changes one body, but the field went
-    out whole — MBs in a rich system. When some bodies are unchanged, the push carries `bodiesDelta`
-    instead: every body key in order, and only the bodies that changed; the client takes the rest
-    from its copy. Each body is serialized once either way (the field's JSON is built from them).
-  */
-  let lastBodyJson = new Map<string, string>();
-  const pushMessage = (snap: AppSnapshot, channel: WsChannel): string => {
-    if (channel !== "app") return stateMessage(snap, channel);
-    const prev = lastFieldJson.get(channel);
-    const next = new Map<string, string>();
-    const parts: string[] = [];
-    const unchanged: string[] = [];
-    let bodiesDelta = "";
-    let bodyJson: Map<string, string> | null = null;
-    for (const [k, v] of Object.entries(slimSnapshotForChannel(snap, channel))) {
-      let items: { key: string; json: string }[] | null = null;
-      let j: string | undefined;
-      if (k === "bodies" && Array.isArray(v)) {
-        items = (v as AppSnapshot["bodies"]).map((b) => ({ key: b.state.key, json: JSON.stringify(b) }));
-        j = `[${items.map((i) => i.json).join(",")}]`;
-      } else j = v === undefined ? undefined : JSON.stringify(v);
-      if (j === undefined) continue;
-      next.set(k, j);
-      if (items) bodyJson = new Map(items.map((i) => [i.key, i.json]));
-      if (j.length >= OMIT_UNCHANGED_MIN_BYTES && prev?.get(k) === j) unchanged.push(k);
-      else if (items && prev?.has(k) && new Set(items.map((i) => i.key)).size === items.length) {
-        const changed = items.filter((i) => lastBodyJson.get(i.key) !== i.json);
-        const changedBytes = changed.reduce((n, i) => n + i.json.length, 0);
-        if (changed.length < items.length && changedBytes < j.length / 2) {
-          bodiesDelta = `,"bodiesDelta":{"keys":${JSON.stringify(items.map((i) => i.key))},"changed":[${changed
-            .map((i) => i.json)
-            .join(",")}]}`;
-        } else parts.push(`${JSON.stringify(k)}:${j}`);
-      } else parts.push(`${JSON.stringify(k)}:${j}`);
-    }
-    // Nothing at all changed since the last push (same fields, same content): no frame.
-    if (prev && prev.size === next.size && [...next].every(([k, j]) => prev.get(k) === j)) return "";
-    lastFieldJson.set(channel, next);
-    lastBodyJson = bodyJson ?? new Map();
-    return `{"type":"state","channel":"app","rev":__REV__,"payload":{${parts.join(",")}}${
-      unchanged.length ? `,"unchanged":${JSON.stringify(unchanged)}` : ""
-    }${bodiesDelta}}`;
-  };
-
-  /** Keep connections warm (NAT / middleboxes); helps clients detect half-open TCP. */
-  const wsKeepAlive = setInterval(() => {
-    for (const ws of clients) {
-      if (ws.readyState !== ws.OPEN) {
-        clients.delete(ws);
-        continue;
-      }
-      // No pong since the last ping: half-open TCP. Without this it stayed OPEN and kept buffering.
-      if (!alive.has(ws)) {
-        clients.delete(ws);
-        ws.terminate();
-        continue;
-      }
-      alive.delete(ws);
-      try {
-        ws.ping();
-      } catch {
-        clients.delete(ws);
-      }
-    }
-  }, 25_000);
-  wsKeepAlive.unref();
-
-  server.once("close", () => clearInterval(wsKeepAlive));
-
-  /** A snapshot this recent is sent to a new socket as it is: a reconnect storm is not N rebuilds. */
-  let lastAppSnapAt = 0;
-  const recentSnapshot = (): AppSnapshot => {
-    if (!lastAppSnap || Date.now() - lastAppSnapAt > 1000) {
-      lastAppSnap = opts.getSnapshot();
-      lastAppSnapAt = Date.now();
-    }
-    return lastAppSnap;
-  };
-
-  wss.on("connection", (ws, req) => {
-    clients.add(ws);
-    /*
-      A client may name its channel in the address (`/ws?channel=hud`), so its first frame is already
-      its own slice (plan O-H, 2026-10-04): until then every HUD, launcher and phone got the whole app
-      state first — 923 kB, about 135 kB on the wire — before its hello could narrow it.
-    */
-    let first: WsChannel = "app";
-    try {
-      first = parseWsChannel(new URL(req.url ?? "/ws", "http://x").searchParams.get("channel")) ?? "app";
-    } catch {
-      /* the default */
-    }
-    if (first === "hud" && !platformFeatures().hud) {
-      clients.delete(ws);
-      ws.on("error", () => {});
-      ws.close(1008, "HUD overlays are not included on macOS.");
-      return;
-    }
-    channelOf.set(ws, first);
-    alive.add(ws);
-    perfCount("ws.connect");
-    /*
-      A malformed frame (bad Wi-Fi, a port scanner on the LAN) makes `ws` emit 'error'; with no
-      listener that is an uncaught exception and the whole app exits (combined plan 1.3).
-    */
-    ws.on("error", () => {
-      clients.delete(ws);
-    });
-    ws.on("pong", () => alive.add(ws));
-    try {
-      ws.send(stateMessage(recentSnapshot(), first));
-      needsFull.add(ws);
-    } catch {
-      /* ignore */
-    }
-    ws.on("message", (raw) => {
-      // The only message a client sends: which slice of the state it wants from now on.
-      try {
-        const msg = JSON.parse(String(raw)) as { type?: unknown; channel?: unknown };
-        if (msg && msg.type === "hello") {
-          const ch = parseWsChannel(msg.channel);
-          if (ch === "hud" && !platformFeatures().hud) {
-            ws.close(1008, "HUD overlays are not included on macOS.");
-            return;
-          }
-          if (ch && ch !== channelOf.get(ws)) {
-            channelOf.set(ws, ch);
-            ws.send(stateMessage(recentSnapshot(), ch));
-            needsFull.add(ws);
-          }
-        }
-      } catch {
-        /* not ours */
-      }
-    });
-    ws.on("close", () => clients.delete(ws));
-  });
-
-  /** Last frame sent per channel, so an identical rebuild is not pushed to those clients again. */
-  const lastBroadcastMsg = new Map<WsChannel, string>();
-
-  const broadcast = (snap: AppSnapshot) => {
-    lastAppSnap = snap;
-    lastAppSnapAt = Date.now();
-    // One serialization per channel per push; null marks "identical to the last frame, skip".
-    const built = new Map<WsChannel, string | null>();
-    const fullFrames = new Map<WsChannel, string>();
-    for (const ws of clients) {
-      if (ws.readyState !== ws.OPEN) continue;
-      const ch = channelOf.get(ws) ?? "app";
-      // Built for every channel with a client, even one getting a whole frame: the delta's baseline is
-      // the previous push, and it must move on with every push.
-      if (!built.has(ch)) {
-        // The revision is filled in after the identical-frame check, so it cannot make every frame differ.
-        const draft = perfTime("ws.serialize", () => pushMessage(snap, ch));
-        if (draft === "" || draft === lastBroadcastMsg.get(ch)) {
-          perfCount("ws.push.skippedIdentical");
-          built.set(ch, null);
-        } else {
-          lastBroadcastMsg.set(ch, draft);
-          if (ch === "app") pushRev++;
-          const msg = draft.replace("__REV__", String(pushRev));
-          perfCount("ws.push");
-          perfBytes("ws.push.bytes", Buffer.byteLength(msg));
-          built.set(ch, msg);
-        }
-      }
-      if (ws.bufferedAmount > WS_BACKLOG_LIMIT) {
-        // Still sending earlier frames: skip this one, and send it whole once it has caught up.
-        perfCount("ws.push.skippedBacklog");
-        needsFull.add(ws);
-        continue;
-      }
-      let msg = built.get(ch) ?? null;
-      if (needsFull.has(ws)) {
-        msg = fullFrames.get(ch) ?? null;
-        if (msg === null) {
-          msg = stateMessage(snap, ch);
-          fullFrames.set(ch, msg);
-        }
-        needsFull.delete(ws);
-      }
-      if (!msg) continue;
-      try {
-        ws.send(msg);
-      } catch {
-        clients.delete(ws);
-      }
-    }
-  };
-
-  /**
-   * Push the radar's two fields to the HUD sockets, and to nothing else.
-   *
-   * Separate from {@link broadcast} on purpose: this frame is a few hundred bytes built straight
-   * from the store, so it is sent on every `Status.json` poll rather than through the 250 ms
-   * coalescing window that exists to stop full snapshot rebuilds piling up. The app and launcher
-   * channels do not get it — neither draws a radar, and the app keeps receiving the same data in
-   * the snapshot it already reads.
-   *
-   * Identical frames are dropped. A commander standing still produces the same numbers every tick,
-   * and at a 100 ms poll that would be ten redundant sends a second into a window redrawing an SVG.
-   */
-  let lastExoLiveMsg: string | null = null;
-  const broadcastExoLive = (live: ExoLiveDTO) => {
-    let msg: string | null = null;
-    for (const ws of clients) {
-      if (ws.readyState !== ws.OPEN) continue;
-      if ((channelOf.get(ws) ?? "app") !== "hud") continue;
-      if (ws.bufferedAmount > WS_BACKLOG_LIMIT) continue;
-      if (msg === null) {
-        msg = JSON.stringify({ type: "exoLive", channel: "hud", payload: live });
-        if (msg === lastExoLiveMsg) {
-          perfCount("ws.exoLive.skippedIdentical");
-          return;
-        }
-        lastExoLiveMsg = msg;
-        perfCount("ws.exoLive");
-        perfBytes("ws.exoLive.bytes", Buffer.byteLength(msg));
-      }
-      try {
-        ws.send(msg);
-      } catch {
-        clients.delete(ws);
-      }
-    }
-  };
-
-  /*
-    Key binds (owner, 2026-10-02: "the user won't have to alt tab to the browser window in order to
-    switch bodies"). Electron catches the global key and the server tells every app page — the app
-    window and any browser tab — so whichever one he is looking at moves.
-  */
-  const broadcastUiCommand = (cmd: UiCommand) => {
-    const msg = JSON.stringify({ type: "uiCommand", payload: cmd });
-    for (const ws of clients) {
-      if (ws.readyState !== ws.OPEN) continue;
-      if ((channelOf.get(ws) ?? "app") !== "app") continue;
-      try {
-        ws.send(msg);
-      } catch {
-        clients.delete(ws);
-      }
-    }
-  };
+  hub.attach(server);
 
   const closeConnections = () => {
-    for (const ws of wss.clients) {
-      try {
-        ws.terminate();
-      } catch {
-        /* already gone */
-      }
-    }
-    wss.close();
+    hub.closeConnections();
     server.closeAllConnections?.();
   };
 
   server.listen(opts.port, opts.bindHost);
-  return { server, broadcast, broadcastExoLive, broadcastUiCommand, listening, closeConnections };
+  return {
+    server,
+    broadcast: hub.broadcast,
+    broadcastExoLive: hub.broadcastExoLive,
+    broadcastUiCommand: hub.broadcastUiCommand,
+    listening,
+    closeConnections,
+  };
 }

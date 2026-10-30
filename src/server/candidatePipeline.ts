@@ -31,7 +31,7 @@ import { loadSpatialCatalogue } from "./spatialCatalogue.js";
 import type { SpatialCatalogue } from "../shared/spatialGates.js";
 import { attachPresenceProbability, demoteBelowPresenceFloor, markSampledDespiteUnlikely } from "./presenceFloors.js";
 import { applyGenusBodySplit } from "./genusBodySplit.js";
-import { applyGenusPrior, vetoUnseenGenera } from "./genusPrior.js";
+import { applyGenusPrior, rescueByGenusPrior, vetoUnseenGenera } from "./genusPrior.js";
 import { applyMeasuredOdds } from "./measuredOdds.js";
 import { orderConchaPair } from "./conchaOrder.js";
 import { collectResolvedOrganicLockSpeciesIds } from "./organicLocks.js";
@@ -124,13 +124,19 @@ export function rankCandidates(
     re-weight the chances of what the floor left, and hide only a genus such bodies almost never carry.
   */
   applyGenusPrior(matches, b, scan, ctx, root);
+  /*
+    The floor judged the model's own number, before the prior above could lift a genus the model under-reads: a row
+    it hid comes back when nothing else of its genus is shown and bodies like this carry the genus most of the time
+    (owner, 2026-10-16: Tussock divisa, 0.4 % on 5-signal ammonia bodies that carry Tussock 91 % of the time).
+  */
+  rescueByGenusPrior(matches, b, scan, ctx, root);
   vetoUnseenGenera(matches, b, scan, ctx, root, locked());
   /*
     The measured odds once more, over the genus prior (code review 2026-10-10, B8): the prior blends a
     genus's mass with the dump's cell share, which re-diluted Recepta's measured rate. The first pass,
     inside attachPresenceProbability, is what the 1 % floors judged; this one is what is shown.
   */
-  if (scan) applyMeasuredOdds(matches.filter((m) => !m.unlikely), scan);
+  if (scan) applyMeasuredOdds(matches.filter((m) => !m.unlikely), scan, !!b.genusHints?.length);
   /*
     Which species of the genus, from the fitted tables, for the five genera where they order better
     than the model (speciesSplit.ts; owner, 2026-10-10). The genus keeps its chance.
@@ -138,11 +144,33 @@ export function rankCandidates(
   const split = scan
     ? applySpeciesSplit(matches, splitInputsFor(b, { ...inputs, scan }, store, root))
     : new Set<string>();
+  capNamedGeneraAfterDss(matches, b);
   // Order only, after every floor: Concha labiata or renibus leads by gravity (conchaOrder.ts), unless
   // the tables have ordered Concha already.
   if (!split.has("Concha")) orderConchaPair(matches, scan);
   markSampledDespiteUnlikely(matches, b, db);
   return split;
+}
+
+/**
+ * After a DSS each named genus is on the body once, so its listed species share one genus: their chances add up to at
+ * most 100 % (1.2.19). The signal multiplier (presenceFloors.ts) scales a genus to signals × its share, and on a
+ * 2-signal body two Cactoida read 64 % and 76 %; measured on the held-back samples, rows said 65-80 % after a DSS came
+ * true about 54 %. Order and the floors are untouched (a scaled row only moves down, never below what it was hidden at).
+ */
+export function capNamedGeneraAfterDss(matches: SpeciesMatch[], b: Pick<BodyExoState, "genusHints">): void {
+  if (!b.genusHints?.length) return;
+  const total = new Map<string, number>();
+  for (const m of matches) {
+    const p = m.presenceProbabilityPercent;
+    if (m.unlikely || typeof p !== "number" || !Number.isFinite(p)) continue;
+    total.set(m.entry.genus, (total.get(m.entry.genus) ?? 0) + p);
+  }
+  for (const m of matches) {
+    const t = total.get(m.entry.genus);
+    if (m.unlikely || t == null || t <= 100 || typeof m.presenceProbabilityPercent !== "number") continue;
+    m.presenceProbabilityPercent = Math.round(((m.presenceProbabilityPercent * 100) / t) * 10) / 10;
+  }
 }
 
 export interface CandidateRun {

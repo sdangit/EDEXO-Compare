@@ -16,6 +16,7 @@
  * in another window brings that window forward instead.
  */
 import { useSyncExternalStore } from "react";
+import { motionLevel } from "../motion";
 import { flushSync } from "react-dom";
 
 export type TabKind =
@@ -53,7 +54,7 @@ export const TAB_SCREENS: readonly { kind: TabKind; label: string }[] = [
   { kind: "stats", label: "Statistics" },
   { kind: "bookmarks", label: "Bookmarks" },
   { kind: "poi", label: "Points of interest" },
-  { kind: "carriers", label: "Carriers" },
+  { kind: "carriers", label: "Carriers & Stations" },
   { kind: "backlog", label: "Unfinished business" },
   { kind: "session", label: "Session log" },
   ...(BROWSER_AVAILABLE ? [{ kind: "browser" as const, label: "Browser" }] : []),
@@ -75,11 +76,24 @@ export interface TabState {
 const LS_ON = "edexo.tabView";
 
 const params = typeof location !== "undefined" ? new URLSearchParams(location.search) : new URLSearchParams();
-/** This window's key: "main" for the app window, else the detached window's (`?tabwin=`). */
-export const WINDOW_KEY = params.get("tabwin") ?? "main";
-/** A window a tab was dragged out into: no Main tab, and it closes with its last tab. */
-export const IS_DETACHED = WINDOW_KEY !== "main";
-const LS_TABS = IS_DETACHED ? `edexo.tabs.${WINDOW_KEY}` : "edexo.tabs";
+/**
+ * Which app this page is (1.3.0, owner 2026-10-22): Compare and Colonize are two apps on one shell. Each keeps its own
+ * open tabs; only Compare's join the desktop app's window registry (drag a tab out, focus it elsewhere).
+ */
+export const TAB_APP: "compare" | "colonize" = params.get("screen") === "colonize" ? "colonize" : "compare";
+/** The home tab's label: the app's own main screen. */
+export const HOME_TAB_LABEL = TAB_APP === "colonize" ? "Colonize" : "Compare";
+/** A window a tab was dragged out into (`?tabwin=`): no home tab, and it closes with its last tab. */
+export const IS_DETACHED = params.has("tabwin");
+/** This window's key in the desktop app's registry: "main" (Compare), "colonize", or the detached window's. */
+export const WINDOW_KEY = params.get("tabwin") ?? (TAB_APP === "colonize" ? "colonize" : "main");
+const LS_TABS_BASE = TAB_APP === "colonize" ? "edexo.colonize.tabs" : "edexo.tabs";
+const LS_TABS = IS_DETACHED ? `${LS_TABS_BASE}.${WINDOW_KEY}` : LS_TABS_BASE;
+/*
+  The streamer view (`?view=stream`) shows the home screen only, with no tab strip (owner, 2026-10-27: it took the
+  streamer's open tabs from the settings mirror, and every tab on top could be clicked).
+*/
+const STREAMER = params.get("view") === "stream";
 
 interface TabBridge {
   report(tabs: readonly string[]): void;
@@ -98,15 +112,21 @@ interface TabBridge {
     ) => void,
   ): () => void;
 }
-/** The desktop app's window bridge (electron/preload.cjs `tabs`); null in a browser. */
+/** The desktop app's window bridge (electron/preload.cjs `tabs`); null in a browser. Compare's and Colonize's windows. */
 export const TAB_BRIDGE: TabBridge | null =
   typeof window !== "undefined"
     ? ((window as unknown as { edexoElectron?: { tabs?: TabBridge } }).edexoElectron?.tabs ?? null)
     : null;
+
+/** Screens this window can show: Colonize has no system map (it follows Compare's chosen body). */
+export function screenFitsHere(kind: TabKind): boolean {
+  return TAB_APP === "compare" || kind !== "systemMap";
+}
 /** Which tabs every other window holds (from the main process). */
 let elsewhere: Record<string, string[]> = {};
 
 function read(): TabState {
+  if (STREAMER) return { on: false, tabs: [], active: "main" };
   let on = true;
   let tabs: TabKind[] = [];
   let active: TabFront = "main";
@@ -147,7 +167,8 @@ function switchesFront(next: TabState): boolean {
   if (next.active === state.active || typeof document === "undefined") return false;
   const d = document as Document & { startViewTransition?: (cb: () => void) => unknown };
   if (typeof d.startViewTransition !== "function") return false;
-  return !(typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+  // Options › Look › Motion (motion.ts): a fade at Reduced too, nothing at Off.
+  return motionLevel() !== "off";
 }
 
 function emit(next: TabState): void {
@@ -179,7 +200,7 @@ function commit(next: TabState): void {
 }
 
 /** The window holding `kind` when it is not this one. */
-const heldElsewhere = (kind: TabKind): boolean =>
+export const heldElsewhere = (kind: TabKind): boolean =>
   Object.entries(elsewhere).some(([k, tabs]) => k !== WINDOW_KEY && tabs.includes(kind));
 
 function subscribe(l: () => void): () => void {
@@ -224,7 +245,8 @@ export const tabStore = {
   },
   /** A tab dropped here from another window: take it, and tell the window it came from. */
   receive(kind: TabKind, from: string): void {
-    if (from === WINDOW_KEY) return;
+    // A screen this window cannot show stays where it was (the window it came from is not told it moved).
+    if (from === WINDOW_KEY || !screenFitsHere(kind)) return;
     tabStore.adopt(kind);
     TAB_BRIDGE?.moved({ kind, from });
   },

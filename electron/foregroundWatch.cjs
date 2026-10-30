@@ -2,16 +2,34 @@
  * Which program owns the foreground window, for the HUD overlays (owner, 2026-09-30: "hide the HUD
  * when the game is not running or not in focus").
  *
- * Electron can only see its own windows' focus, so this asks Windows directly: one hidden PowerShell,
- * started once, that reads GetForegroundWindow every 400 ms and prints the owning process's name when
- * it changes. One line per change, nothing in between; the process name is resolved only when the
- * window's process id changes. Windows only: elsewhere it never reports, so nothing hides.
+ * Electron can only see its own windows' focus, so this asks Windows directly: a small helper, started
+ * once, that reads GetForegroundWindow every 400 ms and prints the owning process's name when it changes.
+ * One line per change, nothing in between. Windows only: elsewhere it never reports, so nothing hides.
  *
- * If PowerShell cannot start or dies, it is restarted a few times with a growing wait, then left:
- * the overlays then simply behave as before (shown while the game runs).
+ * The helper is native/src/fgwatch.rs (1.3.1, owner 2026-10-25: "use Rust"): ~110 KB, ~4 MB of memory. Until
+ * 1.3.0 it was a hidden PowerShell that compiled a C# class on every start and held ~74 MB for the app's whole
+ * run; that script stays below for a run where the helper was not built (`npm run dev` without cargo).
+ *
+ * If the helper cannot start or dies, it is restarted a few times with a growing wait, then left: the overlays
+ * then simply behave as before (shown while the game runs).
  */
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
 const readline = require("node:readline");
+
+/**
+ * Where the native watcher is: resources/edexo/ in an installed build (electron-builder.cjs extraResources), the
+ * cargo output in a checkout. Null when neither exists.
+ * @param {string | undefined} resourcesPath  Electron's process.resourcesPath (main process)
+ */
+function nativeWatcherPath(resourcesPath) {
+  const found = [
+    resourcesPath ? path.join(resourcesPath, "edexo", "edexo-fgwatch.exe") : null,
+    path.join(__dirname, "..", "native", "target", "release", "edexo-fgwatch.exe"),
+  ].find((p) => p && fs.existsSync(p));
+  return found ?? null;
+}
 
 const SCRIPT = `
 $ErrorActionPreference = 'SilentlyContinue'
@@ -29,7 +47,7 @@ public static class EdexoFg {
 # Per-monitor aware (-4), so window rectangles are real screen pixels on every monitor.
 [void][EdexoFg]::SetProcessDpiAwarenessContext([IntPtr](-4))
 $lastPid = -1
-$lastAt = 
+$lastAt = ''
 $tick = 0
 while ($true) {
   # The app that started this is gone (crashed, ended in Task Manager): so is this.
@@ -73,9 +91,10 @@ function parseForegroundLine(line) {
  * @param {(processName: string, at: { x: number, y: number } | null) => void} onName called with the
  *   foreground process's name (no ".exe") and its window's centre in screen pixels
  *   each time it changes; "" when it could not be read.
+ * @param {string | null} [exe]  the native watcher (nativeWatcherPath); PowerShell when null
  * @returns {{ stop: () => void }}
  */
-function watchForeground(onName) {
+function watchForeground(onName, exe = null) {
   if (process.platform !== "win32") return { stop() {} };
   let child = null;
   let stopped = false;
@@ -84,7 +103,9 @@ function watchForeground(onName) {
   const start = () => {
     if (stopped) return;
     try {
-      child = spawn(
+      child = exe
+        ? spawn(exe, [String(process.pid)], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+        : spawn(
         "powershell.exe",
         [
           "-NoProfile",
@@ -97,7 +118,7 @@ function watchForeground(onName) {
           Buffer.from(SCRIPT.replace("__PARENT_PID__", String(process.pid)), "utf16le").toString("base64"),
         ],
         { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
-      );
+          );
     } catch {
       child = null;
       return;
@@ -139,6 +160,61 @@ function watchForeground(onName) {
 }
 
 /**
+ * The same watcher, run from a utility process of its own (electron/foregroundHost.cjs) so that starting PowerShell
+ * never holds the main process (2026-10-19: `spawn` took 1,147 ms inside Electron's main process — 17 ms in plain
+ * Node — right after the launcher window was created, so the launcher stayed black and the pages' files, which this
+ * process serves during the boot, waited behind it). Falls back to the in-process watcher when the host cannot start
+ * or ends before reporting anything.
+ *
+ * @param {{ fork: (modulePath: string, args?: string[], opts?: object) => any }} utilityProcess  Electron's
+ * @param {string} hostPath  electron/foregroundHost.cjs
+ * @param {(processName: string, at: { x: number, y: number } | null) => void} onName  as watchForeground
+ * @param {string | null} [exe]  the native watcher, handed to the host (it has no resourcesPath of its own)
+ * @returns {{ stop: () => void }}
+ */
+function watchForegroundOffMain(utilityProcess, hostPath, onName, exe = null) {
+  if (process.platform !== "win32") return { stop() {} };
+  let stopped = false;
+  let heard = false;
+  let fallback = null;
+  let host = null;
+  const useFallback = () => {
+    if (!stopped && !fallback) fallback = watchForeground(onName, exe);
+  };
+  try {
+    host = utilityProcess.fork(hostPath, exe ? [exe] : [], { serviceName: "EDEXO foreground watch", stdio: "ignore" });
+  } catch {
+    useFallback();
+    return { stop: () => ((stopped = true), fallback?.stop()) };
+  }
+  host.on("message", (m) => {
+    if (!m || typeof m.name !== "string") return;
+    heard = true;
+    try {
+      onName(m.name, m.at && Number.isFinite(m.at.x) && Number.isFinite(m.at.y) ? { x: m.at.x, y: m.at.y } : null);
+    } catch {
+      /* the listener's failure is its own */
+    }
+  });
+  host.on("exit", () => {
+    host = null;
+    if (!heard) useFallback();
+  });
+  return {
+    stop() {
+      stopped = true;
+      fallback?.stop();
+      try {
+        host?.kill();
+      } catch {
+        /* already gone */
+      }
+      host = null;
+    },
+  };
+}
+
+/**
  * Whether the foreground belongs to the game or to this app (its own windows keep the overlays: the
  * commander looking at the app on a second screen still has the game beside it).
  * @param {string} name @param {readonly string[]} own lower-case process names of this app
@@ -156,4 +232,4 @@ function isGame(name) {
   return String(name || "").toLowerCase() === "elitedangerous64";
 }
 
-module.exports = { watchForeground, isGameOrOwn, isGame, parseForegroundLine };
+module.exports = { watchForeground, watchForegroundOffMain, isGameOrOwn, isGame, parseForegroundLine, nativeWatcherPath };

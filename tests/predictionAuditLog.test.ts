@@ -174,6 +174,20 @@ describe("closing a record", () => {
     expect(predictionRecords()[0]!.final).toBe(false);
   });
 
+  it("does not read the log to close a system when nothing was recorded this session (audit 2026-10-22)", () => {
+    // Last session's open record for system 42, on disk.
+    recordPredictionForBody({ body: body(), matches: [m("frutexa_acus", "Frutexa", 40)], db });
+    flushPredictionAudit();
+    resetPredictionAuditForTests();
+    enablePredictionAudit();
+    // A jump out of 42 with nothing recorded since the start: no load, so nothing closed.
+    expect(finalisePredictionsForSystem(42, [])).toBe(0);
+    expect(JSON.parse(readFileSync(auditPath, "utf8")).records[0].final).toBe(false);
+    // Once something is recorded the log is in memory, and the next jump out closes it as before.
+    recordPredictionForBody({ body: body(), matches: [m("frutexa_acus", "Frutexa", 40)], db });
+    expect(finalisePredictionsForSystem(42, [])).toBe(1);
+  });
+
   it("closes a body with no marks, with an empty list rather than nothing", () => {
     // No marks means the app was not running on foot there. That is a fact about the record, and
     // null would read as "not closed yet".
@@ -367,5 +381,61 @@ describe("guarding the commander's file", () => {
     }
     // 2,001 open records, none finished, all untouched for weeks: the cap applies to them now.
     expect(predictionRecords().length).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe("how the file is written (discuss item 21)", () => {
+  const changes = () => `${auditPath}.changes.jsonl`;
+  afterEach(() => vi.useRealTimers());
+
+  it("appends a change instead of rewriting the file, and folds it in at shutdown, compact", () => {
+    vi.useFakeTimers();
+    recordPredictionForBody({ body: body(), matches: [m("frutexa_acus", "Frutexa", 40)], db });
+    vi.advanceTimersByTime(2000);
+    expect(existsSync(auditPath)).toBe(false);
+    const lines = readFileSync(changes(), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!).bodyKey).toBe("42:7");
+    flushPredictionAudit();
+    expect(existsSync(changes())).toBe(false);
+    const text = readFileSync(auditPath, "utf8");
+    expect(text.startsWith('{"formatVersion":1')).toBe(true);
+    expect(JSON.parse(text).records).toHaveLength(1);
+  });
+
+  it("reads the changes after the file on the next start, the last line for a body winning", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const rec = (n: number) => ({ bodyKey: "42:7", bodyName: `v${n}`, stages: [], truth: [], outcomes: [], final: false, updatedAt: "2026-10-23T00:00:00Z" });
+    writeFileSync(auditPath, JSON.stringify({ formatVersion: 1, records: [rec(1)] }));
+    writeFileSync(changes(), `${JSON.stringify(rec(2))}\n${JSON.stringify(rec(3))}\n{"torn`);
+    resetPredictionAuditForTests();
+    enablePredictionAudit();
+    expect(predictionRecords().map((r) => r.bodyName)).toEqual(["v3"]);
+    // Folded in at once: one compact file, no changes left.
+    expect(existsSync(changes())).toBe(false);
+    expect(JSON.parse(readFileSync(auditPath, "utf8")).records[0].bodyName).toBe("v3");
+  });
+
+  it("removes a changes file holding only a torn line, so the next append is not glued onto it (review 2026-10-24)", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const rec = (n: number) => ({ bodyKey: "42:7", bodyName: `v${n}`, stages: [], truth: [], outcomes: [], final: false, updatedAt: "2026-10-23T00:00:00Z" });
+    writeFileSync(auditPath, JSON.stringify({ formatVersion: 1, records: [rec(1)] }));
+    writeFileSync(changes(), `{"torn`);
+    resetPredictionAuditForTests();
+    enablePredictionAudit();
+    expect(predictionRecords().map((r) => r.bodyName)).toEqual(["v1"]);
+    expect(existsSync(changes())).toBe(false);
+  });
+
+  it("compacts a pretty file from an older build the first time it is read, keeping every record", async () => {
+    const { writeFileSync, statSync } = await import("node:fs");
+    const records = Array.from({ length: 20 }, (_, i) => ({ bodyKey: `1:${i}`, bodyName: `b${i}`, stages: [], truth: [], outcomes: [], final: true, updatedAt: "2026-10-01T00:00:00Z" }));
+    writeFileSync(auditPath, `${JSON.stringify({ formatVersion: 1, records }, null, 2)}\n`);
+    const before = statSync(auditPath).size;
+    resetPredictionAuditForTests();
+    enablePredictionAudit();
+    expect(predictionRecords()).toHaveLength(20);
+    expect(statSync(auditPath).size).toBeLessThan(before * 0.75);
+    expect(JSON.parse(readFileSync(auditPath, "utf8")).records).toHaveLength(20);
   });
 });

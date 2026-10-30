@@ -667,3 +667,132 @@ describe("HUD placing frame", () => {
     }
   });
 });
+
+describe("HUD Colonize (1.3.0)", () => {
+  const hud = {
+    sites: [
+      { marketId: "1", label: "Alpha Port", system: "Smoke Colony", pct: 52, leftTons: 8280, docked: true },
+      { marketId: "2", label: "Bravo Dock", system: "Smoke Colony", pct: 8, leftTons: 3700, docked: false },
+    ],
+    moreSites: 1,
+    deliver: { site: "Alpha Port", lines: [{ label: "Steel", tons: 300 }] },
+    next: {
+      trip: 2,
+      trips: 5,
+      station: "Seller One",
+      system: "Seller System",
+      distanceLy: 12.4,
+      here: false,
+      buys: [
+        { commodityId: "steel", label: "Steel", tons: 200, have: 200, done: true },
+        { commodityId: "titanium", label: "Titanium", tons: 80, have: 20, done: false },
+      ],
+      deliverTo: ["Alpha Port"],
+    },
+    target: {
+      marketId: "1",
+      label: "Alpha Port",
+      system: "Smoke Colony",
+      pct: 52,
+      leftTons: 8280,
+      needs: [
+        { commodityId: "steel", label: "Steel", required: 9000, provided: 1000, aboard: 300, done: false },
+        { commodityId: "cmm", label: "CMM Composite", required: 500, provided: 220, aboard: 0, done: false },
+        { commodityId: "aluminium", label: "Aluminium", required: 400, provided: 400, aboard: 0, done: true },
+      ],
+    },
+    plan: "active",
+    hold: { used: 300, capacity: 784 },
+  };
+  const f = (k: string) => document.querySelector(`[data-section="colonize"] [data-f="${k}"]`);
+
+  it("shows the sites, what to unload here, the next stop and the hold", async () => {
+    window.localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}")));
+    const HUD = await loadHud();
+    HUD.mount(["colonize"], { noTimers: true });
+    HUD.render({ colonizeHud: hud });
+    expect(f("status")?.textContent).toBe("Docked at site");
+    // The followed site is in its own block; the list holds the others.
+    expect(f("site")?.textContent).toContain("Alpha Port");
+    expect(f("site")?.textContent).toContain("52% · 8,280 t left");
+    expect(f("sites")?.textContent).not.toContain("Alpha Port");
+    expect(f("sites")?.textContent).toContain("Bravo Dock");
+    expect(f("sites")?.textContent).toContain("+1 more");
+    expect(f("deliver")?.textContent).toContain("Steel");
+    expect(f("deliver")?.textContent).toContain("300 t");
+    expect(f("next")?.textContent).toContain("Next · trip 2 of 5");
+    expect(f("next")?.textContent).toContain("Seller One");
+    // Bought lines leave the HUD; the open one has its bar.
+    expect(f("next")?.textContent).not.toContain("Steel");
+    expect(f("next")?.textContent).toContain("20 / 80 t");
+    expect((f("next")?.querySelector(".hud-bar__fill") as HTMLElement).style.width).toBe("25%");
+    expect(f("next")?.textContent).toContain("Then to Alpha Port");
+    // The site's materials: open ones with bars, the delivered one gone, counted.
+    expect(f("site")?.textContent).toContain("8,000 t · 300 aboard");
+    expect(f("site")?.textContent).not.toContain("Aluminium");
+    expect(f("site")?.textContent).toContain("1 of 3 delivered");
+    expect(f("hold")?.textContent).toContain("300 / 784 t");
+    // It asks the server to start Colonize, once, however often it is drawn.
+    HUD.render({ colonizeHud: { ...hud, hold: { used: 310, capacity: 784 } } });
+    HUD.render({ colonizeHud: null });
+    expect((fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) => String(c[0]).includes("/api/colonize/rpc/getSnapshot"))).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps finished lines, last and green, when asked; drops parts switched off", async () => {
+    window.localStorage.clear();
+    window.localStorage.setItem("edexoHudCzFinished", "1");
+    window.localStorage.setItem("edexoHudCzSites", "0");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}")));
+    const HUD = await loadHud();
+    HUD.mount(["colonize"], { noTimers: true });
+    HUD.render({ colonizeHud: hud });
+    const nextRows = [...f("next")!.querySelectorAll(".row .k")].map((e) => e.textContent);
+    expect(nextRows.at(-1)).toBe("✓ Steel");
+    const siteBlocks = [...f("site")!.children].filter((e) => e.querySelector(".hud-bar"));
+    expect(siteBlocks.at(-1)!.classList.contains("row--done")).toBe(true);
+    expect(siteBlocks.at(-1)!.textContent).toContain("Aluminium");
+    expect(f("sites")).toBeNull();
+    window.localStorage.setItem("edexoHudCzNeeds", "0");
+    HUD.render({ colonizeHud: { ...hud, hold: { used: 301, capacity: 784 } } });
+    expect(f("site")).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("follows the options the launcher mirrored to the server (Electron overlays, phone)", async () => {
+    window.localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}")));
+    const HUD = await loadHud();
+    HUD.mount(["colonize"], { noTimers: true });
+    HUD.render({ hudPrefs: { czSites: false, czFinished: true }, colonizeHud: hud });
+    expect(f("sites")).toBeNull();
+    expect(f("site")?.textContent).toContain("Aluminium");
+    vi.unstubAllGlobals();
+  });
+
+  it("says when every planned trip is done", async () => {
+    window.localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}")));
+    const HUD = await loadHud();
+    HUD.mount(["colonize"], { noTimers: true });
+    HUD.render({ colonizeHud: { ...hud, next: null, plan: "done" } });
+    expect(f("next")?.textContent).toContain("All planned trips done");
+    vi.unstubAllGlobals();
+  });
+
+  it("says when nothing is built, and steps aside under 'only when relevant'", async () => {
+    window.localStorage.clear();
+    window.localStorage.setItem("edexoHudRelevant", "1");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}")));
+    const HUD = await loadHud();
+    HUD.mount(["colonize"], { noTimers: true });
+    HUD.render({ colonizeHud: null });
+    expect(f("none")?.textContent).toContain("No site being built");
+    expect(document.querySelector('[data-section="colonize"]')!.classList.contains("hud-section--idle")).toBe(true);
+    HUD.render({ colonizeHud: { ...hud, deliver: null, next: { ...hud.next, here: true } } });
+    expect(document.querySelector('[data-section="colonize"]')!.classList.contains("hud-section--idle")).toBe(false);
+    expect(f("status")?.textContent).toBe("Buy here");
+    vi.unstubAllGlobals();
+  });
+});

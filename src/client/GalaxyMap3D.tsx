@@ -8,10 +8,11 @@
  * and Codex drawers, and what to say when the machine cannot draw it.
  */
 import { useInTab, useTabInFront } from "./tabs/TabHost";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GALAXY_DRAWER_EVENT, peekGalaxyDrawer, takeGalaxyDrawer } from "./galaxyDrawerRequest";
+import { withTransition } from "./motion";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   GalaxyEngine,
-  type EngineLabel,
   type EngineStats,
   type HoverInfo,
   type MarkerItem,
@@ -20,12 +21,10 @@ import {
 import { detectGraphics, type Graphics } from "./galaxy3d/capabilities";
 import { SYSTEM_CHANGED_EVENT } from "./useLiveSnapshot";
 import { placeLabels } from "./galaxy3d/labelPlacement";
-import { formatCount, formatValue } from "./galaxy3d/clusters";
-import { fmtLy } from "@shared/format";
-import { CodexRecord, IndexRecord, MySystemRecord, SectorRecord } from "./galaxy3d/GalaxyPanels";
-import { GalaxySearchPanel, type GalaxySearchApplied } from "./GalaxySearchPanel";
-import { GalaxyIndexDownload, GalaxyIndexRow } from "./GalaxyIndexDownload";
-import { GalaxyNavRoutePanel, type NavRouteSystemDTO } from "./GalaxyNavRoutePanel";
+import { formatCount } from "./galaxy3d/clusters";
+import type { GalaxySearchApplied } from "./GalaxySearchPanel";
+import { GalaxyIndexDownload } from "./GalaxyIndexDownload";
+import type { NavRouteSystemDTO } from "./GalaxyNavRoutePanel";
 import {
   EMPTY_GALAXY_FILTER,
   GalaxyFilterPanel,
@@ -33,23 +32,32 @@ import {
   galaxyFilterTicks,
   isGalaxyFilterState,
 } from "./GalaxyFilterPanel";
-import { SystemBookmarkButton } from "./BookmarkButton";
-import { CopySystemButton } from "./CopySystemButton";
 import {
   EXPEDITION_FOCUS_EVENT,
-  ExpeditionBoxelCard,
   ExpeditionDrawer,
   expeditionColours,
   expeditionSize,
-  expeditionTip,
-  targetLabelOf,
   takeExpeditionFocus,
 } from "./ExpeditionDrawer";
-import { NeutronDrawer } from "./NeutronDrawer";
-import { JumponiumDrawer, jumpLine, type JumpRow } from "./galaxy3d/JumponiumDrawer";
-import { StationNames, StationsList } from "./galaxy3d/StationsAt";
-import { STATIONS_CHANGED_EVENT, StationsPanel } from "./StationsPanel";
+import type { JumpRow } from "./galaxy3d/jumpRow";
+import type { FinderHit, FinderResult } from "@shared/finder";
+import { StationsList } from "./galaxy3d/StationsAt";
+import { STATIONS_CHANGED_EVENT } from "./StationsPanel";
+import { CARRIERS_STATIONS_TITLE, useCarriersStationsTab, type CarriersStationsPick } from "./carriersStationsTab";
+import {
+  CarriersStationsBody,
+  CarriersStationsTabs,
+  CodexMenu,
+  DrawerLoading,
+  FinderDrawer,
+  GalaxyNavRoutePanel,
+  GalaxySearchPanel,
+  JumponiumDrawer,
+  NeutronDrawer,
+  preloadGalaxyDrawers,
+} from "./galaxy3d/lazyDrawers";
 import { clearStationsAtCache } from "./galaxy3d/StationsAt";
+import { keptNeutronMarks, neutronMarkers, NEUTRON_LINE_COLOUR, type NeutronMark } from "./galaxy3d/neutronMarks";
 import type { ExpeditionFieldDTO, ExpeditionPlanDTO } from "@shared/dto/expedition";
 import {
   drawnGalaxyFrame,
@@ -76,77 +84,59 @@ import {
   type GalaxyLayerDTO,
   type GalaxyLayerKind,
 } from "@shared/galaxyLayers.js";
-import { BODY_TRAITS, STAR_CLASSES } from "@shared/galaxyTraits.js";
 import { isBool, usePersistedState } from "./usePersistedState";
+import { keptValue, useKeptState } from "./useKeptState";
 import { Tooltip } from "./ui/Tooltip";
-import { G3D_HELP, G3D_TABS, G3dIcon, MenuHead, MenuRow, MenuToggle } from "./galaxy3d/G3dMenu";
+import { G3D_HELP, G3D_TABS, G3dIcon, MenuHead } from "./galaxy3d/G3dMenu";
+import {
+  codexColour,
+  dist,
+  drawerFromUrl,
+  LABEL_H,
+  LABEL_POOL_MAX,
+  labelWidth,
+  MINE_UNFINISHED,
+  mineColour,
+  NAV_UNVISITED_COLOUR,
+  NAVROUTE_COLOUR,
+  PLAN_COLOUR,
+  PLAN_MARGIN,
+  SEARCH_COLOUR,
+  WORTH_STEPS_M,
+  type Colour,
+  type Drawer,
+  type MineRow,
+  type SpanshFindHit,
+} from "./galaxy3d/mapConstants";
+import type { MapLookups } from "./galaxy3d/pointLookup";
+import { hoverTip } from "./galaxy3d/hoverTip";
+import { selectionPanel } from "./galaxy3d/selectionPanel";
+import { ViewMenu } from "./galaxy3d/ViewMenu";
+import { TargetsMenu } from "./galaxy3d/TargetsMenu";
+import { LayersMenu } from "./galaxy3d/LayersMenu";
+import { StatusBar } from "./galaxy3d/StatusBar";
+import { onServerChange } from "./serverChanges";
 
-const LABEL_H = 18;
-/** Label divs kept between frames; a screen shows well under this many names at once. */
-const LABEL_POOL_MAX = 150;
-const labelWidth = (l: EngineLabel) =>
-  (l.kind === "region" ? 14 : 10) + l.text.length * (l.kind === "region" ? 7.6 : 6.6);
-const crShort = (n: number | null) => (n == null ? "—" : formatValue(n / 100_000));
-const dist = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
-  Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+/** The base layers (View menu); a stored copy missing a key, or with a non-boolean, is not used. */
+const BASE_LAYERS = { photo: true, borders: true, labels: true, groups: true, you: true };
+const isBaseLayers = (v: unknown): v is typeof BASE_LAYERS =>
+  !!v && typeof v === "object" && Object.keys(BASE_LAYERS).every((k) => typeof (v as Record<string, unknown>)[k] === "boolean");
+const isColour = (v: unknown): v is Colour => v === 0 || v === 1 || v === 2;
+/** The Brightness slider's range. */
+const isExposure = (v: unknown): v is number => typeof v === "number" && v >= 0.2 && v <= 4;
+const isWaitMinM = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+/*
+  Where the camera was when the map last closed: a map started again opens there, for as long as the window. Behind
+  other tabs for ten minutes the map gives its memory back (TabSlot), and it came back zoomed out over the core
+  (a tester, 2026-10-29: "zoomed in in an area … comes back … he has to zoom in again").
+*/
+let keptCamera: { target: number[]; position: number[] } | null = null;
 
-type Colour = 0 | 1 | 2;
-type Drawer =
-  | "none"
-  | "view"
-  | "layers"
-  | "search"
-  | "filter"
-  | "navroute"
-  | "codex"
-  | "targets"
-  | "expedition"
-  | "neutron"
-  | "stations"
-  | "jumponium";
-/** A Spansh name hit with its coordinates (`/api/system/spansh-search`). */
-type SpanshFindHit = { systemAddress: number; starSystem: string; x?: number; y?: number; z?: number };
-type MineRow = GalaxyMineDTO["systems"][number];
-
-/** The commander's systems: waiting for them amber, done (DSS or plants on foot) green, visited grey. */
-const MINE_UNFINISHED = 16;
-/** Visited by the game's own list (VisitedStarsCache.dat), not in the journals (plan 6.1). */
-const MINE_IMPORTED = 128;
-const mineColour = (f: number, waitingShown: boolean): [number, number, number] =>
-  f & MINE_UNFINISHED && waitingShown ? [1, 0.62, 0.16] : f & (4 | 8) ? [0.36, 0.9, 0.46] : [0.62, 0.68, 0.8];
-const mineStatus = (r: MineRow) =>
-  r.flags & MINE_UNFINISHED
-    ? `Still waiting: at least ${crShort(r.unfinishedFloorCr)}`
-    : r.flags & (4 | 8)
-      ? `Done${r.speciesScanned ? ` · ${r.speciesScanned} species scanned` : " · mapped"}`
-      : r.flags & MINE_IMPORTED
-        ? "Visited (the game's own list; not in your journals)"
-        : "Visited";
-
-const codexColour: Record<CodexMapSystemDTO["status"], [number, number, number]> = {
-  todo: [1, 0.36, 0.3],
-  partial: [1, 0.8, 0.26],
-  done: [0.36, 0.9, 0.46],
-};
-const SEARCH_COLOUR: [number, number, number] = [0.7, 0.5, 1];
-/** NavRoute finder markers; green where EDSM does not know the system. */
-const NAVROUTE_COLOUR: [number, number, number] = [0.95, 0.6, 0.2];
-const PLAN_COLOUR: [number, number, number] = [0.84, 0.7, 1];
-/** The plotted route's systems you have not been to yet. */
-const NAV_UNVISITED_COLOUR: [number, number, number] = [0.45, 0.85, 1];
-/** How many stops the plan can be asked for (G5.3, up to 20 since 5.8); the target is among them. */
-const PLAN_SIZES = [3, 5, 8, 10, 15, 20];
-/** Room round a framed plan: the drawer and the panel cover both sides of the map. */
-const PLAN_MARGIN = 1.7;
-
-/** The waiting slider: 0 – 500 M CR in 1 M steps, the same range as the Classic map's. */
-const WAIT_MAX_M = 500;
-
-/**
- * G5's galaxy-wide floor, in million CR at 1×. Steps rather than a linear slider: nearly everything
- * recorded is under 50 M, and a linear 0–500 M slider spends nine tenths of its travel on a handful.
- */
-const WORTH_STEPS_M = [0, 1, 2, 5, 10, 15, 20, 30, 50, 75, 100, 150, 200, 300];
+/*
+  The constants, the hover card, the side panel's records, why a dot is lit, and the View, Layers and
+  Codex drawers and the status bar live in galaxy3d/ since the audit of 2026-10-22 (phase 1: no hook
+  moved; every hook is still here, above the early return).
+*/
 
 export function GalaxyMap3D() {
   // Its polls run only while it is in front (a tab behind others stays mounted).
@@ -160,45 +150,93 @@ export function GalaxyMap3D() {
   const outlines = useRef<RegionOutlines | null>(null);
   const [graphics] = useState<Graphics>(() => detectGraphics());
   const [stats, setStats] = useState<EngineStats | null>(null);
-  const [colour, setColour] = useState<Colour>(0);
-  const [exposure, setExposure] = useState(1.2);
-  const [layers, setLayers] = useState({ photo: true, borders: true, labels: true, groups: true, you: true });
+  // The View menu and the base layers, remembered between opens like the extra layers below (owner, 2026-10-23:
+  // "activated or deactivated layers and other options in the galaxy map should be remembered on close"). Drawers and
+  // the plan list start closed in a new window; the map drawn again in the same one finds them as it left them
+  // (useKeptState: the selection, the open drawer, the search, the plans, the Codex region).
+  const [colour, setColour] = usePersistedState<Colour>("galaxy.view.colour", 0, isColour);
+  const [exposure, setExposure] = usePersistedState("galaxy.view.exposure", 1.2, isExposure);
+  const [layers, setLayers] = usePersistedState("galaxy.layer.base", BASE_LAYERS, isBaseLayers);
   const [hover, setHover] = useState<HoverInfo | null>(null);
-  const [selection, setSelection] = useState<Selection | null>(null);
+  const [selection, setSelection] = useKeptState<Selection | null>("galaxy.selection", null);
+  /*
+    Carriers & Stations measures from the picked system, else the ship (R4, owner 2026-10-23). A row picked in the
+    drawer selects its own system, and that pick must not re-sort the list under the cursor: the drawer's own picks
+    are remembered and leave the point where it was. A group ring is not a system: it leaves the point too.
+  */
+  const [csTab, setCsTab] = useCarriersStationsTab();
+  const [csFrom, setCsFrom] = useState<{ x: number; y: number; z: number } | null>(null);
+  const csOwnPick = useRef("");
+  useEffect(() => {
+    if (!selection) return setCsFrom(null);
+    if (selection.kind === "sector") return;
+    const key = `${selection.x.toFixed(1)},${selection.y.toFixed(1)},${selection.z.toFixed(1)}`;
+    if (key === csOwnPick.current) return;
+    setCsFrom({ x: selection.x, y: selection.y, z: selection.z });
+  }, [selection]);
   // The expedition planner (plan 2.5): its scored boxels, the plan's stops and the ordered plan.
-  const [expField, setExpField] = useState<ExpeditionFieldDTO | null>(null);
-  const [expPlanKeys, setExpPlanKeys] = useState<string[]>([]);
-  const [expPlan, setExpPlan] = useState<ExpeditionPlanDTO | null>(null);
-  // The neutron route's line (plan 8), drawn while the drawer has one.
-  const [neutronLine, setNeutronLine] = useState<{ x: number; y: number; z: number }[]>([]);
+  const [expField, setExpField] = useKeptState<ExpeditionFieldDTO | null>("galaxy.expField", null);
+  const [expPlanKeys, setExpPlanKeys] = useKeptState<string[]>("galaxy.expPlanKeys", []);
+  const [expPlan, setExpPlan] = useKeptState<ExpeditionPlanDTO | null>("galaxy.expPlan", null);
+  // The neutron route (plan 8): its line and stops, drawn whichever drawer is open (owner, 2026-10-28).
+  const [neutronHops, setNeutronHops] = useState<NeutronMark[]>(keptNeutronMarks);
   // The Jumponium tab's results (1.2.16), drawn while it is open.
   const [jumpRows, setJumpRows] = useState<JumpRow[]>([]);
   // The picked one is kept apart, so its card stays when the list changes or the tab closes (review 1.2.16).
-  const [jumpPicked, setJumpPicked] = useState<JumpRow | null>(null);
+  const [jumpPicked, setJumpPicked] = useKeptState<JumpRow | null>("galaxy.jumpPicked", null);
   const jumpById = useMemo(() => new Map(jumpRows.map((r) => [r.id, r])), [jumpRows]);
+  // The colonisation candidate search's hits (renamed from Find systems, owner 2026-10-19) and the references they
+  // were measured from (plan-finder-1.2.20), drawn while open;
+  // the picked hit kept apart like the Laboratory's, so its card outlives the list.
+  const [finderHits, setFinderHits] = useState<FinderHit[]>([]);
+  const [finderRefs, setFinderRefs] = useState<FinderResult["references"]>([]);
+  const [finderPicked, setFinderPicked] = useKeptState<FinderHit | null>("galaxy.finderPicked", null);
+  const finderById = useMemo(() => new Map(finderHits.map((h) => [h.id64, h])), [finderHits]);
+  /** A finder marker's hit: from the list, else the picked one when it is that marker. */
+  const finderHitFor = useCallback(
+    (id: string) => finderById.get(id) ?? (finderPicked?.id64 === id ? finderPicked : null),
+    [finderById, finderPicked],
+  );
+  const onFinderHits = useCallback((hits: FinderHit[], refs: FinderResult["references"]) => {
+    setFinderHits(hits);
+    setFinderRefs(refs);
+  }, []);
+  // "A system" in the finder: the one selected on the map, named when the map can name it.
+  const [finderAround, setFinderAround] = useState<{ name: string; x: number; y: number; z: number } | null>(null);
   const expByKey = useMemo(() => new Map((expField?.boxels ?? []).map((b) => [b.key, b])), [expField]);
   const [mine, setMine] = useState<Map<string, MineRow>>(new Map());
   const [route, setRoute] = useState<GalaxyRouteDTO | null>(null);
-  const [drawer, setDrawer] = useState<Drawer>("none");
+  // Peeked, not taken: this render may be thrown away (galaxyDrawerRequest.ts); taken below once the map is on screen.
+  const [drawer, setDrawer] = useKeptState<Drawer>("galaxy.drawer", (kept) => peekGalaxyDrawer() ?? kept ?? drawerFromUrl());
+  // A drawer asked for from another screen while the map is open (Colonize's "Find colony sites", in the Galaxy tab).
+  useEffect(() => {
+    takeGalaxyDrawer();
+    const take = () => {
+      const d = takeGalaxyDrawer();
+      if (d) setDrawer(d);
+    };
+    window.addEventListener(GALAXY_DRAWER_EVENT, take);
+    return () => window.removeEventListener(GALAXY_DRAWER_EVENT, take);
+  }, [setDrawer]);
   const codexOn = drawer === "codex";
-  const [codexKind, setCodexKind] = useState<CodexMapKind>("bio");
+  const [codexKind, setCodexKind] = useKeptState<CodexMapKind>("galaxy.codexKind", "bio");
   const [codexRegions, setCodexRegions] = useState<CodexMapRegionsDTO | null>(null);
   const [codexAsk, setCodexAsk] = useState(0);
   /** The region names Find offers, once the outlines have arrived. */
   const [regionAnchors, setRegionAnchors] = useState<RegionOutlines["anchors"]>([]);
-  const [codexRegion, setCodexRegion] = useState<string | null>(null);
+  const [codexRegion, setCodexRegion] = useKeptState<string | null>("galaxy.codexRegion", null);
   const [codexSystems, setCodexSystems] = useState<Map<string, CodexMapSystemDTO>>(new Map());
-  const [search, setSearch] = useState<GalaxySearchApplied | null>(null);
-  const [waitMinM, setWaitMinM] = useState(0);
-  const [findText, setFindText] = useState("");
-  const [find, setFind] = useState<GalaxyFindDTO | null>(null);
+  const [search, setSearch] = useKeptState<GalaxySearchApplied | null>("galaxy.search", null);
+  const [waitMinM, setWaitMinM] = usePersistedState("galaxy.layer.waitMinM", 0, isWaitMinM);
+  const [findText, setFindText] = useKeptState("galaxy.findText", "");
+  const [find, setFind] = useKeptState<GalaxyFindDTO | null>("galaxy.find", null);
   const [findOpen, setFindOpen] = useState(false);
   // Follow the ship as it jumps (owner, 2026-10-04): the camera keeps its distance and moves with you.
   const [follow, setFollow] = usePersistedState("galaxy.follow", true, isBool);
   // Elite-style controls (owner, 2026-10-06): W/A/S/D, Q/E, R/F, a cross-hair over the plane. Remembered.
   const [elite, setElite] = usePersistedState("galaxy.eliteControls", false, isBool);
   // The plan list inside the Targets menu (it was a drawer of its own).
-  const [planOn, setPlanOn] = useState(false);
+  const [planOn, setPlanOn] = useKeptState("galaxy.planOn", false);
   /*
     The extra layers (D10): points of interest, phenomena, carriers and bookmarks, each from a list
     already on this PC, fetched when switched on. Remembered between opens of the map.
@@ -256,14 +294,14 @@ export function GalaxyMap3D() {
     stations: setStationsOn,
   };
   const [extraData, setExtraData] = useState<Partial<Record<GalaxyLayerKind, GalaxyLayerDTO>>>({});
-  const [worthStep, setWorthStep] = useState(0);
+  const [worthStep, setWorthStep] = useKeptState("galaxy.worthStep", 0);
   const [worthCount, setWorthCount] = useState<number | null>(null);
-  const [target, setTarget] = useState<GalaxyNextDTO | null>(null);
+  const [target, setTarget] = useKeptState<GalaxyNextDTO | null>("galaxy.target", null);
   const [targetBusy, setTargetBusy] = useState(false);
-  const [skipped, setSkipped] = useState<number[]>([]);
-  const [skipVisited, setSkipVisited] = useState(false);
+  const [skipped, setSkipped] = useKeptState<number[]>("galaxy.skipped", []);
+  const [skipVisited, setSkipVisited] = useKeptState("galaxy.skipVisited", false);
   const [copied, setCopied] = useState(false);
-  const [planSize, setPlanSize] = useState(5);
+  const [planSize, setPlanSize] = useKeptState("galaxy.planSize", 5);
   // Back to where the ship is (plan 5.8): a carrier, a station to sell at. Remembered.
   const [planLoop, setPlanLoop] = usePersistedState("galaxy.planLoop", false, isBool);
   const [planCopied, setPlanCopied] = useState(false);
@@ -293,7 +331,7 @@ export function GalaxyMap3D() {
   // Its own window names itself; as a tab (Tab view) the app window keeps its title.
   const inTab = useInTab() != null;
   useEffect(() => {
-    if (!inTab) document.title = "Galaxy map — ED Exo Compare";
+    if (!inTab) document.title = "Galaxy map — EDEXO";
   }, [inTab]);
 
   useEffect(() => {
@@ -355,6 +393,15 @@ export function GalaxyMap3D() {
       },
     });
     engine.current = e;
+    if (keptCamera) {
+      e.controls.target.fromArray(keptCamera.target);
+      e.camera.position.fromArray(keptCamera.position);
+      e.controls.update();
+      e.invalidate();
+    }
+    // The system picked before the map was let go: its marker and card again.
+    const keptSelection = keptValue<Selection | null>("galaxy.selection");
+    if (keptSelection) e.select(keptSelection);
     const debugHandle = {
       stats: () => e.getStats(),
       bench: (n?: number) => e.bench(n),
@@ -448,12 +495,13 @@ export function GalaxyMap3D() {
       window.removeEventListener("keydown", onKey);
       ro.disconnect();
       engine.current = null;
+      keptCamera = { target: e.controls.target.toArray(), position: e.camera.position.toArray() };
       // The handle closes over the engine: left on window it kept the whole galaxy alive after the tab closed.
       if (win.__galaxy === debugHandle) delete win.__galaxy;
       e.dispose();
       pool.forEach((d) => d.remove());
     };
-  }, [graphics.tier, track]);
+  }, [graphics.tier, track, setSelection, setCodexRegion]);
 
   /*
     Where the ship is and this session's jumps, while the map is in front: behind another tab it stays
@@ -489,17 +537,22 @@ export function GalaxyMap3D() {
     readRouteNow.current = tick;
     /*
       A jump, read from the journal by the app on this page, moves the map at once (owner, 2026-10-07:
-      "use the hyperspace jump ... I don't see a reason the galmap should poll"). The slow check stays
-      for what the jump does not carry — a scan or a mapping changing your systems — and for the map
-      in a window of its own (Tab view off), which has no live game data: 30 s here, 15 s there.
+      "use the hyperspace jump ... I don't see a reason the galmap should poll"). What the jump does not carry - a
+      scan or a mapping changing your systems, a plotted route - and the map in a window of its own (Tab view off),
+      which has no live game data, follow the server's "galaxy-route" change (R2, 2026-10-24: was a check every
+      15-30 s). Hidden, the tick skips; coming back reads once.
     */
     const onJump = () => tick();
     window.addEventListener(SYSTEM_CHANGED_EVENT, onJump);
-    const standalone = new URLSearchParams(window.location.search).get("screen") === "galaxy";
-    const t = setInterval(tick, standalone ? 15_000 : 30_000);
+    const stop = onServerChange("galaxy-route", tick);
+    const onVisible = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       live = false;
-      clearInterval(t);
+      stop();
+      document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener(SYSTEM_CHANGED_EVENT, onJump);
       if (readRouteNow.current === tick) readRouteNow.current = null;
     };
@@ -565,67 +618,11 @@ export function GalaxyMap3D() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extraData, poiOn, nspOn, carriersOn, bookmarksOn, gggOn, heliumOn, stationsOn, stats?.phase]);
-  const extraPoint = (layer: string, id: string) => {
-    if (!layer.startsWith("x-")) return null;
-    const kind = layer.slice(2) as GalaxyLayerKind;
-    const d = extraData[kind];
-    const p = d?.points[Number(id)];
-    const meta = GALAXY_LAYERS.find((l) => l.kind === kind);
-    const unconfirmed = !!d?.unconfirmed?.includes(Number(id));
-    return d && p && meta ? { p, meta, unconfirmed, ...layerPointText(d, p) } : null;
-  };
-
-  /*
-    Why a system dot is lit (owner, 2026-10-06: "if I choose to see O-type stars, I click on a dot …
-    someone running multiple layers, it might be useful if the side card tells him why"): the Filter it
-    matches, and every switched-on layer with a point on it.
-  */
-  const filterTerms = (): string => {
-    const star = (k: string) => STAR_CLASSES.find((t) => t.key === k)?.label ?? k;
-    const body = (k: string) => BODY_TRAITS.find((t) => t.key === k)?.label ?? k;
-    const terms = [
-      ...filter.genera,
-      ...filter.species,
-      ...filter.mainStars.map((k) => `main star ${star(k)}`),
-      ...filter.stars.map((k) => `a ${star(k)} star`),
-      ...filter.planets.map(body),
-      ...filter.features.map(body),
-    ];
-    return terms.length > 4 ? `${terms.slice(0, 4).join(", ")} +${terms.length - 4}` : terms.join(", ");
-  };
-  const whyLit = (s: { ordinal: number; x: number; y: number; z: number }) => {
-    const lines: { text: string; unconfirmed?: boolean }[] = [];
-    const fa = filterAnswer.current;
-    if (fa && ((fa.bits[s.ordinal >> 3] ?? 0) >> (s.ordinal & 7)) & 1)
-      lines.push({ text: `Matches your filter: ${filterTerms()}` });
-    for (const l of GALAXY_LAYERS) {
-      const d = extraData[l.kind];
-      if (!extraOn[l.kind] || !d) continue;
-      const guess = new Set(d.unconfirmed ?? []);
-      d.points.forEach((p, i) => {
-        if (Math.abs(p[0] - s.x) > 0.6 || Math.abs(p[1] - s.y) > 0.6 || Math.abs(p[2] - s.z) > 0.6) return;
-        const { detail } = layerPointText(d, p);
-        lines.push({
-          text: `${l.label}: ${p[3]}${detail ? ` — ${detail}` : ""}`,
-          unconfirmed: guess.has(i),
-        });
-      });
-    }
-    return lines.length ? (
-      <ul className="g3d-why" aria-label="Why it is lit">
-        {lines.map((x, i) => (
-          <li key={i}>
-            {x.unconfirmed ? <span className="g3d-unconfirmed">unconfirmed</span> : null} {x.text}
-          </li>
-        ))}
-      </ul>
-    ) : null;
-  };
 
   /*
     His own carrier's system and his colonies (owner, 2026-10-13: "a little icon"; server/routes/galaxyRoutes.ts
-    /api/galaxy/own): an anchor and a house beside them, both on one label when they share a system. Asked again
-    every minute, so a carrier jump shows without reopening the map.
+    /api/galaxy/own): an anchor and a house beside them, both on one label when they share a system. Read again
+    when they change, so a carrier jump shows without reopening the map.
   */
   useEffect(() => {
     const e = engine.current;
@@ -647,16 +644,14 @@ export function GalaxyMap3D() {
               x: b.x,
               y: b.y,
               z: b.z,
-              text: `${b.carrier ? "⚓" : ""}${b.colony ? "⌂" : ""} ${b.carrier && b.colony ? "Your carrier · colony" : b.carrier ? "Your carrier" : "Your colony"}`,
+              text: b.carrier && b.colony ? "Your carrier · colony" : b.carrier ? "Your carrier" : "Your colony",
             })),
           );
         })
         .catch(() => undefined);
     read();
-    const t = window.setInterval(() => {
-      if (!document.hidden) read();
-    }, 60_000);
-    return () => clearInterval(t);
+    // A carrier jump or a new colony (R2, 2026-10-24: was asked every minute).
+    return onServerChange("galaxy-own", read);
   }, [stats?.phase, inFront]);
 
   // The expedition field and plan: drawn while the Expedition drawer has scored something.
@@ -711,7 +706,7 @@ export function GalaxyMap3D() {
       expFlown.current = null;
       setExpFocus(null);
     }
-  }, [expFocus, expByKey, stats?.phase]);
+  }, [expFocus, expByKey, stats?.phase, setDrawer]);
 
   // A picked species' position rule: a ring round every point it is measured from, while the drawer is open.
   useEffect(() => {
@@ -740,8 +735,13 @@ export function GalaxyMap3D() {
     if (!e) return;
     const to = drawer === "expedition" ? expField?.to : null;
     e.setPathLine("expedition-route", to && expField ? [expField.from, to] : [], 0x4fd0ff);
-    e.setPathLine("neutron-route", drawer === "neutron" ? neutronLine : [], 0x9a7bff);
-  }, [expField, drawer, neutronLine, stats?.phase]);
+  }, [expField, drawer, stats?.phase]);
+  useEffect(() => {
+    const e = engine.current;
+    if (!e) return;
+    e.setPathLine("neutron-route", neutronHops, NEUTRON_LINE_COLOUR);
+    e.setMarkers("neutron", neutronMarkers(neutronHops), 4);
+  }, [neutronHops, stats?.phase]);
 
   // Jumponium bodies (1.2.16): violet-pink, the commander's own scans brighter, while the tab is open.
   useEffect(() => {
@@ -763,6 +763,61 @@ export function GalaxyMap3D() {
     );
     e.setMarkerLayerVisible("jumponium", drawer === "jumponium");
   }, [jumpRows, drawer, stats?.phase]);
+
+  // The colonisation candidate search: hits in teal (fully scanned brighter), the references they are measured from in gold.
+  useEffect(() => {
+    const e = engine.current;
+    if (!e) return;
+    const on = drawer === "finder";
+    e.setMarkers(
+      "finder",
+      on
+        ? finderHits.map((h) => ({
+            id: h.id64,
+            x: h.x,
+            y: h.y,
+            z: h.z,
+            color: h.fullyScanned ? [0.35, 1, 0.85] : [0.25, 0.8, 0.7],
+            size: 7,
+          }))
+        : [],
+      2,
+    );
+    e.setMarkers(
+      "finder-ref",
+      on ? finderRefs.slice(0, 2000).map((r, i) => ({ id: `ref${i}`, x: r.x, y: r.y, z: r.z, color: [1, 0.78, 0.3], size: 5 })) : [],
+      1,
+    );
+    e.setMarkerLayerVisible("finder", on);
+    e.setMarkerLayerVisible("finder-ref", on);
+  }, [finderHits, finderRefs, drawer, stats?.phase]);
+
+  // What "A system" in the finder searches round: the selection, named by the map when it can.
+  useEffect(() => {
+    if (drawer !== "finder" || !selection || selection.kind === "sector") return;
+    const at = { x: selection.x, y: selection.y, z: selection.z };
+    if (selection.kind === "marker" && selection.layer === "finder") {
+      const h = finderHitFor(selection.id);
+      if (h) setFinderAround({ name: h.name, ...at });
+      return;
+    }
+    if (selection.kind !== "index") {
+      setFinderAround({ name: "Selected point", ...at });
+      return;
+    }
+    let alive = true;
+    void fetch(`/api/galaxy/system?i=${selection.ordinal}`)
+      .then((r) => (r.ok ? (r.json() as Promise<{ name?: string }>) : null))
+      .then((d) => {
+        if (alive) setFinderAround({ name: d?.name || "Selected system", ...at });
+      })
+      .catch(() => {
+        if (alive) setFinderAround({ name: "Selected system", ...at });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selection, drawer, finderHitFor]);
 
   // The commander's layer, with the "waiting at least" threshold: below it a waiting system is grey.
   const waitMinCr = waitMinM * 1_000_000;
@@ -903,7 +958,7 @@ export function GalaxyMap3D() {
   }, [navShown, drawer]);
 
   // ------------------------------------------------------------------------------ the Search drawer
-  const onApply = useCallback((applied: GalaxySearchApplied | null) => setSearch(applied), []);
+  const onApply = useCallback((applied: GalaxySearchApplied | null) => setSearch(applied), [setSearch]);
   useEffect(() => {
     const items: MarkerItem[] = (search?.hits ?? []).map((h) => ({
       id: String(h.systemAddress),
@@ -954,6 +1009,9 @@ export function GalaxyMap3D() {
   useEffect(() => {
     if (!codexOn || !codexRegion) return;
     let live = true;
+    // The previous region's dots go at once, not when (or if) the new region's answer arrives (1.2.19 review).
+    engine.current?.setMarkers("codex", [], 3);
+    setCodexSystems(new Map());
     // The region map and EDSM spell a few regions differently; the join key settles it.
     const summary = codexRegions?.regions.find((r) => r.joinKey === regionJoinKey(codexRegion));
     const name = summary?.name ?? codexRegion;
@@ -1095,7 +1153,7 @@ export function GalaxyMap3D() {
       live = false;
       clearTimeout(t);
     };
-  }, [findText]);
+  }, [findText, setFind]);
   const findRegions = useMemo(() => {
     const q = findText.trim().toLowerCase();
     if (q.length < 2) return [];
@@ -1129,7 +1187,7 @@ export function GalaxyMap3D() {
     hits: [],
     busy: false,
   });
-  const [spanshPicked, setSpanshPicked] = useState<Map<string, SpanshFindHit>>(new Map());
+  const [spanshPicked, setSpanshPicked] = useKeptState<Map<string, SpanshFindHit>>("galaxy.spanshPicked", (kept) => kept ?? new Map());
   useEffect(() => {
     const q = findText.trim();
     if (q.length < 3) {
@@ -1199,6 +1257,11 @@ export function GalaxyMap3D() {
     return hits;
   }, [findText, extraData]);
 
+  // The drawers load in the background once the map has drawn (lazyDrawers.tsx), so opening one is instant.
+  useEffect(() => {
+    if (stats?.phase === "ready") preloadGalaxyDrawers();
+  }, [stats?.phase]);
+
   const go = (g: { x: number; y: number; z: number }, distance: number, sel?: Selection) => {
     setFindOpen(false);
     engine.current?.flyTo(g, distance);
@@ -1214,7 +1277,13 @@ export function GalaxyMap3D() {
             This window cannot draw it ({graphics.renderer}). The Classic map works everywhere and has the
             same search.
           </p>
-          <a className="g3d-btn g3d-btn--primary" href="?screen=map">
+          {/* Safe graphics mode (electron/gpuSafeMode.cjs, L1) is the usual cause in the desktop app. */}
+          <p className="dim">
+            In the desktop app: if <strong>Hardware acceleration</strong> is off in the launcher (it turns itself off
+            when the graphics card crashes at start), ticking it again may bring the 3D map back.
+          </p>
+          {/* In a tab, a window of its own: in place it replaced the whole app window, tabs and all (2026-10-26). */}
+          <a className="g3d-btn g3d-btn--primary" href="?screen=map" {...(inTab ? { target: "_blank", rel: "noreferrer" } : {})}>
             Open the Classic map
           </a>
         </div>
@@ -1228,331 +1297,41 @@ export function GalaxyMap3D() {
     const ship = engine.current?.getShip();
     if (ship) engine.current?.flyTo(ship, 2_500);
   };
+  // A drawer closing or giving way to another fades out (motion.ts); opening slides in (layout.css).
   const openDrawer = (d: Drawer) => {
-    setDrawer((cur) => (cur === d ? "none" : d));
+    withTransition(() => setDrawer((cur) => (cur === d ? "none" : d)));
     engine.current?.select(null);
   };
-  const loading = !stats || stats.phase === "loading";
-  const colours: [Colour, string][] = [
-    [0, "Evidence"],
-    [1, "Species count"],
-    [2, "Value"],
-  ];
 
-  const tip = (() => {
-    if (!hover) return null;
-    if (hover.kind === "system") {
-      return (
-        <>
-          <strong>{hover.name ?? "…"}</strong>
-          <span>
-            {hover.species} species · {formatValue(hover.value)}
-          </span>
-          <em>Click for details</em>
-        </>
-      );
-    }
-    if (hover.kind === "group") {
-      return (
-        <>
-          <strong>{hover.name ?? `${formatCount(hover.count)} systems`}</strong>
-          <span>
-            {hover.name ? `${formatCount(hover.count)} systems · ` : ""}
-            best {formatValue(hover.top)}
-          </span>
-          <em>{hover.level === 1280 ? "Click for its best systems and to zoom in" : "Click to zoom in"}</em>
-        </>
-      );
-    }
-    if (hover.layer === "you") {
-      const r = mine.get(hover.id);
-      return r ? (
-        <>
-          <strong>
-            {r.name || (r.flags & MINE_IMPORTED ? "A system you visited (name not known)" : "Your system")}
-          </strong>
-          <span>{mineStatus(r)}</span>
-          <em>
-            {r.flags & MINE_IMPORTED
-              ? "Placed at its boxel's centre unless the galaxy index has it"
-              : "Your journals · click for details"}
-          </em>
-        </>
-      ) : null;
-    }
-    if (hover.layer === "plan") {
-      const p = planStops.get(hover.id);
-      return p ? (
-        <>
-          <strong>
-            {p.n}. {p.name}
-          </strong>
-          <span>
-            {fmtLy(p.legLy)} from {p.n === 1 ? "your ship" : `stop ${p.n - 1}`} · {p.species} species ·{" "}
-            {formatValue(p.valueCr / 100_000)}
-          </span>
-          <em>Plan stop · click for details</em>
-        </>
-      ) : null;
-    }
-    if (hover.layer === "jumponium") {
-      const r = jumpById.get(hover.id);
-      return r ? (
-        <>
-          <strong>{r.body}</strong>
-          <span>{jumpLine(r)}</span>
-          <em>{r.own ? "You scanned it" : "From Spansh's dump"} · click for details</em>
-        </>
-      ) : null;
-    }
-    if (hover.layer === "expedition") {
-      const b = expByKey.get(hover.id);
-      if (!b) return null;
-      const t = expeditionTip(b, !!expField?.species, targetLabelOf(expField?.target));
-      return (
-        <>
-          <strong>{t.title}</strong>
-          <span>{t.line}</span>
-          <em>{t.note}</em>
-        </>
-      );
-    }
-    const xp = extraPoint(hover.layer, hover.id);
-    if (xp) {
-      return (
-        <>
-          <strong>{xp.p[3]}</strong>
-          {xp.unconfirmed ? <span className="g3d-unconfirmed">Unconfirmed candidate</span> : null}
-          {xp.detail ? <span>{xp.detail}</span> : null}
-          {xp.meta.kind === "stations" ? <StationNames x={xp.p[0]} y={xp.p[1]} z={xp.p[2]} /> : null}
-          <em>{xp.meta.label} · click for details</em>
-        </>
-      );
-    }
-    const nv = navPoint(hover.layer, hover.id);
-    if (nv) {
-      return (
-        <>
-          <strong>{nv.name}</strong>
-          <span>
-            {nv.starClass ? `${nv.starClass} star · ` : ""}
-            {nv.visited ? "visited" : "not visited yet"}
-          </span>
-          <em>{hover.layer === "navUnvisited" ? "On your plotted route" : "NavRoute"} · click for details</em>
-        </>
-      );
-    }
-    if (hover.layer === "spansh") {
-      const h = spanshPicked.get(hover.id);
-      return h ? (
-        <>
-          <strong>{h.starSystem}</strong>
-          <em>From Spansh · click for details</em>
-        </>
-      ) : null;
-    }
-    if (hover.layer === "search") {
-      const h = searchHits.get(hover.id);
-      return h ? (
-        <>
-          <strong>{h.starSystem}</strong>
-          <span>{h.note}</span>
-          <em>Search result · click for details</em>
-        </>
-      ) : null;
-    }
-    const c = codexSystems.get(hover.id);
-    return c ? (
-      <>
-        <strong>{c.name}</strong>
-        <span>
-          {c.entries.filter((x) => x.logged).length} of {c.entries.length} codex entries logged
-        </span>
-        <em>Click for the list</em>
-      </>
-    ) : null;
-  })();
+  const lookups: MapLookups = {
+    extraData,
+    route,
+    navShown,
+    mine,
+    planStops,
+    jumpById,
+    expByKey,
+    expField,
+    spanshPicked,
+    searchHits,
+    codexSystems,
+    neutronHops,
+  };
+  const tip = hoverTip(hover, lookups);
 
-  /** A NavRoute marker (the finder's, or the plotted route's unvisited ones) by its address. */
-  function navPoint(layer: string, id: string) {
-    if (layer === "navUnvisited") return route?.navRoute.find((s) => String(s.address) === id) ?? null;
-    if (layer === "navroute") {
-      const s = navShown.find((x) => String(x.address) === id);
-      return s
-        ? {
-            address: s.address,
-            name: s.name,
-            starClass: s.starClass,
-            x: s.pos[0],
-            y: s.pos[1],
-            z: s.pos[2],
-            visited: !!s.visited,
-          }
-        : null;
-    }
-    return null;
-  }
-
-  const panel = (() => {
-    if (!selection) return null;
-    if (selection.kind === "index")
-      return (
-        <>
-          <IndexRecord ordinal={selection.ordinal} heading />
-          {whyLit(selection)}
-        </>
-      );
-    if (selection.kind === "sector") {
-      return (
-        <SectorRecord
-          key={selection.key}
-          sectorKey={selection.key}
-          onPick={(s) => go(s, 400, { kind: "index", ordinal: s.ordinal, x: s.x, y: s.y, z: s.z })}
-        />
-      );
-    }
-    if (selection.layer === "you") return <MySystemRecord addr={selection.id} />;
-    if (selection.layer === "plan") return <IndexRecord ordinal={Number(selection.id)} heading />;
-    if (selection.layer === "jumponium") {
-      const r = jumpById.get(selection.id) ?? (jumpPicked?.id === selection.id ? jumpPicked : null);
-      return r ? (
-        <div>
-          <h2 className="g3d-panel__name">{r.body}</h2>
-          <p className="g3d-panel__meta">
-            {r.system} <CopySystemButton system={r.system} />
-          </p>
-          <p>{jumpLine(r)}</p>
-          <p className="dim">
-            {[
-              r.type,
-              r.gravityG != null ? `${r.gravityG.toFixed(2)} g` : null,
-              r.distLs != null ? `${Math.round(r.distLs).toLocaleString("en-US")} ls from arrival` : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-          {route?.position ? <p className="dim">{fmtLy(dist(route.position, r))} from your ship</p> : null}
-          <p className="dim">
-            {r.own ? "You scanned it." : "From Spansh's dump: the top 1 % of landable bodies for an element."}
-          </p>
-        </div>
-      ) : null;
-    }
-    if (selection.layer === "expedition") {
-      const b = expByKey.get(selection.id);
-      return b ? (
-        <ExpeditionBoxelCard
-          b={b}
-          species={!!expField?.species}
-          targetLabel={targetLabelOf(expField?.target)}
-          ship={route?.position ?? null}
-          inPlan={expPlanKeys.includes(b.key)}
-          onTogglePlan={() =>
-            setExpPlanKeys((k) =>
-              k.includes(b.key) ? k.filter((x) => x !== b.key) : [...k, b.key].slice(0, 20),
-            )
-          }
-        />
-      ) : null;
-    }
-    const xs = extraPoint(selection.layer, selection.id);
-    if (xs) {
-      return (
-        <div>
-          <h2 className="g3d-panel__name">{xs.p[3]}</h2>
-          <p className="g3d-panel__meta">{xs.meta.label}</p>
-          {xs.unconfirmed ? (
-            <p className="g3d-unconfirmed g3d-unconfirmed--block">
-              Unconfirmed candidate — the model&apos;s guess from Spansh data. Nobody has reported it green in
-              the game yet: go and look.
-            </p>
-          ) : null}
-          {xs.detail ? <p className="g3d-panel__note">{xs.detail}</p> : null}
-          {xs.system ? (
-            <>
-              <p>
-                {xs.system} <CopySystemButton system={xs.system} />
-              </p>
-              <p className="g3d-panel__bm">
-                <SystemBookmarkButton
-                  system={xs.system}
-                  systemAddress={null}
-                  pos={{ x: xs.p[0], y: xs.p[1], z: xs.p[2] }}
-                />
-              </p>
-            </>
-          ) : null}
-          {route?.position ? (
-            <p className="dim">
-              {fmtLy(dist(route.position, { x: xs.p[0], y: xs.p[1], z: xs.p[2] }))} from your ship
-            </p>
-          ) : null}
-        </div>
-      );
-    }
-    const ns = navPoint(selection.layer, selection.id);
-    if (ns) {
-      return (
-        <div>
-          <h2 className="g3d-panel__name">
-            {ns.name} <CopySystemButton system={ns.name} />
-          </h2>
-          <p className="g3d-panel__meta">
-            {ns.starClass ? `${ns.starClass} star · ` : ""}
-            {ns.visited ? "visited" : "on your plotted route, not visited yet"}
-          </p>
-          {route?.position ? <p className="dim">{fmtLy(dist(route.position, ns))} from your ship</p> : null}
-          <p className="g3d-panel__bm">
-            <SystemBookmarkButton
-              system={ns.name}
-              systemAddress={ns.address}
-              pos={{ x: ns.x, y: ns.y, z: ns.z }}
-            />
-          </p>
-          <IndexRecord addr={String(ns.address)} fallbackName={ns.name} />
-        </div>
-      );
-    }
-    if (selection.layer === "spansh") {
-      const h = spanshPicked.get(selection.id);
-      if (!h) return null;
-      const at = { x: h.x!, y: h.y!, z: h.z! };
-      return (
-        <div>
-          <h2 className="g3d-panel__name">
-            {h.starSystem} <CopySystemButton system={h.starSystem} />
-          </h2>
-          <p className="g3d-panel__meta">From Spansh · not in the galaxy index (no biology recorded there)</p>
-          {route?.position ? <p className="dim">{fmtLy(dist(route.position, at))} from your ship</p> : null}
-          <p className="g3d-panel__bm">
-            <SystemBookmarkButton system={h.starSystem} systemAddress={h.systemAddress} pos={at} />
-          </p>
-          <p>
-            <button
-              type="button"
-              className="g3d-btn"
-              title="Open it on the main screen: its bodies are fetched from Spansh"
-              onClick={() =>
-                void fetch("/api/ui/view-system", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ systemAddress: h.systemAddress, starSystem: h.starSystem }),
-                })
-              }
-            >
-              Show on the main screen
-            </button>
-          </p>
-        </div>
-      );
-    }
-    if (selection.layer === "search") {
-      const h = searchHits.get(selection.id);
-      return <IndexRecord addr={selection.id} heading fallbackName={h?.starSystem} />;
-    }
-    const c = codexSystems.get(selection.id);
-    return c ? <CodexRecord system={c} region={codexSummary?.name ?? codexRegion ?? ""} /> : null;
-  })();
+  const panel = selectionPanel(selection, {
+    ...lookups,
+    filter,
+    filterAnswer,
+    extraOn,
+    go,
+    jumpPicked,
+    finderHitFor,
+    expPlanKeys,
+    setExpPlanKeys,
+    codexSummary,
+    codexRegion,
+  });
 
   const ship = route?.position;
   // Spansh hits the map already shows (as a system or a layer point) are not offered twice.
@@ -1622,426 +1401,70 @@ export function GalaxyMap3D() {
       ) : null}
 
       {drawer === "view" ? (
-        <aside className="g3d-drawer g3d-menu" aria-label="View" data-testid="g3d-view">
-          <MenuHead title="View" help={G3D_HELP.view} />
-          <div className="g3d-row g3d-row--buttons" role="group" aria-label="Camera">
-            <Tooltip text="Look straight down on the galaxy">
-              <button type="button" className="g3d-btn" onClick={() => view("top")}>
-                Top
-              </button>
-            </Tooltip>
-            <Tooltip text="Look across the disc at an angle">
-              <button type="button" className="g3d-btn" onClick={() => view("tilted")}>
-                Tilt
-              </button>
-            </Tooltip>
-            <Tooltip text="Fly to the galactic core, Sagittarius A*">
-              <button type="button" className="g3d-btn" onClick={() => view("core")}>
-                Core
-              </button>
-            </Tooltip>
-            <Tooltip text="Fly home to Sol">
-              <button type="button" className="g3d-btn" onClick={() => view("sol")}>
-                Sol
-              </button>
-            </Tooltip>
-            <Tooltip
-              text={
-                route?.system
-                  ? `Fly to your ship, in ${route.system}`
-                  : "Your ship's position is not known yet"
-              }
-            >
-              <button type="button" className="g3d-btn" onClick={toShip} disabled={!ship}>
-                Me
-              </button>
-            </Tooltip>
-          </div>
-          <MenuToggle
-            label="Follow my ship"
-            hint="When you jump, the camera moves with you and keeps its distance"
-            on={follow}
-            set={setFollow}
-          />
-          <MenuToggle
-            label="Elite controls"
-            hint="The game's galaxy map: a cross-hair with its shadow on the galactic plane. W A S D move it, Q E turn, R F raise and lower it; left drag turns and tilts all the way round (under the map too), right drag turns and raises; the wheel zooms. Moving is faster zoomed out."
-            on={elite}
-            set={setElite}
-          />
-          <MenuRow
-            label="Colour by"
-            hint="Evidence: how sure the record is (mapped, codex logged, signals only). Species count and Value: how rich the system is."
-          >
-            <select
-              className="g3d-select g3d-row__val"
-              aria-label="Colour by"
-              value={colour}
-              onChange={(ev) => setColour(Number(ev.target.value) as Colour)}
-            >
-              {colours.map(([k, label]) => (
-                <option key={k} value={k}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </MenuRow>
-          <MenuRow label="Brightness" hint="How bright the systems are drawn">
-            <input
-              type="range"
-              className="g3d-row__range"
-              min={0.2}
-              max={4}
-              step={0.1}
-              value={exposure}
-              aria-label="Brightness"
-              onChange={(ev) => setExposure(Number(ev.target.value))}
-            />
-          </MenuRow>
-          <GalaxyIndexRow />
-          <MenuRow
-            label="Classic map"
-            hint="The 2D sector map, for a machine without 3D graphics or a quick look"
-          >
-            <a className="g3d-row__val g3d-classic" href="?screen=map">
-              Open
-            </a>
-          </MenuRow>
-          <p className="g3d-panel__note">
-            {elite
-              ? "W A S D move · Q E turn · R F up / down · left drag turns and tilts · right drag turns and raises · the wheel zooms."
-              : "Left drag pans · right drag tilts and turns · the wheel zooms · click a ring or a system."}
-          </p>
-        </aside>
+        <ViewMenu
+          view={view}
+          route={route}
+          toShip={toShip}
+          ship={ship}
+          follow={follow}
+          setFollow={setFollow}
+          elite={elite}
+          setElite={setElite}
+          colour={colour}
+          setColour={setColour}
+          exposure={exposure}
+          setExposure={setExposure}
+        />
       ) : null}
 
       {drawer === "layers" ? (
-        <aside className="g3d-drawer g3d-menu" aria-label="Layers" data-testid="g3d-layers">
-          <MenuHead title="Layers" help={G3D_HELP.layers} />
-          <div className="g3d-menu__rows" role="group" aria-label="Layers">
-            {(["you", "photo", "borders", "groups", "labels"] as const).map((k) => (
-              <label key={k} className="g3d-row g3d-row--check">
-                <input
-                  type="checkbox"
-                  className="g3d-row__box"
-                  checked={layers[k]}
-                  onChange={() => toggle(k)}
-                />
-                <span className="g3d-row__label">
-                  {
-                    {
-                      you: "Your systems",
-                      photo: "Milky Way",
-                      borders: "Region borders",
-                      groups: "Groups",
-                      labels: "Names",
-                    }[k]
-                  }
-                </span>
-                <span className="g3d-row__val">{layers[k] ? "On" : "Off"}</span>
-              </label>
-            ))}
-            {GALAXY_LAYERS.map((l) => {
-              const d = extraData[l.kind];
-              const missing = d != null && !d.available;
-              return (
-                <label key={l.kind} className="g3d-row g3d-row--check" title={missing ? l.needs : undefined}>
-                  <input
-                    type="checkbox"
-                    className="g3d-row__box"
-                    checked={extraOn[l.kind]}
-                    onChange={() => extraSet[l.kind](!extraOn[l.kind])}
-                  />
-                  <span
-                    className="g3d-swatch"
-                    style={{ background: `rgb(${l.colour.map((c) => Math.round(c * 255)).join(",")})` }}
-                  />
-                  <span className="g3d-row__label">
-                    {l.label}
-                    {extraOn[l.kind] && d ? (
-                      <span className="dim">
-                        {" "}
-                        {missing ? `— ${l.needs.toLowerCase()}` : `(${d.points.length.toLocaleString()})`}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="g3d-row__val">{extraOn[l.kind] ? (d ? "On" : "Loading…") : "Off"}</span>
-                </label>
-              );
-            })}
-          </div>
-          <MenuToggle
-            label="NavRoute – unvisited"
-            hint="The systems on the route you plotted in the game that you have not been to, placed from NavRoute.json"
-            on={navUnvisitedOn}
-            set={setNavUnvisitedOn}
-          />
-          {layers.you ? (
-            <MenuRow
-              label="Waiting worth ≥"
-              hint="Your systems still waiting (signals not yet sampled), worth at least this much"
-            >
-              <input
-                type="range"
-                className="g3d-row__range"
-                min={0}
-                max={WAIT_MAX_M}
-                step={1}
-                value={waitMinM}
-                aria-label="Waiting worth at least (million CR)"
-                onChange={(ev) => setWaitMinM(Number(ev.target.value))}
-              />
-              <span className="g3d-slider-val g3d-slider-val--short">
-                {waitMinM ? `${waitMinM}M` : "any"}
-              </span>
-            </MenuRow>
-          ) : null}
-        </aside>
+        <LayersMenu
+          layers={layers}
+          toggle={toggle}
+          extraData={extraData}
+          extraOn={extraOn}
+          extraSet={extraSet}
+          navUnvisitedOn={navUnvisitedOn}
+          setNavUnvisitedOn={setNavUnvisitedOn}
+          waitMinM={waitMinM}
+          setWaitMinM={setWaitMinM}
+        />
       ) : null}
 
       {drawer === "targets" ? (
-        <aside className="g3d-drawer g3d-menu g3d-plan" aria-label="Targets" data-testid="g3d-targets">
-          <MenuHead title="Biology targets" help={G3D_HELP.targets} />
-          {/* Your own systems still waiting (owner, 2026-10-04: here, not over the map all the time). */}
-          <div className="g3d-menu__section g3d-menu__section--first" data-testid="g3d-nearest">
-            <Tooltip text="Of your own systems with biology still to sample, the nearest one worth at least the Waiting floor (Layers)">
-              <span className="g3d-menu__sub">Your nearest waiting{waitMinM ? ` ≥ ${waitMinM}M` : ""}</span>
-            </Tooltip>
-            {nearest ? (
-              <div className="g3d-target">
-                <span>
-                  <strong>{nearest.row.name}</strong> · {fmtLy(nearest.ly)} · at least{" "}
-                  {crShort(nearest.row.unfinishedFloorCr)}
-                </span>
-                <CopySystemButton system={nearest.row.name} />
-                <button
-                  type="button"
-                  className="g3d-btn"
-                  onClick={() =>
-                    go(nearest.row, 400, {
-                      kind: "marker",
-                      layer: "you",
-                      id: String(nearest.row.addr),
-                      x: nearest.row.x,
-                      y: nearest.row.y,
-                      z: nearest.row.z,
-                    })
-                  }
-                >
-                  Show
-                </button>
-              </div>
-            ) : (
-              <p className="g3d-panel__note">
-                None of yours waiting{waitMinM ? ` at ${waitMinM}M or more` : ""}.
-              </p>
-            )}
-          </div>
-          <span className="g3d-menu__sub">Recorded by others</span>
-          <MenuRow label="Worth ≥" hint="Only systems whose recorded species add up to at least this (1×)">
-            <input
-              type="range"
-              className="g3d-row__range"
-              min={0}
-              max={WORTH_STEPS_M.length - 1}
-              step={1}
-              value={worthStep}
-              aria-label="Worth at least (million CR)"
-              onChange={(ev) => setWorthStep(Number(ev.target.value))}
-            />
-            <span className="g3d-slider-val">
-              {worthM ? `${worthM}M` : "any"}
-              {worthCount != null && worthM ? ` (${formatCount(worthCount)})` : ""}
-            </span>
-          </MenuRow>
-          <MenuToggle
-            label="Skip visited"
-            hint="Also skip systems you have been to, not only the ones you mapped or sampled"
-            on={skipVisited}
-            set={setSkipVisited}
-          />
-          <button
-            type="button"
-            className="g3d-btn g3d-btn--primary-small"
-            onClick={() => void nextTarget(skipped)}
-            disabled={targetBusy}
-            title="The nearest system worth at least that much that you have not mapped or sampled; its name is copied for the game's galaxy map"
-          >
-            {targetBusy ? "Finding…" : "Next target"}
-          </button>
-          {target ? (
-            <div className="g3d-target" data-testid="g3d-target">
-              {target.target ? (
-                <>
-                  <span>
-                    Next target{worthM ? ` ≥ ${worthM}M` : ""}: <strong>{target.target.name}</strong> ·{" "}
-                    {fmtLy(target.target.distanceLy)} · {target.target.species} species ·{" "}
-                    {formatValue(target.target.valueCr / 100_000)}
-                    {copied ? " · name copied" : ""}
-                  </span>
-                  <CopySystemButton system={target.target.name} />
-                  <button type="button" className="g3d-btn" onClick={skipTarget} disabled={targetBusy}>
-                    Skip
-                  </button>
-                  <button
-                    type="button"
-                    className="g3d-btn"
-                    onClick={() => {
-                      const t = target.target!;
-                      go(t, 400, { kind: "index", ordinal: t.ordinal, x: t.x, y: t.y, z: t.z });
-                    }}
-                  >
-                    Show
-                  </button>
-                  {!planOn ? (
-                    <button
-                      type="button"
-                      className="g3d-btn"
-                      onClick={openPlan}
-                      disabled={targetBusy}
-                      title="The next few targets, each the nearest to the last, in the shortest order"
-                    >
-                      Plan {planSize}
-                    </button>
-                  ) : null}
-                </>
-              ) : (
-                <span>
-                  {target.from
-                    ? `Nothing left${worthM ? ` worth ≥ ${worthM}M` : ""} that you have not done${skipped.length ? " (after your skips)" : ""}.`
-                    : "Your ship's position is not known yet — jump once and try again."}
-                </span>
-              )}
-            </div>
-          ) : null}
-          {planOn ? (
-            <div className="g3d-menu__section" data-testid="g3d-plan">
-              <div className="g3d-plan__head">
-                <strong>Plan</strong>
-                <button
-                  type="button"
-                  className="g3d-panel__close"
-                  aria-label="Close the plan"
-                  onClick={() => setPlanOn(false)}
-                >
-                  ✕
-                </button>
-              </div>
-              <MenuRow label="Stops" hint="How many systems the plan visits; the target is one of them">
-                <select
-                  className="g3d-select g3d-row__val"
-                  aria-label="Stops in the plan"
-                  value={planSize}
-                  onChange={(ev) => {
-                    const n = Number(ev.target.value);
-                    setPlanSize(n);
-                    void nextTarget(skipped, { plan: n, fly: false });
-                  }}
-                >
-                  {PLAN_SIZES.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              </MenuRow>
-              <MenuToggle
-                label="Back to start"
-                hint="The route ends where the ship is now: back to a carrier or a station to sell at"
-                on={planLoop}
-                set={(v) => {
-                  setPlanLoop(v);
-                  void nextTarget(skipped, { plan: planSize, fly: false, loop: v });
-                }}
-              />
-              {targetBusy && !plan ? <p className="g3d-panel__note">Planning…</p> : null}
-              {plan && plan.stops.length ? (
-                <>
-                  <ol className="g3d-plan__list">
-                    {plan.stops.map((s, i) => (
-                      <li key={s.ordinal}>
-                        <button
-                          type="button"
-                          className="g3d-plan__stop"
-                          onClick={() =>
-                            go(s, 400, { kind: "index", ordinal: s.ordinal, x: s.x, y: s.y, z: s.z })
-                          }
-                        >
-                          <span className="g3d-plan__n">{i + 1}</span>
-                          <span className="g3d-plan__name">{s.name}</span>
-                          <em>
-                            +{fmtLy(s.legLy)} · {s.species} sp. · {formatValue(s.valueCr / 100_000)}
-                          </em>
-                        </button>
-                        <CopySystemButton system={s.name} />
-                        <button
-                          type="button"
-                          className="g3d-btn g3d-plan__skip"
-                          title="Skip this one; the plan is worked out again without it"
-                          aria-label={`Skip ${s.name}`}
-                          disabled={targetBusy}
-                          onClick={() => skipStop(s.ordinal)}
-                        >
-                          Skip
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                  <p className="g3d-plan__total" data-testid="g3d-plan-total">
-                    {plan.stops.length} stops · {fmtLy(plan.totalLy)} ·{" "}
-                    {formatValue(plan.totalValueCr / 100_000)}
-                  </p>
-                  {plan.loop && plan.returnLy != null ? (
-                    <p className="g3d-panel__note">
-                      Back to the start: +{fmtLy(plan.returnLy)}, counted in the total.
-                    </p>
-                  ) : null}
-                  {plan.greedyLy - plan.totalLy >= 0.5 ? (
-                    <p className="g3d-panel__note" data-testid="g3d-plan-saving">
-                      {fmtLy(plan.greedyLy - plan.totalLy)} shorter than taking each nearest next (
-                      {fmtLy(plan.greedyLy)}).
-                    </p>
-                  ) : null}
-                  <div className="g3d-panel__actions">
-                    <button
-                      type="button"
-                      className="g3d-btn"
-                      onClick={() => {
-                        void navigator.clipboard
-                          .writeText(plan.stops.map((s) => s.name).join("\n"))
-                          .then(() => setPlanCopied(true))
-                          .catch(() => setPlanCopied(false));
-                      }}
-                    >
-                      {planCopied ? "Names copied" : "Copy names"}
-                    </button>
-                    <button
-                      type="button"
-                      className="g3d-btn"
-                      onClick={() =>
-                        engine.current?.fitTo(
-                          [...(target?.from ? [target.from] : []), ...plan.stops],
-                          PLAN_MARGIN,
-                        )
-                      }
-                    >
-                      Show all
-                    </button>
-                  </div>
-                  <p className="g3d-panel__note">
-                    The stops: each the nearest one to the last that is worth the floor and that you have not
-                    mapped or sampled{skipVisited ? " or visited" : ""}; then visited in the shortest order
-                    found. Values at 1×; legs are straight lines, not jumps.
-                  </p>
-                </>
-              ) : target && !targetBusy ? (
-                <p className="g3d-panel__note">No plan: nothing qualifies from here.</p>
-              ) : null}
-            </div>
-          ) : null}
-        </aside>
+        <TargetsMenu
+          waitMinM={waitMinM}
+          nearest={nearest}
+          go={go}
+          worthStep={worthStep}
+          setWorthStep={setWorthStep}
+          worthM={worthM}
+          worthCount={worthCount}
+          skipVisited={skipVisited}
+          setSkipVisited={setSkipVisited}
+          nextTarget={nextTarget}
+          skipped={skipped}
+          targetBusy={targetBusy}
+          target={target}
+          copied={copied}
+          skipTarget={skipTarget}
+          planOn={planOn}
+          setPlanOn={setPlanOn}
+          openPlan={openPlan}
+          planSize={planSize}
+          setPlanSize={setPlanSize}
+          planLoop={planLoop}
+          setPlanLoop={setPlanLoop}
+          plan={plan}
+          skipStop={skipStop}
+          planCopied={planCopied}
+          setPlanCopied={setPlanCopied}
+          fitTo={(points) => engine.current?.fitTo(points, PLAN_MARGIN)}
+        />
       ) : null}
 
+      {/* Drawers load when first opened (galaxy3d/lazyDrawers.tsx); one at a time is open. */}
+      <Suspense fallback={<DrawerLoading />}>
       {drawer === "expedition" ? (
         <ExpeditionDrawer
           ship={route?.position ?? null}
@@ -2066,20 +1489,24 @@ export function GalaxyMap3D() {
       {drawer === "stations" ? (
         <aside
           className="g3d-drawer g3d-menu g3d-plan g3d-stations-drawer"
-          aria-label="Stations"
+          aria-label={CARRIERS_STATIONS_TITLE}
           data-testid="g3d-stations"
         >
-          <MenuHead title="Nearest station" help={G3D_HELP.stations} />
+          <MenuHead title={CARRIERS_STATIONS_TITLE} help={G3D_HELP.stations} />
           <div className="g3d-menu__section g3d-menu__section--first">
-            <StationsPanel
+            <CarriersStationsTabs tab={csTab} setTab={setCsTab} />
+            <CarriersStationsBody
+              tab={csTab}
               compact
-              onPick={(r) => {
-                if (r.x == null || r.y == null || r.z == null) return;
-                extraSet.stations(true);
-                const at = { x: r.x, y: r.y, z: r.z };
+              from={csFrom}
+              onPick={(p: CarriersStationsPick) => {
+                const at = p.at;
+                csOwnPick.current = `${at.x.toFixed(1)},${at.y.toFixed(1)},${at.z.toFixed(1)}`;
+                if (p.kind === "carrier") extraSet.carriers(true);
+                if (p.kind === "station") extraSet.stations(true);
                 engine.current?.flyTo(at, 400);
-                if (r.sys != null)
-                  engine.current?.select({ kind: "marker", layer: "x-stations", id: String(r.sys), ...at });
+                if (p.kind === "station" && p.stationSys != null)
+                  engine.current?.select({ kind: "marker", layer: "x-stations", id: String(p.stationSys), ...at });
               }}
             />
           </div>
@@ -2103,9 +1530,22 @@ export function GalaxyMap3D() {
         />
       ) : null}
 
+      {drawer === "finder" ? (
+        <FinderDrawer
+          picked={finderAround}
+          onHits={onFinderHits}
+          onPick={(h) => {
+            setFinderPicked(h);
+            const at = { x: h.x, y: h.y, z: h.z };
+            engine.current?.flyTo(at, 250);
+            engine.current?.select({ kind: "marker", layer: "finder", id: h.id64, ...at });
+          }}
+        />
+      ) : null}
+
       {drawer === "neutron" ? (
         <NeutronDrawer
-          onRoute={setNeutronLine}
+          onRoute={setNeutronHops}
           onFocus={(p) => engine.current?.flyTo({ x: p.x, y: p.y, z: p.z }, 400)}
         />
       ) : null}
@@ -2144,50 +1584,19 @@ export function GalaxyMap3D() {
       ) : null}
 
       {codexOn ? (
-        <aside className="g3d-drawer g3d-menu g3d-codex" aria-label="Codex" data-testid="g3d-codex">
-          <MenuHead title="Codex" help={G3D_HELP.codex} />
-          <div className="g3d-row g3d-row--buttons" role="group" aria-label="Codex kind">
-            {(["bio", "bodies"] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                className={codexKind === k ? "g3d-btn g3d-btn--on" : "g3d-btn"}
-                aria-pressed={codexKind === k}
-                onClick={() => setCodexKind(k)}
-              >
-                {k === "bio" ? "Biology" : "Bodies"}
-              </button>
-            ))}
-          </div>
-          <p className="g3d-menu__sub">Regions — logged of known · click one here or on the map</p>
-          {codexRegions ? null : <p className="g3d-panel__note">Reading your codex…</p>}
-          <ul className="g3d-menu__rows g3d-codex__regions">
-            {(codexRegions?.regions ?? [])
-              .slice()
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((r) => {
-                const k = r.kinds[codexKind];
-                const on = codexRegion != null && r.joinKey === regionJoinKey(codexRegion);
-                return (
-                  <li key={r.joinKey}>
-                    <button
-                      type="button"
-                      className={on ? "g3d-row g3d-row--pick g3d-row--on" : "g3d-row g3d-row--pick"}
-                      aria-pressed={on}
-                      onClick={() => setCodexRegion(r.name)}
-                    >
-                      <span className="g3d-row__label">{r.name}</span>
-                      <span className="g3d-row__val g3d-num">
-                        {k.logged}/{k.entries}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-          </ul>
-          {codexRegions ? <p className="g3d-panel__note">{codexRegions.source}</p> : null}
-        </aside>
+        <CodexMenu
+          engine={engine}
+          route={route}
+          codexKind={codexKind}
+          setCodexKind={setCodexKind}
+          codexRegion={codexRegion}
+          setCodexRegion={setCodexRegion}
+          codexRegions={codexRegions}
+          codexSummary={codexSummary}
+          codexSystems={codexSystems}
+        />
       ) : null}
+      </Suspense>
 
       <header className="g3d-bar" ref={barRef}>
         <nav className="g3d-tabs" aria-label="Galaxy map menus">
@@ -2334,87 +1743,20 @@ export function GalaxyMap3D() {
       {/* Builds leave the index out: the map offers it (plan 4.2, 2026-10-04). */}
       {stats?.phase === "failed" ? <GalaxyIndexDownload /> : null}
 
-      <footer className="g3d-status" data-testid="g3d-status">
-        {graphics.tier === "light" ? (
-          <span className="g3d-badge" title={graphics.renderer}>
-            Light mode — no graphics acceleration, every {stats?.stride ?? 16}th system shown from afar
-          </span>
-        ) : null}
-        {stats?.phase === "failed" ? (
-          <span className="g3d-error">
-            {/HTTP 404/.test(stats.error ?? "")
-              ? "No galaxy index on this PC yet — download it above."
-              : `Could not load the galaxy: ${stats.error}`}
-          </span>
-        ) : loading ? (
-          <span>Loading 5.3 million systems…</span>
-        ) : (
-          <span>
-            {stats.overviewPoints.toLocaleString()} systems
-            {stats.tilesLoaded
-              ? ` · close-up: ${stats.tilesLoaded} sectors, ${stats.tilePoints.toLocaleString()} systems`
-              : ""}
-            {stats.level ? ` · groups of ${stats.level.toLocaleString()} ly` : ""}
-            {" · "}
-            {fmtLy(stats.distanceLy)} away · tilt {stats.tiltDeg}°
-          </span>
-        )}
-        <button
-          type="button"
-          className="g3d-legend-toggle"
-          aria-expanded={legendOn}
-          onClick={() => setLegendOn(!legendOn)}
-          title={legendOn ? "Hide the legend" : "Show what the colours mean"}
-        >
-          {legendOn ? "▾" : "▸"} Legend
-        </button>
-        {!legendOn ? null : codexOn ? (
-          <span className="g3d-legend">
-            <i className="g3d-dot g3d-dot--todo" /> nothing logged <i className="g3d-dot g3d-dot--partial" />{" "}
-            some <i className="g3d-dot g3d-dot--done" /> all
-          </span>
-        ) : colour === 0 ? (
-          <span className="g3d-legend">
-            <i className="g3d-dot g3d-dot--dss" /> mapped (DSS) <i className="g3d-dot g3d-dot--codex" /> codex
-            logged <i className="g3d-dot g3d-dot--signal" /> signals only
-          </span>
-        ) : colour === 2 ? (
-          <span className="g3d-legend">
-            <i className="g3d-ramp" /> recorded value, 100k → 1bn CR
-          </span>
-        ) : (
-          <span className="g3d-legend">
-            <i className="g3d-ramp g3d-ramp--species" /> 1 → 8+ species
-          </span>
-        )}
-        {legendOn && layers.you && mine.size ? (
-          <span className="g3d-legend">
-            You: <i className="g3d-dot g3d-dot--waiting" /> waiting <i className="g3d-dot g3d-dot--done" />{" "}
-            done <i className="g3d-dot g3d-dot--visited" /> visited
-          </span>
-        ) : null}
-        {legendOn && gggOn ? (
-          <span className="g3d-legend">
-            <i className="g3d-dot g3d-dot--ggg" /> green gas giant{" "}
-            <i className="g3d-dot g3d-dot--unconfirmed" /> candidate, unconfirmed
-          </span>
-        ) : null}
-        {legendOn && heliumOn ? (
-          <span className="g3d-legend">
-            <i className="g3d-dot g3d-dot--helium" /> helium gas giant system
-          </span>
-        ) : null}
-        {legendOn && search ? (
-          <span className="g3d-legend">
-            <i className="g3d-dot g3d-dot--search" /> {search.label}
-          </span>
-        ) : null}
-        <span className="g3d-hint">
-          {elite
-            ? "W A S D move · Q E turn · R F up / down · left drag turn / tilt · right drag turn / raise · wheel zoom"
-            : "Left drag pan · right drag tilt / turn · wheel zoom · click a ring or a system"}
-        </span>
-      </footer>
+      <StatusBar
+        graphics={graphics}
+        stats={stats}
+        legendOn={legendOn}
+        setLegendOn={setLegendOn}
+        codexOn={codexOn}
+        colour={colour}
+        layers={layers}
+        mine={mine}
+        gggOn={gggOn}
+        heliumOn={heliumOn}
+        search={search}
+        elite={elite}
+      />
     </div>
   );
 }

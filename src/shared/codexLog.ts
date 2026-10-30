@@ -57,6 +57,26 @@ export function gameOrderSpeciesName(name: string): string {
   return m ? `${m[2]} ${m[1]}` : name;
 }
 
+/*
+  Genera the game names colour first ("Prasinum Sinuous Tubers", "Aureum Brain Tree", "Luteolum Anemone"), and the
+  ones whose only species carries the genus's whole name ("Bark Mounds", "Amphora Plant", "Crystalline Shards").
+*/
+const COLOUR_FIRST_GENUS = /^\S+\s+(sinuous tubers|brain tree|anemone)$/i;
+const WHOLE_NAME_GENUS = /^(bark mounds|amphora plant|crystalline shards)$/i;
+
+/**
+ * The genus a species name in the game's spelling belongs to: the first word ("Fonticulua Fluctus"), the last words
+ * for the colour-first ones, the whole name for a one-species genus. A comp scan of Sinuous Tubers was filed under a
+ * genus "Prasinum" and matched neither the DSS's Sinuous Tubers nor any candidate (owner, 2026-10-26).
+ */
+export function codexGenusOfSpecies(species: string): string {
+  const s = species.trim();
+  const colourFirst = COLOUR_FIRST_GENUS.exec(s);
+  if (colourFirst) return s.slice(s.length - colourFirst[1]!.length);
+  if (WHOLE_NAME_GENUS.test(s)) return s;
+  return s.split(/\s+/)[0] ?? "";
+}
+
 /** The species a `CodexEntry` line records, or null when it is not about biology. */
 export function codexSpeciesFromLine(line: {
   event?: unknown;
@@ -124,7 +144,7 @@ export function codexOrganicLockFromLine(line: {
 
   const full = typeof line.Name_Localised === "string" ? line.Name_Localised.trim() : "";
   const species = (full.split(" - ")[0] ?? "").trim();
-  const genus = species.split(/\s+/)[0]?.trim() ?? "";
+  const genus = codexGenusOfSpecies(species);
   // "Bacterium" on its own names a genus and no species, and a lock that vague resolves to nothing.
   if (!genus || species.split(/\s+/).length < 2) return null;
 
@@ -220,6 +240,19 @@ export function codexRegionKeysFromLine(line: {
  * ("Green", "Cyan or Orange", "(unknown)"). With no colour to go on the question becomes "any colour
  * of it here?". Null when nothing is new.
  */
+/**
+ * The colours a row's colour label names: "Green" → ["Green"], "Cyan or Orange" → both, and [] for an unknown colour
+ * ("(unknown)", "(depends on …)", empty). [CODEX], [CODEX FIRST] and [RARE] read the label through this one split.
+ */
+export function colourLabelOptions(colourLabel: string | null | undefined): string[] {
+  const label = (colourLabel ?? "").trim();
+  if (!label || label.startsWith("(")) return [];
+  return label
+    .split(" or ")
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
 export function codexNewColoursInRegion(
   logged: ReadonlySet<string>,
   region: string,
@@ -229,14 +262,7 @@ export function codexNewColoursInRegion(
   const r = codexRegionKey(region);
   const species = codexSpeciesKey(gameOrderSpeciesName(displayName));
   if (!r || !species) return null;
-  const label = (colourLabel ?? "").trim();
-  const colours =
-    !label || label.startsWith("(")
-      ? []
-      : label
-          .split(" or ")
-          .map((c) => c.trim())
-          .filter(Boolean);
+  const colours = colourLabelOptions(colourLabel);
   if (colours.length === 0) return logged.has(`${r}|${species}|*`) ? null : [];
   const fresh = colours.filter((c) => !logged.has(`${r}|${species}|${c.toLowerCase()}`));
   return fresh.length ? fresh : null;

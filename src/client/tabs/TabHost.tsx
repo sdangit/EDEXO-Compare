@@ -16,8 +16,7 @@ import {
   useTabSelector,
   useTabState,
   type TabFront,
-  type TabKind,
-} from "./tabStore";
+  type TabKind, HOME_TAB_LABEL, screenFitsHere } from "./tabStore";
 import { UI_COMMAND_EVENT } from "../useLiveSnapshot";
 import { tabListKeyDown } from "../ui/Tabs";
 import { MENU_ITEM, useMenuButton } from "../ui/Menu";
@@ -65,7 +64,19 @@ const paneRef = (k: TabKind) => {
  * Where a screen renders: in tab view, into its tab's pane (once the pane exists); otherwise in place,
  * as the pop-up it has always been.
  */
-export function TabSlot({ kind, children }: { kind: TabKind; children: ReactNode }) {
+export function TabSlot({
+  kind,
+  releaseAfterMs,
+  children,
+}: {
+  kind: TabKind;
+  /**
+   * Let the screen go after this long behind other tabs (discuss item 23, owner 2026-10-23: the galaxy map kept ~60 MB
+   * behind them); it starts again, drawn afresh, when its tab comes back to the front.
+   */
+  releaseAfterMs?: number;
+  children: ReactNode;
+}) {
   // false with tab view off, else the pane (null until it exists): not the active tab, which every switch changes.
   const pane = useTabSelector((s) => (s.on ? tabStore.pane(kind) : false));
   /*
@@ -77,6 +88,11 @@ export function TabSlot({ kind, children }: { kind: TabKind; children: ReactNode
   const inFront = useTabSelector((s) => !s.on || s.active === kind);
   const [started, setStarted] = useState(inFront);
   if (inFront && !started) setStarted(true);
+  useEffect(() => {
+    if (!releaseAfterMs || inFront || !started) return;
+    const t = window.setTimeout(() => setStarted(false), releaseAfterMs);
+    return () => window.clearTimeout(t);
+  }, [releaseAfterMs, inFront, started]);
   if (pane === false) return <>{children}</>;
   if (!started) return null;
   return pane
@@ -223,7 +239,8 @@ function AddMenu() {
       </button>
       {open ? (
         <ul className="tab-strip__menu" {...menu.menuProps}>
-          {TAB_SCREENS.map((s) => (
+          {/* The system map belongs to Compare's main screen (App.tsx draws it): Colonize lists the rest. */}
+          {TAB_SCREENS.filter((s) => screenFitsHere(s.kind)).map((s) => (
             <li key={s.kind} role="none">
               <button
                 type="button"
@@ -254,7 +271,7 @@ export const CUSTOM_TITLE_BAR =
 function TitleBar() {
   return (
     <div className="tab-strip tab-strip--title">
-      <span className="tab-strip__title">ED Exo Compare</span>
+      <span className="tab-strip__title">EDEXO {HOME_TAB_LABEL}</span>
       <span className="tab-strip__drag" aria-hidden="true" />
     </div>
   );
@@ -288,7 +305,7 @@ export function TabStrip() {
         if (d && d.from !== WINDOW_KEY) tabStore.receive(d.kind, d.from);
       }}
     >
-      {IS_DETACHED ? null : <TabButton front="main" label="Main" active={st.active === "main"} index={-1} />}
+      {IS_DETACHED ? null : <TabButton front="main" label={HOME_TAB_LABEL} active={st.active === "main"} index={-1} />}
       {st.tabs.map((k, i) => (
         <TabButton key={k} front={k} label={labelOf(k)} active={st.active === k} index={i} />
       ))}

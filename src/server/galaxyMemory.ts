@@ -8,6 +8,8 @@
  * garbage collector can have it. The next request rebuilds what it needs (about half a second).
  */
 
+import { collectGarbageSoon } from "./collectGarbage.js";
+
 type Release = () => void;
 
 const releases = new Map<string, Release>();
@@ -15,10 +17,14 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let lastTouch = 0;
 let releasedCount = 0;
 
-/** Default five minutes; `EDEXO_GALAXY_IDLE_MS` overrides it (tests, and anyone who wants it held). */
+/**
+ * Default two minutes (owner, 2026-10-26: was five; the map held ~360 MB in the server for five minutes after it
+ * closed, and opening it again after the release costs a second or two). `EDEXO_GALAXY_IDLE_MS` overrides it (tests,
+ * and anyone who wants it held).
+ */
 function idleMs(): number {
   const v = Number(process.env.EDEXO_GALAXY_IDLE_MS);
-  return Number.isFinite(v) && v > 0 ? v : 5 * 60_000;
+  return Number.isFinite(v) && v > 0 ? v : 2 * 60_000;
 }
 
 export function registerGalaxyCache(name: string, release: Release): void {
@@ -39,9 +45,17 @@ export function releaseGalaxyMemory(): void {
   timer = null;
   for (const release of releases.values()) release();
   releasedCount++;
+  // Freed now, not when V8's idle reducer gets to it (collectGarbage.ts).
+  collectGarbageSoon();
 }
 
-/** For the perf log and tests. */
-export function galaxyMemoryState(): { lastTouch: number; releasedCount: number; caches: string[] } {
-  return { lastTouch, releasedCount, caches: [...releases.keys()] };
+/** For the perf log, Copy diagnostics and tests. `held`: touched and not let go since. */
+export function galaxyMemoryState(): {
+  lastTouch: number;
+  releasedCount: number;
+  caches: string[];
+  held: boolean;
+  idleMs: number;
+} {
+  return { lastTouch, releasedCount, caches: [...releases.keys()], held: timer !== null, idleMs: idleMs() };
 }

@@ -15,17 +15,18 @@ export default tseslint.config(
       "data/**",
       "docs/**",
       ".edexo-cache/**",
-      "public/launcher.html",
       // Local screenshots, backups and one-off probes; never shipped, never imported.
       "build-artifacts/**",
       // The local scratch folder (excluded from git in .git/info/exclude): it failed `npm run lint` on this
       // machine with 23 errors that are nobody's code (code review A19).
       "tmp-t/**",
+      // The Tauri test shell (docs/plan-25102026-tauri-1.4.0.md): its own Rust project; the shim is checked by hand.
+      "tauri/**",
     ],
   },
   js.configs.recommended,
-  // ESLint 10 adds this to recommended. Preserve upstream's ESLint 9 rule set.
-  { rules: { "no-useless-assignment": "off" } },
+  // ESLint 10 adds these to recommended. Preserve upstream's ESLint 9 rule set.
+  { rules: { "no-useless-assignment": "off", "preserve-caught-error": "off" } },
   ...tseslint.configs.recommended,
   {
     files: ["src/**/*.{ts,tsx}"],
@@ -98,6 +99,30 @@ export default tseslint.config(
     },
   },
   {
+    // The Inara helper Chrome extension (MV3, moved from EDEXO-Colonize at 1.3.0): browser + extension globals.
+    files: ["chrome-extension/**/*.js"],
+    languageOptions: {
+      sourceType: "script",
+      globals: { ...globals.browser, ...globals.webextensions },
+    },
+  },
+  {
+    // The launcher's modules (src/client/launcher, plain JavaScript built by Vite since 1.3.1): browser globals, the
+    // same leniency as the plain scripts in public/ they came from.
+    files: ["src/client/launcher/**/*.js"],
+    languageOptions: {
+      sourceType: "module",
+      globals: { ...globals.browser },
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "none" },
+      ],
+      "no-empty": ["warn", { allowEmptyCatch: true }],
+    },
+  },
+  {
     // The HUD overlays' plain browser script (no bundler): browser globals, plus the `module` check
     // it does at the bottom so tests can require it. Same leniency as src for throwaway catches.
     files: ["public/**/*.js"],
@@ -113,5 +138,23 @@ export default tseslint.config(
       "no-empty": ["warn", { allowEmptyCatch: true }],
     },
   },
+  {
+    /*
+      File size cap (item 27, after the 1.3.1 splits): 1,200 code lines, blank lines and comments not counted. A warning,
+      so it fails `npm run lint`. The files still over it have their own cap, their size when the cap came in rounded up
+      to the next hundred: they may not grow past it, and a split brings the line down (lower it when one lands). Tests
+      and generated tables are not capped.
+    */
+    files: ["src/**/*.{ts,tsx,js}", "electron/**/*.cjs", "public/**/*.js", "scripts/**/*.{mjs,js,ts}"],
+    ignores: ["**/*.gen.ts"],
+    rules: { "max-lines": ["warn", { max: 1200, skipBlankLines: true, skipComments: true }] },
+  },
+  ...Object.entries({
+    "src/client/galaxy3d/GalaxyEngine.ts": 1900,
+    "src/client/GalaxyMap3D.tsx": 1600,
+  }).map(([file, max]) => ({
+    files: [file],
+    rules: { "max-lines": ["warn", { max, skipBlankLines: true, skipComments: true }] },
+  })),
   prettier,
 );

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppSnapshot, BodyComputed } from "../src/shared/types.js";
-import { findMatchDetail, parseWsChannel, slimBodyForHud, slimSnapshotForChannel } from "../src/server/wsChannels.js";
+import { SHELL_OMIT, findMatchDetail, parseWsChannel, slimBodyForHud, slimSnapshotForChannel } from "../src/server/wsChannels.js";
 
 function body(key: string): BodyComputed {
   return {
@@ -56,6 +56,7 @@ function snap(): AppSnapshot {
     speciesCount: 108,
     canonnUpload: { enabled: false },
     edsmAutoFetch: { enabled: false },
+    colonizeHud: { sites: [], moreSites: 0, deliver: null, next: null, hold: { used: 0, capacity: null } },
   } as unknown as AppSnapshot;
 }
 
@@ -64,6 +65,7 @@ describe("socket channels: slim snapshots per client kind", () => {
     expect(parseWsChannel("hud")).toBe("hud");
     expect(parseWsChannel("launcher")).toBe("launcher");
     expect(parseWsChannel("app")).toBe("app");
+    expect(parseWsChannel("shell")).toBe("shell");
     expect(parseWsChannel("nope")).toBeNull();
     expect(parseWsChannel(undefined)).toBeNull();
   });
@@ -116,10 +118,22 @@ describe("socket channels: slim snapshots per client kind", () => {
     expect(v()).not.toBe(fresh);
   });
 
+  it("gives the Colonize window's shell everything but the big fields only Compare's own screen uses (item 22)", () => {
+    const full = { ...snap(), footScannedEntries: [{}], journalSystems: [{}], organicPendingLines: [{}], systemMap: {} } as unknown as AppSnapshot;
+    const out = slimSnapshotForChannel(full, "shell") as unknown as Record<string, unknown>;
+    const app = slimSnapshotForChannel(full, "app") as unknown as Record<string, unknown>;
+    for (const k of SHELL_OMIT) expect(out[k], k).toBeUndefined();
+    // Everything else is the app's, so the shared header and the screens in its tabs read what they read in Compare.
+    expect(Object.keys(out).sort()).toEqual(Object.keys(app).filter((k) => !(SHELL_OMIT as readonly string[]).includes(k)).sort());
+    expect(out.commanderName).toBe(app.commanderName);
+  });
+
   it("gives the launcher its five fields and nothing heavy", () => {
     const out = slimSnapshotForChannel(snap(), "launcher") as unknown as Record<string, unknown>;
     expect(Object.keys(out).sort()).toEqual(
       [
+        // The feeder's Spansh import in the launcher's Exomastery menu follows it (1.2.20).
+        "feederEnabled",
         "journalBoot",
         "journalDir",
         "journalDirConfiguredOk",
@@ -136,6 +150,7 @@ describe("socket channels: slim snapshots per client kind", () => {
     const out = slimSnapshotForChannel(snap(), "hud") as unknown as AppSnapshot;
     expect(out.jumpTarget?.starSystem).toBe("A");
     expect(out.currentRegion?.name).toBe("Inner Orion Spur");
+    expect(out.colonizeHud).toEqual({ sites: [], moreSites: 0, deliver: null, next: null, hold: { used: 0, capacity: null } });
     expect((out as unknown as Record<string, unknown>).journalSystems).toBeUndefined();
     expect((out as unknown as Record<string, unknown>).speciesCount).toBeUndefined();
     expect(out.bodies).toHaveLength(2);

@@ -381,20 +381,25 @@ describe("hiding and showing (the hotkey)", () => {
     huds.toggleVisibility(true);
   });
 
-  it("with Elite closed and the HUD shown by hand, another window in front does not hide it (owner, 2026-10-02)", async () => {
+  it("with Elite closed and the HUD shown by hand, it still shows only while the app or the game is in front (owner, 2026-10-21)", async () => {
     const huds = make();
     await huds.request("/distance-overlay.html", 404, 330, null, "open");
     const win = live()[0]!;
     huds.setGameAway(true);
     huds.toggleVisibility(false);
     expect(win.visible).toBe(true);
-    huds.setFocusAway(true);
-    expect(win.visible).toBe(true);
-    // The game starts: now another window in front does hide it.
-    huds.setGameAway(false);
-    huds.setFocusAway(false);
+    // Another program in front (Discord, a browser, another game): hidden.
     huds.setFocusAway(true);
     expect(win.visible).toBe(false);
+    // The launcher or an app window in front again: back.
+    huds.setFocusAway(false);
+    expect(win.visible).toBe(true);
+    // The same once the game runs.
+    huds.setGameAway(false);
+    huds.setFocusAway(true);
+    expect(win.visible).toBe(false);
+    huds.setFocusAway(false);
+    expect(win.visible).toBe(true);
   });
 
   it("shows on the hotkey while the game is away (and forgets the away state)", async () => {
@@ -619,6 +624,16 @@ describe("free move (owner, 2026-10-02: the HUD anywhere, on any screen)", () =>
     huds.setLayout({ freeOn: false });
     expect(huds.isMoving()).toBe(false);
     expect(a!.bounds).toMatchObject({ x: 1920 - 14 - 404, y: 14 });
+  });
+
+  it("free move with no spot in the file keeps the corner, and saves no made-up spot (owner, 2026-10-26)", async () => {
+    // A layout file the Tauri test shell rewrote: free move on, its own `freePx`, no `free`.
+    writeFileSync(layoutFile, JSON.stringify({ corner: "tr", order: [], freeOn: true, freePx: { x: 2996, y: 534 } }));
+    const huds = make();
+    huds.loadLayout();
+    const [a] = await twoHuds(huds);
+    expect(a!.bounds).toMatchObject({ x: 1920 - 14 - 404, y: 14 });
+    expect(JSON.parse(readFileSync(layoutFile, "utf8")).free ?? null).toBeNull();
   });
 
   it("comes back from the layout file at the saved spot", async () => {

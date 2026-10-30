@@ -7,6 +7,7 @@ module.exports = {
   files: ["electron/main.mac.cjs", "electron/preload.mac.cjs", "package.json"],
   extraResources: [
     { from: "build/app.cjs", to: "edexo/app.cjs" },
+    { from: "build/finder-worker.cjs", to: "edexo/finder-worker.cjs" },
     { from: "dist/mac-staging/web", to: "web" },
     { from: "dist/mac-staging/data", to: "data" },
     { from: "dist/mac-staging/sql-wasm", to: "sql-wasm" },

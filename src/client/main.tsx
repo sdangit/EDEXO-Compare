@@ -2,12 +2,24 @@ import { HexSignals } from "./HexSignals";
 import { createRoot } from "react-dom/client";
 import { lazy, Suspense, useEffect, useState } from "react";
 import "./styles.css";
-import { App } from "./App";
 import { UiFeedbackProvider } from "./ui/feedback";
 import { LoadingNote } from "./ui/Loading";
 import { applyAppTheme, followAppThemeChanges } from "./appTheme";
+import { applyMotion } from "./motion";
+import { applyUiFont } from "./uiFont";
 import { applyStreamerMode, STREAMER_MODE } from "./streamerMode";
 import { loadUiMirror, startUiMirrorSource, watchUiMirror } from "./uiMirror";
+
+const screen = new URLSearchParams(window.location.search).get("screen");
+
+/*
+  Compare's App is loaded like the other screens (audit 2026-10-22). Imported statically, it made the Colonize,
+  galaxy, map and triage windows fetch, parse and run its whole chunk (BodyPane, SpeciesCard and the rest) for a
+  screen they never draw. Asked for here, before the streamer view's await below, so Compare's own window starts the
+  download first thing; the lazy() takes that same request.
+*/
+const appImport = screen ? null : import("./App");
+const App = lazy(() => (appImport ?? import("./App")).then((m) => ({ default: m.App })));
 
 // The streamer view takes the streamer's own settings first (uiMirror.ts), so even its first paint
 // is what the streamer sees.
@@ -16,6 +28,8 @@ const mirrorRev = STREAMER_MODE ? await loadUiMirror() : -1;
 // another window of the app changes it.
 applyAppTheme();
 followAppThemeChanges();
+applyMotion();
+applyUiFont();
 // `?view=stream`: the same app, as a picture for a stream (streamerMode.ts).
 applyStreamerMode();
 
@@ -34,11 +48,13 @@ const GalaxyMapScreen = lazy(() => import("./GalaxyMapScreen").then((m) => ({ de
  * carries three.js, so the main app never downloads it.
  */
 const GalaxyMap3D = lazy(() => import("./GalaxyMap3D").then((m) => ({ default: m.GalaxyMap3D })));
+/** `?screen=colonize`: the Colonize window (1.3.0, docs/plan-colonize-integration.md). Lazy like the others. */
+const ColonizeScreen = lazy(() => import("./colonize/ColonizeScreen").then((m) => ({ default: m.ColonizeScreen })));
 
-const screen = new URLSearchParams(window.location.search).get("screen");
 const wantsSecondScreen = screen === "triage";
 const wantsMap = screen === "map";
 const wants3d = screen === "galaxy";
+const wantsColonize = screen === "colonize";
 
 /** The streamer view, drawn afresh whenever the streamer changes a setting in the app. */
 function StreamerApp() {
@@ -55,7 +71,11 @@ function StreamerApp() {
 if (!STREAMER_MODE && !screen) startUiMirrorSource();
 
 createRoot(document.getElementById("root")!).render(
-  wants3d ? (
+  wantsColonize ? (
+    <Suspense fallback={<LoadingNote className="screen-loading" />}>
+      <ColonizeScreen />
+    </Suspense>
+  ) : wants3d ? (
     <Suspense fallback={<LoadingNote className="screen-loading" />}>
       <GalaxyMap3D />
     </Suspense>
@@ -70,7 +90,8 @@ createRoot(document.getElementById("root")!).render(
   ) : (
     <UiFeedbackProvider>
       <HexSignals />
-      {STREAMER_MODE ? <StreamerApp /> : <App />}
+      {/* The chunk was asked for at the top: for the moment it takes, the backdrop alone. */}
+      <Suspense fallback={null}>{STREAMER_MODE ? <StreamerApp /> : <App />}</Suspense>
     </UiFeedbackProvider>
   ),
 );

@@ -102,7 +102,9 @@ export function writeBackupSettings(appDataDir: string, s: BackupSettings): void
  * in — a file added in a later version is backed up until someone decides it is a cache.
  */
 export function appDataExclusion(rel: string, s: Pick<BackupSettings, "includeKeys" | "includeBioBodies">): string | null {
-  const top = rel.split("/")[0]!;
+  // A commander's folder (1.3.1) holds what the app data folder held before: judged by the same names.
+  const inner = rel.replace(/^commanders\/[^/]+\//, "");
+  const top = inner.split("/")[0]!;
   const base = path.posix.basename(rel);
   if (top === ".edexo-cache") return "cache (rebuilt from the journals)";
   if (top === "diag") return "diagnostics";
@@ -121,7 +123,13 @@ export function appDataExclusion(rel: string, s: Pick<BackupSettings, "includeKe
   ) {
     return "download or cache (fetched again)";
   }
+  // Colonize (1.3.0): its sites, saved settings, seller index and system positions go in (positions since R5: up to
+  // ~1 MB, and each one is a look-up saved); the last Spansh answer (up to ~10 MB, kept for debugging) is fetched again.
+  if (top === "colonize" && base === "spansh-debug-last.json") return "cache (fetched again)";
   if ((base === "edexo-compare-edsm-key.json" || base === "edexo-compare-lan-key.txt") && !s.includeKeys) return "key (off by default)";
+  // Saved browser passwords are encrypted with this Windows account's key, which lives outside the app data
+  // folder: a restored copy could not be read, and a zip should not list the sites with saved logins.
+  if (rel === "browser/passwords.json") return "saved passwords (readable on this PC only)";
   // Where the windows were belongs to this PC's screens, not to the data.
   if (base === "window-state.json" || base === "app-window.json") return "window positions (this PC only)";
   if (/\.(bak|tmp|partial|rar|zip|7z)$/i.test(base) || /\.bak-/i.test(base)) return "old copy or archive";

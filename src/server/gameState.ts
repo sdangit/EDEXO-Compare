@@ -1,12 +1,8 @@
-import { reportsVolcanism } from "../shared/volcanismText.js";
 import type {
   RemoteSystemRecord,
   BodyExoState,
   ExplorationScanRecord,
   JournalLine,
-  PlanetScan,
-  GenusHint,
-  OrganicGenusLock,
   SpeciesEntry,
   AppSnapshot,
   HudPrefsDTO,
@@ -29,32 +25,13 @@ import {
   type ObservationSource,
   type ObservedFlag,
 } from "../shared/observedFlag.js";
-import {
-  displayLabelFromOrganicLine,
-  nextOrganicProgressCount,
-  speciesKeyFromOrganicJournal,
-  speciesKeyFromSellBio,
-  speciesEntryMatchesOrganicLabel,
-  normOrganicToken,
-} from "./organicTracking.js";
-import { barycentreSyntheticBodyId, moonPairBarycentreId, planetRingCount } from "./orbitUtils.js";
-import { scanRings } from "../shared/bodyFeatures.js";
-import { isK10CodexName } from "../shared/greenGasGiant.js";
-import { isNspCodexName } from "../shared/nspOutlook.js";
+import { speciesKeyFromOrganicJournal, speciesEntryMatchesOrganicLabel, normOrganicToken } from "./organicTracking.js";
 import { getProjectRoot } from "./paths.js";
-import {
-  journalLineCarriesPlanetMetrics,
-  planetScanFromExplorationRecord,
-  recordFootScanned,
-} from "./footScannedCatalog.js";
+import { sanitizeHudPrefs } from "./hudPrefsSanitize.js";
 import { explorationRecordIsBeltClusterLike } from "./explorationStellar.js";
 import { greatCircleDistanceMeters, type FootTravelFix, type StatusDestination } from "./footTravelStatus.js";
 import type { ExoOrganicTrackerInternal } from "./exoOrganicTracker.js";
-import {
-  wipeOrganicSampleSession,
-  clearPersistedOrganicSampleSession,
-  normStatusBodyName,
-} from "./organicSampleSessionFile.js";
+import { clearPersistedOrganicSampleSession, normStatusBodyName } from "./organicSampleSessionFile.js";
 import {
   loadSurfaceMarks,
   scheduleSaveSurfaceMarks,
@@ -65,30 +42,25 @@ import { finalisePredictionsForSystem } from "./predictionAuditLog.js";
 import { remoteBodyStates } from "./remoteSystems.js";
 import type { NavRouteWaypointDTO } from "./navRouteFuel.js";
 import { regionJoinKey } from "../shared/regionMap.js";
-import {
-  codexEntryKey,
-  codexOrganicLockFromLine,
-  codexRegionKeysFromLine,
-  codexMapKeyFromLine,
-  codexSpeciesFromLine,
-} from "../shared/codexLog.js";
-import { GEOLOGY_KEY, isLegacyPlantKey } from "../shared/achievements.js";
+import { codexEntryKey } from "../shared/codexLog.js";
+import { isLegacyPlantKey } from "../shared/achievements.js";
 import { regionForSystem } from "./regionMapData.js";
 import { parseBoxel } from "../shared/boxel.js";
-import { emptyFsdFuel, fsdFuelCargo, fsdFuelJump, fsdFuelLoadout, type FsdFuelState } from "../shared/fsdFuel.js";
+import { emptyFsdFuel, fsdFuelCargo, fsdFuelJump, type FsdFuelState } from "../shared/fsdFuel.js";
+import { fsdWearJump, fsdWearRepair, newFsdWear, type FsdWearState } from "../shared/fsdWear.js";
+import { newOwnAssets, ownAssetsLine, type OwnAssetsState } from "../shared/ownAssets.js";
+import { JUMPONIUM_EVENTS, jumponiumLine, newJumponium, type JumponiumState } from "../shared/jumponium.js";
 import {
-  fsdWearJump,
-  fsdWearLoadout,
-  fsdWearRepair,
-  hydrateFsdWear,
-  newFsdWear,
-  type FsdWearState,
-} from "../shared/fsdWear.js";
-import { hydrateOwnAssets, newOwnAssets, ownAssetsLine, type OwnAssetsState } from "../shared/ownAssets.js";
-import { JUMPONIUM_EVENTS, hydrateJumponium, jumponiumLine, newJumponium, type JumponiumState } from "../shared/jumponium.js";
-import { emptyJumpRange, jumpRangeJump, jumpRangeLoadout, type JumpRangeState } from "../shared/jumpRange.js";
+  newShipDamage,
+  shipDamageAfmu,
+  shipDamageForget,
+  shipDamageHull,
+  shipDamageRepair,
+  shipDamageVehicle,
+  type ShipDamageState,
+} from "../shared/shipDamage.js";
+import { emptyJumpRange, jumpRangeJump, type JumpRangeState } from "../shared/jumpRange.js";
 import { createGreenCodexMatcher } from "../shared/greenCodexMatch.js";
-import { JOURNAL_MERGE_CACHE_FORMAT } from "./journalMergePayload.js";
 import { bodyKey, systemAddressOfBodyKey } from "../shared/bodyKey.js";
 import type {
   PendingOrganicSample,
@@ -103,347 +75,20 @@ export type {
   SoldTally,
   JournalMergeCachePayload,
 } from "./journalMergePayload.js";
+import { signsOfLife } from "./gameStateHelpers.js";
+// The event handlers, data sales, scan merging (item 30, 1.3.1) and the cache payload (1.3.2) are functions over the
+// store in these modules; the members they read are not `private` for that reason.
+import * as journalEvents from "./gameStateEvents.js";
+import * as explorationSales from "./gameStateSales.js";
+import * as explorationMerge from "./gameStateExploration.js";
+import * as journalPayload from "./gameStatePayload.js";
+// tests/genusProgress.test.ts imports upsertFootOrganicLock from here.
+export { signsOfLife, upsertFootOrganicLock } from "./gameStateHelpers.js";
 
 /** Recent journal lines (chronological) for foot-catalog naming: find body label on lines *before* each `ScanOrganic` Analyse. */
-const FOOT_JOURNAL_BUFFER_MAX = 600;
 
-function journalLineNumericBodyId(line: JournalLine): number | undefined {
-  if (typeof line.BodyID === "number" && Number.isFinite(line.BodyID)) return line.BodyID;
-  if (typeof line.Body === "number" && Number.isFinite(line.Body)) return line.Body;
-  return undefined;
-}
-
-function journalLineMatchesBodyIds(line: JournalLine, systemAddress: number, bodyId: number): boolean {
-  if (typeof line.SystemAddress !== "number" || line.SystemAddress !== systemAddress) return false;
-  return journalLineNumericBodyId(line) === bodyId;
-}
-
-function journalLineBodyDisplayName(line: JournalLine): string | null {
-  const b = line.Body;
-  if (typeof b === "string" && b.trim()) return b.trim();
-  const bn = line.BodyName;
-  if (typeof bn === "string" && bn.trim()) return bn.trim();
-  return null;
-}
-
-/** `Body 7` — what a line that carries only a `BodyID` (ScanOrganic, CodexEntry) is named until something better is known. */
-const PLACEHOLDER_BODY_NAME = /^Body \d+$/;
-
-function ensureBody(
-  map: Map<string, BodyExoState>,
-  systemAddress: number,
-  bodyId: number,
-  bodyName: string,
-  starSystem: string,
-  ts: string,
-): BodyExoState {
-  const key = bodyKey(systemAddress, bodyId);
-  let b = map.get(key);
-  if (!b) {
-    b = {
-      key,
-      bodyName,
-      bodyId,
-      systemAddress,
-      starSystem,
-      biologicalSignals: null,
-      genusHints: null,
-      dssComplete: false,
-      scan: null,
-      signalHints: null,
-      organicGenusLocks: [],
-      confirmedVariants: [],
-      updatedAt: ts,
-    };
-    map.set(key, b);
-  } else {
-    /*
-      A placeholder never replaces a real name. ScanOrganic and CodexEntry carry no body name, and
-      they come after the Scan that named the body — landing follows scanning — so "Body 2" used to
-      win on 282 of his bio bodies (Tegnae HT-Z d13-1 1 a among them).
-    */
-    if (bodyName && !(PLACEHOLDER_BODY_NAME.test(bodyName) && !PLACEHOLDER_BODY_NAME.test(b.bodyName))) {
-      b.bodyName = bodyName;
-    }
-    b.starSystem = starSystem;
-    b.updatedAt = ts;
-  }
-  return b;
-}
-
-function asSignals(raw: unknown): { Type?: string; Type_Localised?: string; Count?: number }[] {
-  if (!Array.isArray(raw)) return [];
-  return raw as { Type?: string; Type_Localised?: string; Count?: number }[];
-}
-
-/** The `Geological` signal's count, or null when the line has none. */
-function geologicalCount(signals: ReturnType<typeof asSignals>): number | null {
-  for (const s of signals) {
-    const lo = `${s.Type ?? ""} ${s.Type_Localised ?? ""}`.toLowerCase();
-    if (lo.includes("geological")) return typeof s.Count === "number" ? s.Count : null;
-  }
-  return null;
-}
-
-function biologicalCount(signals: ReturnType<typeof asSignals>): number | null {
-  for (const s of signals) {
-    const loc = (s.Type_Localised ?? "").trim();
-    const ty = (s.Type ?? "").trim();
-    const locLo = loc.toLowerCase();
-    const tyLo = ty.toLowerCase();
-    if (locLo === "biological" || tyLo.includes("biological") || tyLo.includes("signaltype_biological")) {
-      return typeof s.Count === "number" ? s.Count : null;
-    }
-  }
-  return null;
-}
-
-function mergeScannerSignalHints(
-  existing: string[] | null | undefined,
-  lineSignals: unknown,
-): string[] | null {
-  const raw = asSignals(lineSignals);
-  const set = new Set<string>();
-  for (const x of existing ?? []) {
-    const t = x.trim();
-    if (t) set.add(t);
-  }
-  for (const s of raw) {
-    const ty = (s.Type ?? "").trim();
-    const loc = (s.Type_Localised ?? "").trim();
-    if (ty) set.add(ty);
-    if (loc) set.add(loc);
-  }
-  return set.size ? [...set] : (existing ?? null);
-}
-
-function asGenuses(raw: unknown): GenusHint[] | null {
-  if (!Array.isArray(raw)) return null;
-  const out: GenusHint[] = [];
-  for (const g of raw) {
-    const o = g as Record<string, unknown>;
-    const glRaw = firstString(o, ["Genus_Localised", "genus_localised", "GenusLocalised"]);
-    const giRaw = firstString(o, ["Genus", "genus"]);
-    if (!glRaw && !giRaw) continue;
-    out.push({ Genus_Localised: glRaw || giRaw, Genus: giRaw || glRaw });
-  }
-  return out.length ? out : null;
-}
-
-function firstString(o: Record<string, unknown>, keys: string[]): string {
-  for (const k of keys) {
-    const v = o[k];
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  return "";
-}
-
-function mergeGenusHints(existing: GenusHint[] | null, incoming: GenusHint[] | null): GenusHint[] | null {
-  if (!incoming?.length) return existing?.length ? existing : null;
-  if (!existing?.length) return incoming;
-  const seen = new Set<string>();
-  const out: GenusHint[] = [];
-  for (const h of [...existing, ...incoming]) {
-    const k = `${h.Genus}\0${h.Genus_Localised}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(h);
-  }
-  return out.length ? out : null;
-}
-
-function strEqLoose(a: string | undefined, b: string | undefined): boolean {
-  return (a ?? "").trim() === (b ?? "").trim();
-}
-
-function normVolc(s: string | undefined): string {
-  return reportsVolcanism(s) ? (s ?? "").trim().toLowerCase() : "";
-}
-
-/**
- * Moons of the same planet often share exobiology; used to mirror FSS / DSS / scans / on-foot data to siblings.
- * Terraform, atmosphere type, and journal temp/pressure are allowed to differ moderately or be one-sided missing.
- */
-function explorationRecordsSimilarForSharedExo(a: ExplorationScanRecord, b: ExplorationScanRecord): boolean {
-  if (!strEqLoose(a.planetClass, b.planetClass)) return false;
-
-  const tA = (a.terraformState ?? "").trim();
-  const tB = (b.terraformState ?? "").trim();
-  if (tA && tB && tA !== tB) return false;
-
-  const atA = (a.atmosphereType ?? "").trim();
-  const atB = (b.atmosphereType ?? "").trim();
-  if (atA && atB && atA !== atB) return false;
-
-  const atmA = (a.atmosphere ?? "").trim();
-  const atmB = (b.atmosphere ?? "").trim();
-  if (atmA && atmB && atmA !== atmB) return false;
-
-  if (a.landable !== undefined && b.landable !== undefined && a.landable !== b.landable) return false;
-
-  if (normVolc(a.volcanism) !== normVolc(b.volcanism)) return false;
-
-  if (a.surfaceGravity != null && b.surfaceGravity != null) {
-    const d = Math.abs(a.surfaceGravity - b.surfaceGravity);
-    if (d > Math.max(0.35, Math.abs(a.surfaceGravity) * 0.06)) return false;
-  }
-  if (a.surfaceTemperature != null && b.surfaceTemperature != null) {
-    const d = Math.abs(a.surfaceTemperature - b.surfaceTemperature);
-    if (d > 120) return false;
-  }
-  if (a.surfacePressure != null && b.surfacePressure != null) {
-    const ma = Math.max(Math.abs(a.surfacePressure), Math.abs(b.surfacePressure), 0.01);
-    const d = Math.abs(a.surfacePressure - b.surfacePressure);
-    if (d > Math.max(0.35, ma * 0.25)) return false;
-  }
-
-  return true;
-}
-
-/**
- * Record one `ScanOrganic` on a body's locks: one lock per species, carrying how far it got.
- *
- * Every `ScanOrganic` used to push its own lock, so a sampled species sat on the body four times
- * (Log, Sample, Sample, Analyse), and a comp-scanned one that was then walked up to showed twice —
- * once from the codex line, with no symbols, and once from the foot scan. The guild's report:
- * "Stratum Limaxus - Green, Bacterium Aurasus - Teal, Stratum Limaxus - Green". A foot scan now
- * updates its species' lock, and replaces a comp-scan or sibling-moon lock for the same species.
- *
- * `Log` opens a run at 1 (re-logging an abandoned plant starts it again); each `Sample` adds one, up
- * to 3; `Analyse` completes it. Exported for its test.
- */
-const NO_SECURITY = new Set(["", "$GAlAXY_MAP_INFO_state_anarchy;", "$GALAXY_MAP_INFO_state_anarchy;"]);
-const NO_GOVERNMENT = new Set(["", "$government_None;", "$government_Anarchy;"]);
-
-/**
- * The owner's signs of life on an arrival line (FSDJump / Location / CarrierJump), in his order:
- * population, then security and government, then a controlling faction. `null` when the line shows
- * none; `undefined` when it does not carry `Population` at all and so says nothing either way.
- */
-export function signsOfLife(e: Record<string, unknown>): SystemLife | null | undefined {
-  const pop = e.Population;
-  if (typeof pop !== "number" || !Number.isFinite(pop)) return undefined;
-  if (pop > 0) return "populated";
-  const security = typeof e.SystemSecurity === "string" ? e.SystemSecurity : "";
-  const government = typeof e.SystemGovernment === "string" ? e.SystemGovernment : "";
-  const controller = e.SystemFaction != null && typeof e.SystemFaction === "object";
-  const factions = Array.isArray(e.Factions) ? e.Factions.length : 0;
-  if (!NO_SECURITY.has(security) || !NO_GOVERNMENT.has(government)) return "facility";
-  if (controller) return factions === 0 ? "claimed" : "facility";
-  return null;
-}
-
-export function upsertFootOrganicLock(
-  locks: OrganicGenusLock[],
-  lock: OrganicGenusLock,
-  scanType: string,
-  at?: string,
-): void {
-  const sp = lock.speciesLocalised.trim().toLowerCase();
-  const gk = organicLockGenusKey(lock);
-  const idx = locks.findIndex((l) =>
-    sp ? l.speciesLocalised.trim().toLowerCase() === sp : organicLockGenusKey(l) === gk,
-  );
-  const prev = idx >= 0 ? locks[idx]! : null;
-  const prevFoot = prev && prev.source !== "codex" && !prev.fromSibling ? prev : null;
-  const analysed = prevFoot?.analysed === true || scanType === "Analyse";
-  const prevSamples = prevFoot?.samples ?? 0;
-  const samples = analysed
-    ? 3
-    : scanType === "Log"
-      ? 1
-      : scanType === "Sample"
-        ? Math.min(3, prevSamples + 1)
-        : Math.max(1, prevSamples);
-  const next: OrganicGenusLock = {
-    ...lock,
-    variantLocalised: lock.variantLocalised || prevFoot?.variantLocalised || "",
-    samples,
-    ...(analysed ? { analysed: true } : {}),
-    ...(at ? { at } : prevFoot?.at ? { at: prevFoot.at } : {}),
-  };
-  if (idx >= 0) locks[idx] = next;
-  else locks.push(next);
-}
-
-function organicLockGenusKey(lock: OrganicGenusLock): string {
-  const s = (lock.genusSymbol ?? "").trim().toLowerCase();
-  const l = (lock.genusLocalised ?? "").trim().toLowerCase();
-  return `${s}\0${l}`;
-}
-
-/**
- * The moon that shares a barycentre with `sourceBodyId` (excludes self), using merged `Scan` parents
- * and/or the orbit map. Until 2026-10-04 every moon of the same planet counted; the owner (overnight
- * Q13): only twins on a barycentre share their biology. Spansh, DSS'd pairs: moons of one planet
- * name the same genera on 39 % of 534,018 pairs (83 % at the same signal count); twins on one
- * barycentre on 95 % at the same count, and at different counts one list holds the other.
- */
+/** orbitParentsInSystem's answer for a system with no moons on a barycentre, shared. */
 const EMPTY_ORBIT_PARENTS: ReadonlyMap<number, number> = new Map();
-
-function siblingMoonBodyIdsUnified(
-  store: GameStateStore,
-  systemAddress: number,
-  sourceBodyId: number,
-): number[] {
-  const sk = bodyKey(systemAddress, sourceBodyId);
-  const sourceRec = store.explorationScans.get(sk);
-  const parentFromRec = sourceRec ? moonPairBarycentreId(sourceRec.parents) : null;
-  const parentFromOrbit = store.orbitParentPlanetByBody.get(sk);
-  const parent = parentFromRec ?? parentFromOrbit ?? null;
-  if (parent == null) return [];
-
-  const out = new Set<number>();
-  for (const rec of store.liveScansInSystem(systemAddress)) {
-    if (moonPairBarycentreId(rec.parents) === parent) out.add(rec.bodyId);
-  }
-  for (const [bid, p] of store.orbitParentsInSystem(systemAddress)) {
-    if (p === parent) out.add(bid);
-  }
-  out.delete(sourceBodyId);
-  return [...out];
-}
-
-function buildSiblingPlanetScan(
-  store: GameStateStore,
-  source: PlanetScan,
-  systemAddress: number,
-  siblingBodyId: number,
-  siblingRec: ExplorationScanRecord | null,
-): PlanetScan {
-  const bk = bodyKey(systemAddress, siblingBodyId);
-  const wfKnown = store.bodyDetailedFootfallState.has(bk);
-  const wf = wfKnown ? store.bodyDetailedFootfallState.get(bk) : undefined;
-  const name =
-    siblingRec?.bodyName?.trim() || store.bodies.get(bk)?.bodyName?.trim() || `Body ${siblingBodyId}`;
-  const star = siblingRec?.starSystem?.trim() || source.StarSystem;
-  return {
-    BodyName: name,
-    BodyID: siblingBodyId,
-    StarSystem: star,
-    SystemAddress: systemAddress,
-    PlanetClass: siblingRec?.planetClass ?? source.PlanetClass,
-    Atmosphere: siblingRec?.atmosphere ?? source.Atmosphere,
-    AtmosphereType: siblingRec?.atmosphereType ?? source.AtmosphereType,
-    SurfaceGravity: siblingRec?.surfaceGravity ?? source.SurfaceGravity,
-    SurfaceTemperature: siblingRec?.surfaceTemperature ?? source.SurfaceTemperature,
-    SurfacePressure: siblingRec?.surfacePressure ?? source.SurfacePressure,
-    SemiMajorAxis: siblingRec?.semiMajorAxis ?? source.SemiMajorAxis,
-    TidalLock: siblingRec?.tidalLock ?? source.TidalLock,
-    Volcanism: siblingRec?.volcanism ?? source.Volcanism,
-    Landable: siblingRec?.landable ?? source.Landable,
-    TerraformState: siblingRec?.terraformState ?? source.TerraformState,
-    WasFootfalled: wf !== undefined ? wf : undefined,
-    materials: Array.isArray(siblingRec?.materials)
-      ? (siblingRec!.materials as PlanetScan["materials"])
-      : source.materials,
-    atmosphereComposition: Array.isArray(siblingRec?.atmosphereComposition)
-      ? (siblingRec!.atmosphereComposition as PlanetScan["atmosphereComposition"])
-      : source.atmosphereComposition,
-    composition: (siblingRec?.composition as PlanetScan["composition"]) ?? source.composition,
-    radius: siblingRec?.radius ?? source.radius,
-  };
-}
 
 export class GameStateStore {
   /** From journal `LoadGame.Commander` (latest session in merged logs). */
@@ -489,7 +134,7 @@ export class GameStateStore {
   }
 
   /** Lazily built from {@link visitedSystems}; invalidated whenever that map changes. */
-  private visitedSystemNames: Set<string> | null = null;
+  visitedSystemNames: Set<string> | null = null;
   readonly bodies = new Map<string, BodyExoState>();
   /**
    * Merged `Scan` rows for bodies in-system (basic + detailed) for system map / exploration estimates.
@@ -531,10 +176,6 @@ export class GameStateStore {
    */
   explorationScansRevision = 0;
   /**
-   * EDSM fallback rows for system map only (no journal `Scan` in merged logs for that system).
-   * Cleared per body when a real journal {@link mergeExplorationScan} arrives.
-   */
-  /**
    * What cartographic data has actually paid, per system.
    *
    * The journal reports a sale, not a price list: `MultiSellExplorationData` carries one
@@ -558,6 +199,10 @@ export class GameStateStore {
    */
   readonly soldOrganicBySystem = new Map<number, SoldTally>();
 
+  /**
+   * EDSM fallback rows for system map only (no journal `Scan` in merged logs for that system).
+   * Cleared per body when a real journal {@link mergeExplorationScan} arrives.
+   */
   readonly edsmExplorationByKey = new Map<string, ExplorationScanRecord>();
 
   /**
@@ -710,7 +355,7 @@ export class GameStateStore {
   }
 
   /** Read the signs of life off an arrival line; mark every known body walked if the system has any. */
-  private notePopulation(line: JournalLine, ts: string): void {
+  notePopulation(line: JournalLine, ts: string): void {
     const e = line as Record<string, unknown>;
     const addr = e.SystemAddress;
     if (typeof addr !== "number") return;
@@ -757,14 +402,14 @@ export class GameStateStore {
    */
   readonly achievementDone = new Map<string, string>();
   /** Region of each system from its `CodexEntry` lines (the only journal event naming one). */
-  private readonly codexRegionBySystem = new Map<number, string>();
+  readonly codexRegionBySystem = new Map<number, string>();
   /**
    * Bodies the codex logged as a green gas giant: `bodyKey` → codex id (shared/greenGasGiant.ts). The
    * codex line's own `BodyID` is the body the ship was at, not the one scanned (2026-10-08), so the
    * body is the fitting gas giant scanned with it (shared/greenCodexMatch.ts).
    */
   readonly greenCodexBodies = new Map<string, string>();
-  private readonly greenCodexMatcher = createGreenCodexMatcher();
+  readonly greenCodexMatcher = createGreenCodexMatcher();
   /** Systems where the codex logged a K10-Type Anomaly — an NSP that only spawns around green gas giants. */
   readonly k10Systems = new Set<number>();
   /**
@@ -791,8 +436,8 @@ export class GameStateStore {
   readonly landingMinutesSamples: number[] = [];
   readonly samplingMinutesSamples: number[] = [];
   /** Open legs, cleared as they complete. Not persisted: a half-finished trip is not a measurement. */
-  private scExitAt: { at: number; body: string } | null = null;
-  private organicRunStartedAt = new Map<string, number>();
+  scExitAt: { at: number; body: string } | null = null;
+  organicRunStartedAt = new Map<string, number>();
   /** Completed samples (3× Analyse) not removed by SellOrganicData / Died — FIFO for sales without body on BioData. */
   pendingOrganicSales: PendingOrganicSample[] = [];
 
@@ -855,6 +500,8 @@ export class GameStateStore {
   fsdFuel: FsdFuelState = emptyFsdFuel();
   /** The FSD's health from Loadout and its wear per neutron supercharge (shared/fsdWear.ts, plan 8.4). */
   fsdWear: FsdWearState = newFsdWear();
+  /** The ship's damage part by part, for the HUD's Ship section (shared/shipDamage.ts, discuss item 32). */
+  shipDamage: ShipDamageState = newShipDamage();
   /** The commander's own fleet carrier and colonised systems (shared/ownAssets.ts), for the map's badges. */
   ownAssets: OwnAssetsState = newOwnAssets();
   /** Raw materials aboard and the FSD injections made (shared/jumponium.ts). */
@@ -1071,6 +718,12 @@ export class GameStateStore {
    */
   sellAtFleetCarrier = false;
   /**
+   * The data feeder's entries (the app menu's Data feeder, the launcher's Spansh dump import): off by default (owner,
+   * 2026-10-18: "the feeder is no longer needed… hide it in the options, disabled by default"). A developer tool;
+   * the profiles ship built.
+   */
+  feederEnabled = false;
+  /**
    * The carrier is the commander's own: of the 25 % the sale keeps, 10 % goes into the carrier's bank,
    * which he can take back, so his real cost is 15 % (owner, 2026-10-04).
    */
@@ -1252,6 +905,10 @@ export class GameStateStore {
     this.sellAtFleetCarrier = value;
   }
 
+  setFeederEnabled(value: boolean): void {
+    this.feederEnabled = value;
+  }
+
   setFleetCarrierIsOwn(value: boolean): void {
     this.fleetCarrierIsOwn = value;
   }
@@ -1260,11 +917,6 @@ export class GameStateStore {
     this.includeBacteriumInSearch = value;
   }
 
-  /**
-   * Set both poll intervals, clamped. Returns whether either actually moved, so the caller only
-   * re-arms timers and rewrites the preferences file when something changed — the launcher sends
-   * this on every keystroke-settled change and a no-op should cost nothing.
-   */
   /** Set the radar radius, clamped. Returns whether it moved, so a no-op writes no file. */
   setMinimapRadiusM(raw: unknown): boolean {
     const next = clampRadarRadiusM(raw);
@@ -1273,6 +925,11 @@ export class GameStateStore {
     return changed;
   }
 
+  /**
+   * Set both poll intervals, clamped. Returns whether either actually moved, so the caller only
+   * re-arms timers and rewrites the preferences file when something changed — the launcher sends
+   * this on every keystroke-settled change and a no-op should cost nothing.
+   */
   setPollRates(statusRaw: unknown, journalRaw: unknown): boolean {
     const s = clampStatusPollMs(statusRaw);
     const j = clampJournalPollMs(journalRaw);
@@ -1282,46 +939,10 @@ export class GameStateStore {
     return changed;
   }
 
-  /** Keep only the known keys, with sane bounds; anything else a client sends is dropped. */
+  /** Keep only the known keys, with sane bounds; anything else a client sends is dropped (hudPrefsSanitize.ts). */
   setHudPrefs(raw: unknown): HudPrefsDTO | null {
-    if (!raw || typeof raw !== "object") {
-      this.hudPrefs = null;
-      return null;
-    }
-    const r = raw as Record<string, unknown>;
-    const out: HudPrefsDTO = {};
-    if (r.theme && typeof r.theme === "object") {
-      const t = r.theme as Record<string, unknown>;
-      const theme: NonNullable<HudPrefsDTO["theme"]> = {};
-      if (typeof t.preset === "string" && t.preset.length <= 24) theme.preset = t.preset;
-      if (typeof t.accent === "string" && /^#[0-9a-f]{6}$/i.test(t.accent)) theme.accent = t.accent;
-      if (typeof t.text === "string" && /^#[0-9a-f]{6}$/i.test(t.text)) theme.text = t.text;
-      out.theme = theme;
-    }
-    if (typeof r.scale === "number" && Number.isFinite(r.scale))
-      out.scale = Math.min(2, Math.max(0.5, r.scale));
-    if (typeof r.opacity === "number" && Number.isFinite(r.opacity))
-      out.opacity = Math.min(1, Math.max(0.1, r.opacity));
-    if (r.candOrder === "likelihood" || r.candOrder === "value") out.candOrder = r.candOrder;
-    if (typeof r.region === "boolean") out.region = r.region;
-    if (typeof r.audio === "boolean") out.audio = r.audio;
-    if (typeof r.compact === "boolean") out.compact = r.compact;
-    if (typeof r.relevant === "boolean") out.relevant = r.relevant;
-    if (r.hudType === "original" || r.hudType === "title" || r.hudType === "elite") out.hudType = r.hudType;
-    if (r.credit === "off" || r.credit === "top" || r.credit === "bottom") out.credit = r.credit;
-    if (typeof r.nextBoxel === "boolean") out.nextBoxel = r.nextBoxel;
-    if (typeof r.tilt === "number" && Number.isFinite(r.tilt)) out.tilt = Math.min(35, Math.max(-35, r.tilt));
-    if (r.tiltMode === "turn" || r.tiltMode === "slant") out.tiltMode = r.tiltMode;
-    if (typeof r.slant === "number" && Number.isFinite(r.slant)) out.slant = Math.min(15, Math.max(-15, r.slant));
-    if (Array.isArray(r.sections)) {
-      const known = ["jump", "fss", "candidates", "distance", "datavalue", "achievement", "notable", "notices"];
-      out.sections = [];
-      for (const n of r.sections) {
-        if (typeof n === "string" && known.includes(n) && !out.sections.includes(n)) out.sections.push(n);
-      }
-    }
-    this.hudPrefs = out;
-    return out;
+    this.hudPrefs = sanitizeHudPrefs(raw);
+    return this.hudPrefs;
   }
 
   setEdsmAutoFetchEnabled(value: boolean): void {
@@ -1379,7 +1000,7 @@ export class GameStateStore {
   }
 
   /** Whether the index matches the maps right now. Taken before a write, so the write can patch it. */
-  private scanIndexIsFresh(): boolean {
+  scanIndexIsFresh(): boolean {
     return this.scanIndexMemo !== null && this.scanIndexMemo.key === this.scanIndexKey();
   }
 
@@ -1393,7 +1014,7 @@ export class GameStateStore {
    * (callers may hold the old one), the record replaced where it was or appended, which is the order a
    * rebuild over the maps' insertion order gives. A stale index is left for the next read to rebuild.
    */
-  private patchScanIndex(
+  patchScanIndex(
     wasFresh: boolean,
     ops: ReadonlyArray<{ kind: "live" | "sold"; rec: ExplorationScanRecord; drop?: boolean }>,
   ): void {
@@ -1445,10 +1066,10 @@ export class GameStateStore {
    * body in the store for each moon `Scan`. Same scheme as the scan index: a revision plus the size,
    * patched on the `Scan` path, rebuilt after anything else.
    */
-  private orbitParentRevision = 0;
-  private orbitParentMemo: { key: string; bySystem: Map<number, Map<number, number>> } | null = null;
+  orbitParentRevision = 0;
+  orbitParentMemo: { key: string; bySystem: Map<number, Map<number, number>> } | null = null;
 
-  private orbitParentKey(): string {
+  orbitParentKey(): string {
     return `${this.orbitParentRevision}:${this.orbitParentPlanetByBody.size}`;
   }
 
@@ -1472,7 +1093,7 @@ export class GameStateStore {
   }
 
   /** Set (or clear, with null) one moon's parent, keeping the per-system index in step. */
-  private setOrbitParent(systemAddress: number, bodyId: number, parent: number | null): void {
+  setOrbitParent(systemAddress: number, bodyId: number, parent: number | null): void {
     const k = bodyKey(systemAddress, bodyId);
     const fresh = this.orbitParentMemo !== null && this.orbitParentMemo.key === this.orbitParentKey();
     if (parent != null) this.orbitParentPlanetByBody.set(k, parent);
@@ -1568,7 +1189,7 @@ export class GameStateStore {
     }
   }
 
-  private noteAchievementDone(key: string, ts: string): void {
+  noteAchievementDone(key: string, ts: string): void {
     const prev = this.achievementDone.get(key);
     if (prev === undefined || (ts && ts < prev)) this.achievementDone.set(key, ts);
   }
@@ -1577,7 +1198,7 @@ export class GameStateStore {
    * The third sample of a variant: it counts for the region it was taken in. `ScanOrganic` names no
    * region, so it is the one the system's codex line gave, or else where the commander is standing.
    */
-  private noteSampledAchievement(line: JournalLine, systemAddress: number, ts: string): void {
+  noteSampledAchievement(line: JournalLine, systemAddress: number, ts: string): void {
     const entry = codexEntryKey(typeof line.Variant === "string" ? line.Variant : "");
     if (!entry || isLegacyPlantKey(entry)) return;
     let rk = this.codexRegionBySystem.get(systemAddress) ?? "";
@@ -1816,6 +1437,7 @@ export class GameStateStore {
     this.jumpRange = emptyJumpRange();
     this.fsdFuel = emptyFsdFuel();
     this.fsdWear = newFsdWear();
+    this.shipDamage = newShipDamage();
     this.ownAssets = newOwnAssets();
     this.jumponium = newJumponium();
     this.liveStatusFuelMainT = null;
@@ -1887,7 +1509,7 @@ export class GameStateStore {
   readonly systemPositions = new Map<number, { x: number; y: number; z: number }>();
 
   /** Read `StarPos` off a journal line, when it carries one. */
-  private setPositionFromLine(line: JournalLine): void {
+  setPositionFromLine(line: JournalLine): void {
     const p = (line as Record<string, unknown>).StarPos;
     if (!Array.isArray(p) || p.length < 3) return;
     const [x, y, z] = p as unknown[];
@@ -1945,352 +1567,11 @@ export class GameStateStore {
    * body scans.
    */
   mergeBarycentreJournalLine(line: JournalLine, ts: string): void {
-    const systemAddress = line.SystemAddress as number;
-    const nullIdRaw = line.BodyID as number;
-    if (typeof systemAddress !== "number" || typeof nullIdRaw !== "number" || !Number.isFinite(nullIdRaw))
-      return;
-    const syntheticId = barycentreSyntheticBodyId(nullIdRaw);
-    const k = bodyKey(systemAddress, syntheticId);
-    const prev = this.explorationScans.get(k);
-    const pickStr = (v: unknown): string | undefined =>
-      typeof v === "string" && v.trim() ? v.trim() : undefined;
-    const pickNum = (v: unknown): number | undefined =>
-      typeof v === "number" && Number.isFinite(v) ? v : undefined;
-
-    const rec: ExplorationScanRecord = {
-      ...(prev ?? {
-        systemAddress,
-        bodyId: syntheticId,
-        bodyName: `Bary ⊥${nullIdRaw}`,
-        starSystem: "",
-        updatedAt: ts,
-      }),
-      systemAddress,
-      bodyId: syntheticId,
-      bodyName: prev?.bodyName?.trim() ? prev.bodyName : `Bary ⊥${nullIdRaw}`,
-      starSystem: pickStr(line.StarSystem) ?? prev?.starSystem ?? (this.currentSystem ?? "").trim() ?? "",
-      updatedAt: ts,
-      isBarycentreJournal: true,
-      journalBarycentreNullId: nullIdRaw,
-    };
-
-    const setNum = (key: keyof ExplorationScanRecord, v: unknown) => {
-      const n = pickNum(v);
-      if (n !== undefined) (rec as unknown as Record<string, unknown>)[key as string] = n;
-    };
-
-    setNum("semiMajorAxis", line.SemiMajorAxis);
-    setNum("eccentricity", line.Eccentricity);
-    setNum("orbitalInclination", line.OrbitalInclination);
-    setNum("periapsis", line.Periapsis);
-    setNum("orbitalPeriod", line.OrbitalPeriod);
-    setNum("ascendingNode", line.AscendingNode);
-    setNum("meanAnomaly", line.MeanAnomaly);
-
-    const fresh = this.scanIndexIsFresh();
-    this.explorationScans.set(k, rec);
-    this.explorationScansRevision += 1;
-    this.patchScanIndex(fresh, [{ kind: "live", rec }]);
-    this.edsmExplorationByKey.delete(k);
+    explorationMerge.mergeBarycentreJournalLine(this, line, ts);
   }
 
   mergeExplorationScan(line: JournalLine, ts: string): void {
-    const systemAddress = line.SystemAddress as number;
-    const bodyId = line.BodyID as number;
-    const bodyName = line.BodyName as string;
-    if (
-      typeof systemAddress !== "number" ||
-      typeof bodyId !== "number" ||
-      typeof bodyName !== "string" ||
-      !bodyName.trim()
-    ) {
-      return;
-    }
-    const k = bodyKey(systemAddress, bodyId);
-    const prev = this.explorationScans.get(k);
-    const pickStr = (v: unknown): string | undefined =>
-      typeof v === "string" && v.trim() ? v.trim() : undefined;
-    const pickNum = (v: unknown): number | undefined =>
-      typeof v === "number" && Number.isFinite(v) ? v : undefined;
-    const pickBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
-
-    const rec: ExplorationScanRecord = {
-      ...(prev ?? {
-        systemAddress,
-        bodyId,
-        bodyName: bodyName.trim(),
-        starSystem: "",
-        updatedAt: ts,
-      }),
-      systemAddress,
-      bodyId,
-      bodyName: bodyName.trim(),
-      starSystem: pickStr(line.StarSystem) ?? prev?.starSystem ?? (this.currentSystem ?? "").trim() ?? "",
-      updatedAt: ts,
-    };
-
-    const setStr = (key: keyof ExplorationScanRecord, v: unknown) => {
-      const s = pickStr(v);
-      if (s) (rec as unknown as Record<string, unknown>)[key as string] = s;
-    };
-    const setNum = (key: keyof ExplorationScanRecord, v: unknown) => {
-      const n = pickNum(v);
-      if (n !== undefined) (rec as unknown as Record<string, unknown>)[key as string] = n;
-    };
-    const setBool = (key: keyof ExplorationScanRecord, v: unknown) => {
-      const b = pickBool(v);
-      if (b !== undefined) (rec as unknown as Record<string, unknown>)[key as string] = b;
-    };
-
-    setStr("scanType", line.ScanType);
-    rec.playerScanned = prev?.playerScanned === true || line.ScanType !== "NavBeaconDetail";
-    if (prev?.fssResolved === true || line.ScanType === "Detailed") rec.fssResolved = true;
-    setStr("bodyType", line.BodyType);
-    setStr("planetClass", line.PlanetClass);
-    setStr("starType", line.StarType);
-    setNum("subclass", line.Subclass);
-    setStr("luminosity", (line as Record<string, unknown>).Luminosity);
-    setNum("stellarMass", line.StellarMass);
-    setNum("absoluteMagnitude", (line as Record<string, unknown>).AbsoluteMagnitude);
-    setNum("massEM", line.MassEM);
-    setStr("terraformState", line.TerraformState);
-    setBool("landable", line.Landable);
-    setNum("semiMajorAxis", line.SemiMajorAxis);
-    setNum("distanceFromArrivalLs", (line as Record<string, unknown>).DistanceFromArrivalLS);
-    setNum("surfaceTemperature", line.SurfaceTemperature);
-    setNum("surfaceGravity", line.SurfaceGravity);
-    setNum("surfacePressure", line.SurfacePressure);
-    setNum("radius", line.Radius);
-    setStr("atmosphereType", line.AtmosphereType);
-    setStr("atmosphere", line.Atmosphere);
-    setStr("volcanism", line.Volcanism);
-    setBool("tidalLock", line.TidalLock);
-    setBool("wasDiscovered", (line as Record<string, unknown>).WasDiscovered);
-    /*
-     * The arrival star's flag answers a question about the whole system, so it is lifted out here.
-     *
-     * Its `WasDiscovered` is what the game uses to decide whether the system counts as this
-     * commander's discovery — the name on the system, and the bonus on the cartographic sale. Every
-     * other body's flag is about that body alone.
-     *
-     * **It is not always `BodyID 0`.** That was the original rule here and it is wrong: in
-     * `Pru Aihm BL-U b33-2` the lowest body is 2, the star named "A", and the owner reported a
-     * system he had plainly discovered — every body in it reads `WasDiscovered: false` — missing
-     * from the first-discovery filter because no body zero existed to record. Multi-star systems
-     * routinely start numbering above zero.
-     *
-     * The rule is the **arrival star**, which the journal names exactly: `DistanceFromArrivalLS` is
-     * `0` for it and nothing else. In that system it is body 2 at 0.0 LS, while the other stars sit
-     * at 2,283 and 350,734 LS. "Lowest-numbered star" was tried and is not the same thing — it would
-     * let a secondary speak for the system whenever the primary went unscanned, which is precisely
-     * what `firstDiscovery.test.ts` was written to prevent: 672 of 1,159 first-scanned systems have
-     * a primary somebody else had found.
-     *
-     * `BodyID 0` remains a fallback for a scan that carries no distance at all, since that was the
-     * old rule and it is right whenever it applies. An arrival-star reading always wins over it.
-     *
-     * First answer kept, per source: a second visit reports the system as discovered — by him — and
-     * overwriting would erase the discovery on the second look at his own find.
-     */
-    const starTypeOnLine = (line as Record<string, unknown>).StarType;
-    if (typeof starTypeOnLine === "string" && starTypeOnLine.trim()) {
-      const wd = (line as Record<string, unknown>).WasDiscovered;
-      const dist = (line as Record<string, unknown>).DistanceFromArrivalLS;
-      const isArrival = typeof dist === "number" && dist === 0;
-      const rank = isArrival ? 0 : dist === undefined && bodyId === 0 ? 1 : -1;
-      if (typeof wd === "boolean" && rank >= 0) {
-        const prior = this.mainStarSourceRankBySystem.get(systemAddress);
-        if (prior === undefined || rank < prior) {
-          this.mainStarSourceRankBySystem.set(systemAddress, rank);
-          this.mainStarWasDiscoveredBySystem.set(systemAddress, wd);
-        }
-      }
-    }
-    setBool("wasMapped", (line as Record<string, unknown>).WasMapped);
-    setNum("eccentricity", line.Eccentricity);
-    setNum("orbitalInclination", line.OrbitalInclination);
-    setNum("periapsis", line.Periapsis);
-    setNum("orbitalPeriod", line.OrbitalPeriod);
-    setNum("ascendingNode", line.AscendingNode);
-    setNum("meanAnomaly", line.MeanAnomaly);
-    setNum("rotationPeriod", (line as Record<string, unknown>).RotationPeriod);
-    setNum("axialTilt", (line as Record<string, unknown>).AxialTilt);
-
-    if (line.Parents !== undefined) rec.parents = line.Parents;
-    const ringCount = planetRingCount((line as Record<string, unknown>).Rings);
-    if (ringCount !== undefined) rec.ringCount = ringCount;
-    const rings = scanRings((line as Record<string, unknown>).Rings);
-    if (rings !== undefined) rec.rings = rings;
-    setNum("ageMy", (line as Record<string, unknown>).Age_MY);
-
-    if (line.AtmosphereComposition !== undefined) {
-      const incoming = line.AtmosphereComposition;
-      if (
-        Array.isArray(incoming) &&
-        incoming.length === 0 &&
-        Array.isArray(prev?.atmosphereComposition) &&
-        prev.atmosphereComposition.length > 0
-      ) {
-        /* Keep prev detailed composition — later basic scans sometimes send empty arrays. */
-      } else {
-        rec.atmosphereComposition = incoming;
-      }
-    }
-    if (line.Materials !== undefined) {
-      const incoming = line.Materials;
-      if (
-        Array.isArray(incoming) &&
-        incoming.length === 0 &&
-        Array.isArray(prev?.materials) &&
-        prev.materials.length > 0
-      ) {
-        /* Keep prev detailed materials — basic / repeat scans often carry Materials: [] and would wipe Zinc etc. */
-      } else {
-        rec.materials = incoming;
-      }
-    }
-    if (line.Composition !== undefined) {
-      const incoming = line.Composition;
-      const ik = incoming && typeof incoming === "object" ? Object.keys(incoming as object).length : 0;
-      const pk =
-        prev?.composition && typeof prev.composition === "object"
-          ? Object.keys(prev.composition as object).length
-          : 0;
-      if (ik === 0 && pk > 0) {
-        /* Same pattern as materials: do not replace rich composition with an empty object. */
-      } else {
-        rec.composition = line.Composition;
-      }
-    }
-
-    const fresh = this.scanIndexIsFresh();
-    this.explorationScans.set(k, rec);
-    this.explorationScansRevision += 1;
-    this.edsmExplorationByKey.delete(k);
-    // Scanned again after the sale: the live row is the better copy of the same physics.
-    const wasSold = this.soldExplorationScans.delete(k);
-    this.patchScanIndex(fresh, wasSold ? [{ kind: "live", rec }, { kind: "sold", rec, drop: true }] : [{ kind: "live", rec }]);
-
-    // The barycentre a moon shares with its twin (the map's name is older than the rule).
-    const moonOf = moonPairBarycentreId(rec.parents);
-    this.setOrbitParent(systemAddress, bodyId, moonOf);
-
-    const inCurrentSystem = this.currentSystemAddress !== null && systemAddress === this.currentSystemAddress;
-    if (moonOf != null && inCurrentSystem) {
-      ensureBody(
-        this.bodies,
-        systemAddress,
-        bodyId,
-        rec.bodyName,
-        rec.starSystem?.trim() || this.currentSystem || "",
-        ts,
-      );
-      this.syncExoStateFromSiblingMoons(systemAddress, bodyId, ts);
-    }
-  }
-
-  /**
-   * When a merged `Scan` row establishes a moon's parent planet, pull FSS/DSS/detailed scan data from a sibling
-   * if this body was missing it (journal lines can arrive with FSS/DSS on moon B before B's first `Scan`).
-   */
-  private syncExoStateFromSiblingMoons(systemAddress: number, bodyId: number, ts: string): void {
-    const sk = bodyKey(systemAddress, bodyId);
-    const self = this.bodies.get(sk);
-    if (!self) return;
-    const selfRec = this.explorationScans.get(sk) ?? null;
-    let changed = false;
-
-    for (const bid of siblingMoonBodyIdsUnified(this, systemAddress, bodyId)) {
-      const sib = this.bodies.get(bodyKey(systemAddress, bid));
-      if (!sib) continue;
-      const sibRec = this.explorationScans.get(bodyKey(systemAddress, bid)) ?? null;
-      if (selfRec && sibRec && !explorationRecordsSimilarForSharedExo(selfRec, sibRec)) continue;
-
-      /*
-        Fill a gap, never outbid the game.
-
-        The docstring above says "if this body was missing it", and taking the larger of the two is
-        not that: a moon the game said has two signals would be raised to a neighbour's three, and
-        the panel would then insist a genus was missing from a body that never had one. Only a body
-        the game has not spoken about can inherit a count. See `propagateExoAmongSimilarMoons`.
-      */
-      const selfOwnCount = this.fssBodySignalsBodyKeys.has(sk);
-      if (sib.biologicalSignals != null && !selfOwnCount) {
-        const n = self.biologicalSignals ?? 0;
-        if (sib.biologicalSignals > n) {
-          self.biologicalSignals = sib.biologicalSignals;
-          changed = true;
-        }
-      }
-      /*
-        A body the commander has DSS'd already knows its own genera, and that list is complete.
-
-        `SAASignalsFound` names every genus on the body — the whole "1 genus missing" alert is built
-        on that being true. So a neighbour's genus is a *guess* worth having only while this body has
-        no answer of its own; once it does, adding to it invents biology the game has ruled out.
-
-        The report that found it, on `Plio Aip NM-U d3-13 4 c`. A DSS emits three lines at once:
-
-        ```
-          02:33:06  SAAScanComplete   4 c
-          02:33:06  SAASignalsFound   4 c   Genuses: Bacterium, Tussock      <- replaces, correctly
-          02:33:06  Scan              4 c                                    <- lands here
-        ```
-
-        That trailing `Scan` ran this sync, which merged sibling 4 b's [Bacterium, Tubus, Tussock]
-        back over the answer the game had just given, and Tubus reappeared on a body the commander
-        had personally confirmed does not have it.
-
-        `dssMappedBodyKeys` is the right test and not `dssComplete`, which propagates between
-        siblings and so cannot say whose DSS it was.
-      */
-      const selfOwnGenera = this.dssMappedBodyKeys.has(sk);
-      if (sib.genusHints?.length && !selfOwnGenera) {
-        const merged = mergeGenusHints(self.genusHints, sib.genusHints);
-        if (merged && merged.length > (self.genusHints?.length ?? 0)) {
-          self.genusHints = merged;
-          changed = true;
-        }
-      }
-      if (sib.dssComplete && !self.dssComplete) {
-        self.dssComplete = true;
-        changed = true;
-      }
-      if (sib.scan?.PlanetClass && !self.scan?.PlanetClass) {
-        self.scan = buildSiblingPlanetScan(this, sib.scan, systemAddress, bodyId, selfRec);
-        changed = true;
-      }
-    }
-    if (changed) self.updatedAt = ts;
-  }
-
-  /** Append after each `apply` (in `finally`) so the buffer contains only lines **before** the next event. */
-  private appendFootJournalContext(line: JournalLine): void {
-    this.footJournalContextBuffer.push(line);
-    const over = this.footJournalContextBuffer.length - FOOT_JOURNAL_BUFFER_MAX;
-    if (over > 0) this.footJournalContextBuffer.splice(0, over);
-  }
-
-  /** Nearest prior journal line (same system + body id) that carries a `Body` or `BodyName` string. */
-  private findRecentJournalBodyName(systemAddress: number, bodyId: number): string | null {
-    for (let i = this.footJournalContextBuffer.length - 1; i >= 0; i--) {
-      const jl = this.footJournalContextBuffer[i]!;
-      if (!journalLineMatchesBodyIds(jl, systemAddress, bodyId)) continue;
-      const nm = journalLineBodyDisplayName(jl);
-      if (nm) return nm;
-    }
-    return null;
-  }
-
-  /** Nearest prior line in the same system with a non-empty `StarSystem` string. */
-  private findRecentJournalStarSystem(systemAddress: number): string | null {
-    for (let i = this.footJournalContextBuffer.length - 1; i >= 0; i--) {
-      const jl = this.footJournalContextBuffer[i]!;
-      if (typeof jl.SystemAddress !== "number" || jl.SystemAddress !== systemAddress) continue;
-      const ss = jl.StarSystem;
-      if (typeof ss === "string" && ss.trim()) return ss.trim();
-    }
-    return null;
+    explorationMerge.mergeExplorationScan(this, line, ts);
   }
 
   apply(line: JournalLine): void {
@@ -2299,15 +1580,25 @@ export class GameStateStore {
     this.lastEventIso = ts;
 
     try {
-      if (event === "Commander") return this.onCommander(line);
+      // The ship's SRVs, fighters and the Nomad (1.3.1): launched, docked, lost, rebuilt, taken over. First, because
+      // LoadGame and others return early below.
+      shipDamageVehicle(this.shipDamage, line as Record<string, unknown>);
+      if (event === "Commander") return journalEvents.onCommander(this, line);
 
-      if (event === "LoadGame") return this.onLoadGame(line);
+      if (event === "LoadGame") return journalEvents.onLoadGame(this, line);
 
-      if (event === "Loadout") return this.onLoadout(line);
+      if (event === "Loadout") return journalEvents.onLoadout(this, line);
       // The hold, for the fuel model's jump mass (fsdFuel.ts cargoT); another ship's or after a death: unknown.
       if (event === "Cargo") fsdFuelCargo(this.fsdFuel, line as Record<string, unknown>);
       if (event === "ShipyardSwap" || event === "ShipyardNew" || event === "Died") this.fsdFuel.cargoT = null;
-      if (event === "Repair" || event === "RepairAll") fsdWearRepair(this.fsdWear, line as Record<string, unknown>);
+      if (event === "Repair" || event === "RepairAll") {
+        fsdWearRepair(this.fsdWear, line as Record<string, unknown>);
+        shipDamageRepair(this.shipDamage, line as Record<string, unknown>);
+      }
+      // The Ship HUD (shared/shipDamage.ts): the hull live, the AFMU's mends; another ship or a rebuy until its Loadout.
+      if (event === "HullDamage") shipDamageHull(this.shipDamage, line as Record<string, unknown>);
+      if (event === "AfmuRepairs") shipDamageAfmu(this.shipDamage, line as Record<string, unknown>);
+      if (event === "ShipyardSwap" || event === "ShipyardNew" || event === "Died") shipDamageForget(this.shipDamage);
       // Supercharged at a neutron star or white dwarf: the next jump only (the fuel pump costs it as such).
       if (event === "JetConeBoost") {
         const b = (line as Record<string, unknown>).BoostValue;
@@ -2366,32 +1657,32 @@ export class GameStateStore {
         }
       }
 
-      if (event === "FSDJump" || event === "CarrierJump") return this.onFSDJumpEtc(line, ts, event);
+      if (event === "FSDJump" || event === "CarrierJump") return journalEvents.onFSDJumpEtc(this, line, ts, event);
 
-      if (event === "FSDTarget") return this.onFSDTarget(line, ts);
+      if (event === "FSDTarget") return journalEvents.onFSDTarget(this, line, ts);
 
-      if (event === "Location") return this.onLocation(line, ts);
+      if (event === "Location") return journalEvents.onLocation(this, line, ts);
 
-      if (event === "SupercruiseExit") return this.onSupercruiseExit(line, ts);
+      if (event === "SupercruiseExit") return journalEvents.onSupercruiseExit(this, line, ts);
 
-      if (event === "CodexEntry") return this.onCodexEntry(line, ts);
+      if (event === "CodexEntry") return journalEvents.onCodexEntry(this, line, ts);
 
-      if (event === "FSSSignalDiscovered") return this.onFssSignalNsp(line);
+      if (event === "FSSSignalDiscovered") return journalEvents.onFssSignalNsp(this, line);
 
-      if (event === "FSSDiscoveryScan") return this.onFSSDiscoveryScan(line);
+      if (event === "FSSDiscoveryScan") return journalEvents.onFSSDiscoveryScan(this, line);
 
-      if (event === "FSSAllBodiesFound") return this.onFSSAllBodiesFound(line);
+      if (event === "FSSAllBodiesFound") return journalEvents.onFSSAllBodiesFound(this, line);
 
-      if (event === "FSSBodySignals") return this.onFSSBodySignals(line, ts);
+      if (event === "FSSBodySignals") return journalEvents.onFSSBodySignals(this, line, ts);
 
-      if (event === "SAASignalsFound") return this.onSAASignalsFound(line, ts);
+      if (event === "SAASignalsFound") return journalEvents.onSAASignalsFound(this, line, ts);
 
-      if (event === "SAAScanComplete") return this.onSAAScanComplete(line, ts);
+      if (event === "SAAScanComplete") return journalEvents.onSAAScanComplete(this, line, ts);
 
-      if (event === "Touchdown") return this.onTouchdown(line, ts);
+      if (event === "Touchdown") return journalEvents.onTouchdown(this, line, ts);
 
       if (event === "StartJump" || event === "SupercruiseEntry") {
-        this.leaveBody();
+        journalEvents.leaveBody(this);
         if (event === "StartJump" && line.JumpType === "Hyperspace") {
           const starSystem = typeof line.StarSystem === "string" ? line.StarSystem : "";
           const systemAddress = typeof line.SystemAddress === "number" ? line.SystemAddress : 0;
@@ -2401,1222 +1692,28 @@ export class GameStateStore {
         }
       }
 
-      if (event === "Liftoff") return this.onLiftoff();
+      if (event === "Liftoff") return journalEvents.onLiftoff(this);
 
-      if (event === "ScanBaryCentre") return this.onScanBaryCentre(line, ts);
+      if (event === "ScanBaryCentre") return journalEvents.onScanBaryCentre(this, line, ts);
 
-      if (event === "Scan") return this.onScan(line, ts);
+      if (event === "Scan") return journalEvents.onScan(this, line, ts);
 
-      if (event === "ScanOrganic") return this.onScanOrganic(line, ts);
+      if (event === "ScanOrganic") return journalEvents.onScanOrganic(this, line, ts);
 
-      if (event === "Embark" || event === "Embarked") return this.onEmbarkEtc();
+      if (event === "Embark" || event === "Embarked") return journalEvents.onEmbarkEtc(this);
 
-      if (event === "Disembark" || event === "Disembarked") return this.onDisembarkEtc(line);
+      if (event === "Disembark" || event === "Disembarked") return journalEvents.onDisembarkEtc(this, line);
 
-      if (event === "Died") return this.onDied();
+      if (event === "Died") return journalEvents.onDied(this);
 
-      if (event === "SellOrganicData") return this.onSellOrganicData(line);
+      if (event === "SellOrganicData") return explorationSales.onSellOrganicData(this, line);
 
-      if (event === "SellExplorationData" || event === "MultiSellExplorationData") return this.onSellExplorationDataEtc(line, event);
+      if (event === "SellExplorationData" || event === "MultiSellExplorationData") return explorationSales.onSellExplorationDataEtc(this, line, event);
     } finally {
-      this.appendFootJournalContext(line);
+      journalEvents.appendFootJournalContext(this, line);
     }
   }
 
-  /** `Commander` — one of apply()'s event handlers. */
-  private onCommander(line: JournalLine): void {
-    const fid = (line as Record<string, unknown>).FID;
-    if (typeof fid === "string" && fid.trim()) this.commanderFid = fid.trim();
-    const nm = (line as Record<string, unknown>).Name;
-    if (typeof nm === "string" && nm.trim()) this.commanderName = nm.trim();
-    return;
-  }
-
-  /** `LoadGame` — one of apply()'s event handlers. */
-  private onLoadGame(line: JournalLine): void {
-    const cmd = line.Commander as string | undefined;
-    if (typeof cmd === "string" && cmd.trim()) this.commanderName = cmd.trim();
-    const fid = (line as Record<string, unknown>).FID;
-    if (typeof fid === "string" && fid.trim()) this.commanderFid = fid.trim();
-    const fc = (line as Record<string, unknown>).FuelCapacity;
-    if (typeof fc === "number" && Number.isFinite(fc) && fc > 0) {
-      this.loadoutFuelMainCapacityT = fc;
-    }
-    return;
-  }
-
-  /** `Loadout` — one of apply()'s event handlers. */
-  private onLoadout(line: JournalLine): void {
-    const mjr = (line as Record<string, unknown>).MaxJumpRange;
-    const shipId = (line as Record<string, unknown>).ShipID;
-    fsdFuelLoadout(this.fsdFuel, line as Record<string, unknown>);
-    fsdWearLoadout(this.fsdWear, line as Record<string, unknown>);
-    jumpRangeLoadout(
-      this.jumpRange,
-      typeof shipId === "number" ? shipId : null,
-      typeof mjr === "number" && Number.isFinite(mjr) && mjr > 0 ? mjr : null,
-    );
-    if (typeof mjr === "number" && Number.isFinite(mjr) && mjr > 0) {
-      this.loadoutMaxJumpRangeLy = mjr;
-    }
-    const fc = (line as Record<string, unknown>).FuelCapacity;
-    if (fc && typeof fc === "object") {
-      const o = fc as Record<string, unknown>;
-      const main = o.Main;
-      const res = o.Reserve;
-      if (typeof main === "number" && Number.isFinite(main) && main > 0) {
-        this.loadoutFuelMainCapacityT = main;
-      }
-      if (typeof res === "number" && Number.isFinite(res) && res >= 0) {
-        this.loadoutFuelReserveCapacityT = res;
-      }
-    }
-    return;
-  }
-
-  /**
-   * Leaving the body. The game drops a half-collected sample the moment the ship leaves the planet, and
-   * the HUD should fold with it rather than keep showing a radar for ground that is no longer underfoot
-   * — the owner saw the tracker stay open through a jump. `Status.json` cannot tell us this on its own:
-   * it keeps reporting a latitude from orbit.
-   */
-  private leaveBody(): void {
-    this.overlayTouchdownBodyKey = null;
-    if (this.exoOrganicTracker) {
-      this.exoOrganicTracker = null;
-      clearPersistedOrganicSampleSession(getProjectRoot());
-    }
-  }
-
-  /** `FSDJump` / `CarrierJump` — one of apply()'s event handlers. */
-  private onFSDJumpEtc(line: JournalLine, ts: string, event: string): void {
-    const sys = line.StarSystem as string;
-    const addr = line.SystemAddress as number;
-    // Both leave the body: a carrier jump never reached the wipe in apply(), which ran after this
-    // handler had returned (plan 2.4, Fable S3).
-    this.leaveBody();
-    if (event === "FSDJump" && typeof addr === "number") {
-      // The next-jump card: the target is reached (held for a minute), the nav lock is spent.
-      if (
-        this.lastJumpTarget &&
-        (this.lastJumpTarget.systemAddress === addr || !this.lastJumpTarget.systemAddress)
-      ) {
-        this.lastJumpTarget = { ...this.lastJumpTarget, arrived: true };
-      }
-      if (this.fsdTarget && this.fsdTarget.systemAddress === addr) this.fsdTarget = null;
-    }
-    if (sys && typeof addr === "number") {
-      // No `WasDiscovered` read here: jump events do not carry it. See
-      // `mainStarWasDiscoveredBySystem`, which is filled from `Scan` instead.
-      this.viewingSystemAddress = null;
-      this.setPositionFromLine(line);
-      this.notePopulation(line, ts);
-      this.resetSystem(sys, addr);
-    }
-    return;
-  }
-
-  /** `FSDTarget` — one of apply()'s event handlers. */
-  private onFSDTarget(line: JournalLine, ts: string): void {
-    const rj = (line as Record<string, unknown>).RemainingJumpsInRoute;
-    if (typeof rj === "number" && Number.isFinite(rj)) {
-      this.remainingJumpsInRoute = Math.max(0, Math.floor(rj));
-    }
-    const name = typeof line.Name === "string" ? line.Name : "";
-    const addr = typeof line.SystemAddress === "number" ? line.SystemAddress : 0;
-    const starClass = typeof line.StarClass === "string" ? line.StarClass : "";
-    if (name) this.fsdTarget = { starSystem: name, systemAddress: addr, starClass, at: ts };
-    if (name && addr) {
-      this.targetedSystems.set(addr, { name, starClass });
-      this.boxelsRevision++;
-    }
-    return;
-  }
-
-  /** `Location` — one of apply()'s event handlers. */
-  private onLocation(line: JournalLine, ts: string): void {
-    const sys = line.StarSystem as string;
-    const addr = line.SystemAddress as number;
-    if (sys && typeof addr === "number") {
-      this.setPositionFromLine(line);
-      this.notePopulation(line, ts);
-      /*
-        In another system it is an arrival, as a jump is (plan 2.4, Fable S9): a respawn, a rescue or a
-        relog after a carrier move lands here with no FSDJump. Let go of the system the app was pointed
-        at and close the one left, or the tabs stay on the old place. A relog where the commander
-        already was changes nothing.
-      */
-      if (this.currentSystemAddress !== null && this.currentSystemAddress !== addr) {
-        this.viewingSystemAddress = null;
-        this.resetSystem(sys, addr);
-      } else {
-        this.setLocation(sys, addr);
-      }
-    }
-    return;
-  }
-
-  /** `SupercruiseExit` — one of apply()'s event handlers. */
-  private onSupercruiseExit(line: JournalLine, ts: string): void {
-    const body = typeof line.Body === "string" ? line.Body.trim() : "";
-    const at = Date.parse(ts);
-    if (body && Number.isFinite(at)) this.scExitAt = { at, body };
-    return;
-  }
-
-  /** `CodexEntry` — one of apply()'s event handlers. */
-  private onCodexEntry(line: JournalLine, ts: string): void {
-    const species = codexSpeciesFromLine(line as Parameters<typeof codexSpeciesFromLine>[0]);
-    if (species) this.codexLoggedSpecies.add(species);
-    for (const k of codexRegionKeysFromLine(line as Parameters<typeof codexRegionKeysFromLine>[0])) {
-      this.codexRegionLogged.add(k);
-    }
-    const mapKey = codexMapKeyFromLine(line as Parameters<typeof codexMapKeyFromLine>[0]);
-    if (mapKey) this.codexMapLogged.add(mapKey);
-    // Green gas giants: the codex names the body; a K10 anomaly names the system (shared/greenGasGiant.ts).
-    if (typeof line.SystemAddress === "number" && Number.isFinite(line.SystemAddress)) {
-      const name = typeof line.Name === "string" ? line.Name : "";
-      this.applyGreenCodex(line);
-      if (isK10CodexName(name)) this.k10Systems.add(line.SystemAddress);
-      // A phenomenon named by the codex (same families as the EDAstro NSP list).
-      if (isNspCodexName(name)) {
-        const label = (typeof line.Name_Localised === "string" && line.Name_Localised.trim()) || "Notable stellar phenomenon";
-        this.noteNsp(line.SystemAddress, label);
-      }
-    }
-    {
-      const rk = typeof line.Region_Localised === "string" ? regionJoinKey(line.Region_Localised) : "";
-      if (rk && typeof line.SystemAddress === "number") this.codexRegionBySystem.set(line.SystemAddress, rk);
-      // A legacy plant is never sampled three times: its codex line is what counts.
-      const entry = codexEntryKey(typeof line.Name === "string" ? line.Name : "");
-      if (rk && entry && isLegacyPlantKey(entry)) this.noteAchievementDone(`${rk}|${entry}`, ts);
-    }
-    const sightingRegion = typeof line.Region_Localised === "string" ? regionJoinKey(line.Region_Localised) : "";
-    if (species && sightingRegion && typeof line.SystemAddress === "number") {
-      const k = `${species}|${sightingRegion}|${line.SystemAddress}`;
-      const prev = this.codexSightings.get(k);
-      if (!prev || ts < prev) this.codexSightings.set(k, ts);
-    }
-
-    /*
-      The composition scanner confirms a species on a body without a landing, and the owner asked
-      for it: some plants grow where a ship will not go down. The line names both halves —
-      `Name_Localised` is "Fonticulua Fluctus - Amethyst" and `BodyID`/`SystemAddress` say where —
-      so it resolves to the same lock a `ScanOrganic` would build, carrying `source: "codex"` so
-      the panel can say which it was.
-
-      `SubCategory` has to be read, not just `Category`: the category is "Biological and
-      Geological" and a fumarole would otherwise confirm a plant.
-    */
-    this.noteGeologyCodex(line, ts);
-    const lock = codexOrganicLockFromLine(line as Parameters<typeof codexOrganicLockFromLine>[0]);
-    const codexBodyId = line.BodyID as number | undefined;
-    if (!lock || typeof codexBodyId !== "number" || !Number.isFinite(codexBodyId)) return;
-    const codexSystem = line.SystemAddress as number | undefined;
-    if (typeof codexSystem !== "number" || !Number.isFinite(codexSystem)) return;
-
-    const codexStarSystem =
-      (typeof line.System === "string" ? line.System.trim() : "") ||
-      this.visitedSystems.get(codexSystem) ||
-      this.currentSystem ||
-      "";
-    const codexBody = ensureBody(
-      this.bodies,
-      codexSystem,
-      codexBodyId,
-      this.explorationScans.get(bodyKey(codexSystem, codexBodyId))?.bodyName ??
-        this.findRecentJournalBodyName(codexSystem, codexBodyId) ??
-        `Body ${codexBodyId}`,
-      codexStarSystem,
-      ts,
-    );
-    // A comp scan fires more than once for the same plant, and a foot scan of the same species
-    // says strictly more. Either way one row per species on this body is enough.
-    // A lock copied from a sibling moon is only a hint, and gives way to this body's own scan.
-    const sameSpecies = (l: OrganicGenusLock) =>
-      l.speciesLocalised.trim().toLowerCase() === lock.speciesLocalised.trim().toLowerCase();
-    const codexLock: OrganicGenusLock = { ...lock, at: ts };
-    const siblingIdx = codexBody.organicGenusLocks.findIndex((l) => sameSpecies(l) && l.fromSibling);
-    const existing = codexBody.organicGenusLocks.find((l) => sameSpecies(l) && !l.fromSibling);
-    if (siblingIdx >= 0) codexBody.organicGenusLocks[siblingIdx] = codexLock;
-    else if (!existing) codexBody.organicGenusLocks.push(codexLock);
-    // Scanned again with the ship: still a comp scan, but the most recent thing scanned.
-    else if (existing.source === "codex") existing.at = ts;
-    if (lock.variantLocalised && !codexBody.confirmedVariants.includes(lock.variantLocalised)) {
-      codexBody.confirmedVariants.push(lock.variantLocalised);
-      this.confirmedVariantsRevision += 1;
-    }
-    return;
-  }
-
-  /**
-   * A surface geology codex line (fumarole, gas vent, geyser, lava spout) with the body it names: the
-   * Volcanism field marks that entry "Scanned" on this body (owner, 2026-10-05).
-   */
-  private noteGeologyCodex(line: JournalLine, ts: string): void {
-    const entry = codexEntryKey(typeof line.Name === "string" ? line.Name : "");
-    const bodyId = line.BodyID;
-    const sys = line.SystemAddress;
-    if (!entry || !GEOLOGY_KEY.test(entry) || typeof bodyId !== "number" || typeof sys !== "number") return;
-    const b = ensureBody(
-      this.bodies,
-      sys,
-      bodyId,
-      this.explorationScans.get(bodyKey(sys, bodyId))?.bodyName ??
-        this.findRecentJournalBodyName(sys, bodyId) ??
-        `Body ${bodyId}`,
-      (typeof line.System === "string" ? line.System.trim() : "") || this.visitedSystems.get(sys) || this.currentSystem || "",
-      ts,
-    );
-    if (!(b.geologyLogged ?? []).includes(entry)) b.geologyLogged = [...(b.geologyLogged ?? []), entry];
-  }
-
-  /** A phenomenon in a system: a name, or "" for the FSS signal before it is named. */
-  private noteNsp(systemAddress: number, name: string): void {
-    const list = this.nspSeen.get(systemAddress) ?? [];
-    if (name && !list.includes(name)) list.push(name);
-    if (!name && !list.length) list.push("");
-    // A named one replaces the placeholder.
-    this.nspSeen.set(systemAddress, list.length > 1 ? list.filter(Boolean) : list);
-  }
-
-  /** `FSSSignalDiscovered` of a notable stellar phenomenon (`$Fixed_Event_Life_…`). */
-  private onFssSignalNsp(line: JournalLine): void {
-    const addr = line.SystemAddress;
-    const name = typeof line.SignalName === "string" ? line.SignalName : "";
-    if (typeof addr !== "number" || !Number.isFinite(addr) || !/^\$fixed_event_life_/i.test(name)) return;
-    this.noteNsp(addr, "");
-  }
-
-  /** `FSSDiscoveryScan` — one of apply()'s event handlers. */
-  private onFSSDiscoveryScan(line: JournalLine): void {
-    const addr = line.SystemAddress as number;
-    const sysRaw = line.SystemName as string | undefined;
-    const bodyCountRaw = line.BodyCount as number | undefined;
-    const progressRaw = line.Progress as number | undefined;
-    if (typeof addr !== "number" || typeof bodyCountRaw !== "number" || !Number.isFinite(bodyCountRaw))
-      return;
-    const bodyCount = Math.max(0, Math.floor(bodyCountRaw));
-    if (bodyCount <= 0) return;
-    let progress = typeof progressRaw === "number" && Number.isFinite(progressRaw) ? progressRaw : 0;
-    progress = Math.max(0, Math.min(1, progress));
-    const sysTrim = typeof sysRaw === "string" && sysRaw.trim() ? sysRaw.trim() : "";
-    this.fssDiscoveryScanBySystem.set(addr, {
-      systemName: sysTrim,
-      bodyCount,
-      progress,
-    });
-    if (sysTrim) this.rememberVisitedSystem(sysTrim, addr);
-    return;
-  }
-
-  /** `FSSAllBodiesFound` — one of apply()'s event handlers. */
-  private onFSSAllBodiesFound(line: JournalLine): void {
-    const addr = line.SystemAddress as number;
-    const sysNm = line.SystemName as string | undefined;
-    const sysStar = line.StarSystem as string | undefined;
-    const sysRaw = (typeof sysNm === "string" && sysNm.trim() ? sysNm : sysStar) as string | undefined;
-    const cntRaw = (line as Record<string, unknown>).Count;
-    if (typeof addr === "number") {
-      this.fssAllBodiesCompleteSystems.add(addr);
-      if (typeof cntRaw === "number" && Number.isFinite(cntRaw)) {
-        const n = Math.max(0, Math.floor(cntRaw));
-        if (n > 0) this.fssAllBodiesFoundCountBySystem.set(addr, n);
-      }
-      if (sysRaw?.trim()) this.rememberVisitedSystem(sysRaw.trim(), addr);
-    }
-    return;
-  }
-
-  /** `FSSBodySignals` — one of apply()'s event handlers. */
-  private onFSSBodySignals(line: JournalLine, ts: string): void {
-    const systemAddress = line.SystemAddress as number;
-    const bodyId = line.BodyID as number;
-    if (typeof systemAddress !== "number" || typeof bodyId !== "number") return;
-
-    const bk = bodyKey(systemAddress, bodyId);
-    this.fssBodySignalsBodyKeys.add(bk);
-
-    const inCurrent = this.currentSystemAddress !== null && systemAddress === this.currentSystemAddress;
-    if (!inCurrent) return;
-
-    const bodyNameRaw = line.BodyName as string | undefined;
-    const bodyName = bodyNameRaw?.trim() ? bodyNameRaw.trim() : `Body ${bodyId}`;
-    const hints = asGenuses((line as Record<string, unknown>).Genuses);
-    const sigArr = asSignals(line.Signals);
-    const n = biologicalCount(sigArr);
-    if (n === null && !hints && sigArr.length === 0) return;
-
-    const b = ensureBody(this.bodies, systemAddress, bodyId, bodyName, this.currentSystem ?? "", ts);
-    if (n !== null) b.biologicalSignals = n;
-    const geo = geologicalCount(sigArr);
-    if (geo !== null) b.geologicalSignals = geo;
-    if (hints) b.genusHints = mergeGenusHints(b.genusHints, hints);
-    const mergedHints = mergeScannerSignalHints(b.signalHints ?? null, line.Signals);
-    if (mergedHints) b.signalHints = mergedHints;
-    this.propagateExoAmongSimilarMoons(bodyId, systemAddress, ts, "fss_signals");
-    return;
-  }
-
-  /** `SAASignalsFound` — one of apply()'s event handlers. */
-  private onSAASignalsFound(line: JournalLine, ts: string): void {
-    const systemAddress = line.SystemAddress as number;
-    const bodyId = line.BodyID as number;
-    const bodyName = line.BodyName as string;
-    if (
-      this.currentSystemAddress === null ||
-      systemAddress !== this.currentSystemAddress ||
-      typeof bodyId !== "number" ||
-      !bodyName
-    )
-      return;
-
-    const hints = asGenuses(line.Genuses);
-    const sigArr = asSignals(line.Signals);
-    const n = biologicalCount(sigArr);
-    if (n === null && !hints && sigArr.length === 0) return;
-
-    const b = ensureBody(this.bodies, systemAddress, bodyId, bodyName, this.currentSystem ?? "", ts);
-    if (n !== null) b.biologicalSignals = n;
-    const geo = geologicalCount(sigArr);
-    if (geo !== null) b.geologicalSignals = geo;
-    if (hints) b.genusHints = hints;
-    const mergedHints = mergeScannerSignalHints(b.signalHints ?? null, line.Signals);
-    if (mergedHints) b.signalHints = mergedHints;
-    this.propagateExoAmongSimilarMoons(bodyId, systemAddress, ts, "saas_signals");
-    return;
-  }
-
-  /** `SAAScanComplete` — one of apply()'s event handlers. */
-  private onSAAScanComplete(line: JournalLine, ts: string): void {
-    const systemAddress = line.SystemAddress as number;
-    const bodyId = line.BodyID as number;
-    if (typeof systemAddress !== "number" || typeof bodyId !== "number") return;
-
-    const bk = bodyKey(systemAddress, bodyId);
-    this.dssMappedBodyKeys.add(bk);
-    // Our own DSS: the body is mapped from this moment on, whoever got there first.
-    this.observeMapped(bk, true, "journal", (line.timestamp as string) ?? new Date().toISOString());
-    const recForMapper = this.explorationScans.get(bk);
-    this.dssFirstMapperEligibleByBodyKey.set(bk, recForMapper ? recForMapper.wasMapped !== true : false);
-    const probes = line.ProbesUsed as number | undefined;
-    const effTarget = line.EfficiencyTarget as number | undefined;
-    const efficient =
-      typeof probes === "number" &&
-      typeof effTarget === "number" &&
-      effTarget > 0 &&
-      probes > 0 &&
-      probes <= effTarget;
-    this.dssMappingEfficientByBodyKey.set(bk, efficient);
-
-    const inCurrent = this.currentSystemAddress !== null && systemAddress === this.currentSystemAddress;
-    if (inCurrent) {
-      const bodyNameRaw = line.BodyName as string | undefined;
-      const bodyName = bodyNameRaw?.trim() ? bodyNameRaw.trim() : `Body ${bodyId}`;
-      const b = ensureBody(this.bodies, systemAddress, bodyId, bodyName, this.currentSystem ?? "", ts);
-      b.dssComplete = true;
-      this.propagateExoAmongSimilarMoons(bodyId, systemAddress, ts, "dss_complete");
-    }
-    this.requestUiAutoSelectBody(systemAddress, bodyId);
-    return;
-  }
-
-  /** `Touchdown` — one of apply()'s event handlers. */
-  private onTouchdown(line: JournalLine, ts: string): void {
-    // How long the last approach took, when this is the body we dropped at.
-    const tdBody = typeof line.Body === "string" ? line.Body.trim() : "";
-    const tdAt = Date.parse(ts);
-    if (this.scExitAt && tdBody && tdBody === this.scExitAt.body && Number.isFinite(tdAt)) {
-      const minutes = (tdAt - this.scExitAt.at) / 60_000;
-      // Over half an hour is a commander who went to make tea, not an approach.
-      if (minutes > 0 && minutes < 30) this.landingMinutesSamples.push(minutes);
-    }
-    this.scExitAt = null;
-
-    const playerControlled = line.PlayerControlled === true;
-    const taxi = line.Taxi === true;
-    const onPlanet = line.OnPlanet === true;
-    const onStation = line.OnStation === true;
-    const systemAddress = line.SystemAddress as number | undefined;
-    const bodyId = line.BodyID as number | undefined;
-    const bodyStr = line.Body;
-    const starSystem = line.StarSystem;
-    if (
-      playerControlled &&
-      !taxi &&
-      onPlanet &&
-      !onStation &&
-      typeof systemAddress === "number" &&
-      typeof bodyId === "number"
-    ) {
-      const starFromLine = typeof starSystem === "string" && starSystem.trim() ? starSystem.trim() : null;
-      const star =
-        starFromLine ??
-        this.visitedSystems.get(systemAddress)?.trim() ??
-        this.currentSystem?.trim() ??
-        "";
-      const nameFromJournal = typeof bodyStr === "string" && bodyStr.trim() ? bodyStr.trim() : null;
-      const nm = nameFromJournal ?? `Body ${bodyId}`;
-      ensureBody(this.bodies, systemAddress, bodyId, nm, star, ts);
-      this.overlayTouchdownBodyKey = bodyKey(systemAddress, bodyId);
-      /*
-        Where the ship is parked, for the minimap. Straight off the journal line — Touchdown
-        carries Latitude and Longitude — so this one needs no live Status.json read.
-      */
-      const tdLat = line.Latitude;
-      const tdLon = line.Longitude;
-      if (typeof tdLat === "number" && typeof tdLon === "number") {
-        this.surfaceShipMark = {
-          bodyKey: bodyKey(systemAddress, bodyId),
-          // Status.json names the body and never gives its id, so the name is what a live fix
-          // can be matched against.
-          bodyNameNorm: normStatusBodyName(nm) ?? "",
-          latDeg: tdLat,
-          lonDeg: tdLon,
-          label: "Your ship",
-          atIso: ts,
-        };
-        this.persistSurfaceMarks();
-      }
-      this.requestUiAutoSelectBody(systemAddress, bodyId);
-    }
-    return;
-  }
-
-  /** `Liftoff` — one of apply()'s event handlers. */
-  private onLiftoff(): void {
-    /*
-      The ship has gone, so the mark goes with it — the owner's rule: "after takeoff, the
-      'position landed' for the ship gets removed, we keep only the scans." A stale ship marker
-      is worse than none: it is an instruction to walk to a place nothing is parked.
-    */
-    this.surfaceShipMark = null;
-    this.persistSurfaceMarks();
-    return;
-  }
-
-  /** `ScanBaryCentre` — one of apply()'s event handlers. */
-  private onScanBaryCentre(line: JournalLine, ts: string): void {
-    this.mergeBarycentreJournalLine(line, ts);
-    const starSystemBary = line.StarSystem as string | undefined;
-    const addrBary = line.SystemAddress as number | undefined;
-    if (typeof starSystemBary === "string" && starSystemBary.trim() && typeof addrBary === "number") {
-      this.rememberVisitedSystem(starSystemBary.trim(), addrBary);
-    }
-    return;
-  }
-
-  /** `Scan` — one of apply()'s event handlers. */
-  /** A green codex entry and the gas giant scanned with it, whichever line comes first. */
-  private applyGreenCodex(line: JournalLine): void {
-    for (const e of this.greenCodexMatcher.observe(line as Record<string, unknown>)) {
-      if (e.kind === "match") this.greenCodexBodies.set(e.bodyKey, e.codexId);
-      else this.greenCodexBodies.delete(e.bodyKey);
-    }
-  }
-
-  private onScan(line: JournalLine, ts: string): void {
-    this.applyGreenCodex(line);
-    const systemAddress = line.SystemAddress as number;
-    const bodyId = line.BodyID as number;
-    const bodyName = line.BodyName as string;
-    if (
-      typeof systemAddress === "number" &&
-      typeof bodyId === "number" &&
-      typeof bodyName === "string" &&
-      bodyName.trim()
-    ) {
-      this.mergeExplorationScan(line, ts);
-      const starSystemMerge = line.StarSystem as string | undefined;
-      if (typeof starSystemMerge === "string" && starSystemMerge.trim()) {
-        this.rememberVisitedSystem(starSystemMerge.trim(), systemAddress);
-      }
-    }
-
-    /*
-     * `WasFootfalled` and `WasMapped` are read from **every** scan that carries them, not only
-     * the detailed one — and that placement is the whole bug this block exists to prevent.
-     *
-     * Aucoks OG-E b18-3 A 1, 2026-09-09, is the case that found it. The game wrote two scans:
-     *
-     *   11:55:05  AutoScan   WasMapped true   WasFootfalled true
-     *   11:56:10  Detailed   WasMapped false  WasFootfalled false
-     *
-     * The second arrives immediately after the commander's own `SAAScanComplete` and contradicts
-     * the first. With these reads sitting below a `ScanType !== "Detailed"` return, the honest
-     * `true` was thrown away unseen and only the `false` was ever recorded — so a body somebody
-     * else had already walked was offered as an unclaimed 5x. Footfall does not un-happen; the
-     * sticky-`true` merge in observedFlag.ts is what settles the contradiction, but it can only
-     * do that if it is shown both claims.
-     *
-     * The physics below has its own admission test, on what the line contains rather than on its
-     * label — an auto scan from flying to a body carries the whole record.
-     */
-    if (
-      typeof systemAddress === "number" &&
-      typeof bodyId === "number" &&
-      typeof bodyName === "string" &&
-      bodyName.trim()
-    ) {
-      const anyScanTs = (line.timestamp as string) ?? new Date().toISOString();
-      const wf = line.WasFootfalled;
-      if (typeof wf === "boolean") {
-        this.observeFootfall(bodyKey(systemAddress, bodyId), wf, "journal", anyScanTs);
-      }
-      // `Scan.WasMapped` is "had anyone mapped this at the moment of the scan". Our own DSS makes
-      // later scans report true, which is why the *first-mapper* question is frozen separately at
-      // SAAScanComplete — but for "has anyone mapped it", a later true is simply correct.
-      const wm = (line as Record<string, unknown>).WasMapped;
-      if (typeof wm === "boolean") {
-        this.observeMapped(bodyKey(systemAddress, bodyId), wm, "journal", anyScanTs);
-      }
-    }
-
-    /*
-     * Accept any scan that actually describes the body, whatever it is labelled.
-     *
-     * This used to require `ScanType === "Detailed"`, on the assumption that nothing else
-     * carries the physics. It is not true. Flying to a body — rather than reaching it through
-     * the FSS — writes an `AutoScan` with the whole record: planet class, atmosphere, volcanism,
-     * gravity, temperature, pressure, materials, composition. Reported from the field on
-     * Aucoks AN-Q d6-59 BC 2, where the commander flew out, got a complete scan, and the app
-     * offered no candidate species at all because of the label on it.
-     *
-     * Across this commander's 245 journals that gate discarded **1,223 landable bodies** whose
-     * `AutoScan` carried full physics, and 142 more from `NavBeaconDetail`. So the test is what
-     * the line contains, not what it is called: a planet class plus the two numbers every gate
-     * needs. `Basic` scans have none of that and still fall out here, as they should.
-     */
-    const hasPhysics =
-      typeof line.PlanetClass === "string" &&
-      line.PlanetClass.trim() !== "" &&
-      typeof line.SurfaceGravity === "number" &&
-      typeof line.SurfaceTemperature === "number";
-    if (!hasPhysics) return;
-
-    if (
-      typeof systemAddress !== "number" ||
-      typeof bodyId !== "number" ||
-      typeof bodyName !== "string" ||
-      !bodyName.trim()
-    )
-      return;
-
-    const starSystem = line.StarSystem as string;
-
-    const wfRaw = line.WasFootfalled;
-
-    if (this.currentSystemAddress === null || systemAddress !== this.currentSystemAddress) return;
-
-    const scan: PlanetScan = {
-      BodyName: bodyName,
-      BodyID: bodyId,
-      StarSystem: starSystem,
-      SystemAddress: systemAddress,
-      PlanetClass: line.PlanetClass as string | undefined,
-      Atmosphere: line.Atmosphere as string | undefined,
-      AtmosphereType: line.AtmosphereType as string | undefined,
-      SurfaceGravity: line.SurfaceGravity as number | undefined,
-      SurfaceTemperature: line.SurfaceTemperature as number | undefined,
-      SurfacePressure: line.SurfacePressure as number | undefined,
-      SemiMajorAxis: line.SemiMajorAxis as number | undefined,
-      TidalLock: line.TidalLock as boolean | undefined,
-      Volcanism: line.Volcanism as string | undefined,
-      Landable: line.Landable as boolean | undefined,
-      TerraformState: line.TerraformState as string | undefined,
-      WasFootfalled: typeof wfRaw === "boolean" ? wfRaw : undefined,
-      materials: line.Materials as PlanetScan["materials"],
-      atmosphereComposition: line.AtmosphereComposition as PlanetScan["atmosphereComposition"],
-      composition: line.Composition as PlanetScan["composition"],
-      radius: line.Radius as number | undefined,
-      MassEM: line.MassEM as number | undefined,
-      RotationPeriod: (line as Record<string, unknown>).RotationPeriod as number | undefined,
-      AxialTilt: (line as Record<string, unknown>).AxialTilt as number | undefined,
-      OrbitalPeriod: (line as Record<string, unknown>).OrbitalPeriod as number | undefined,
-      Eccentricity: (line as Record<string, unknown>).Eccentricity as number | undefined,
-      OrbitalInclination: (line as Record<string, unknown>).OrbitalInclination as number | undefined,
-      Periapsis: (line as Record<string, unknown>).Periapsis as number | undefined,
-      AscendingNode: (line as Record<string, unknown>).AscendingNode as number | undefined,
-      MeanAnomaly: (line as Record<string, unknown>).MeanAnomaly as number | undefined,
-    };
-
-    const b = ensureBody(
-      this.bodies,
-      systemAddress,
-      bodyId,
-      bodyName,
-      starSystem ?? this.currentSystem ?? "",
-      ts,
-    );
-    b.scan = scan;
-    if (typeof starSystem === "string" && starSystem.trim()) {
-      this.rememberVisitedSystem(starSystem.trim(), systemAddress);
-    }
-    this.propagateExoAmongSimilarMoons(bodyId, systemAddress, ts, "detailed_scan");
-    return;
-  }
-
-  /** `ScanOrganic` — one of apply()'s event handlers. */
-  private onScanOrganic(written: JournalLine, ts: string): void {
-    const line = this.ownBodyForAnalyse(written);
-    const systemAddress = line.SystemAddress as number;
-    const bodyId = line.Body as number;
-    const variant = (line.Variant_Localised as string | undefined)?.trim() ?? "";
-    const genusLoc = (line.Genus_Localised as string | undefined)?.trim() ?? "";
-    const genusSym = (line.Genus as string | undefined)?.trim() ?? "";
-    const speciesLoc = (line.Species_Localised as string | undefined)?.trim() ?? "";
-    const speciesSym = (line.Species as string | undefined)?.trim() ?? "";
-    if (typeof bodyId !== "number" || typeof systemAddress !== "number" || (!variant && !speciesLoc))
-      return;
-
-    const bk = bodyKey(systemAddress, bodyId);
-    if (this.exoOrganicTracker && this.exoOrganicTracker.bodyKey !== bk) {
-      wipeOrganicSampleSession(this, getProjectRoot());
-    }
-    if (!this.exoOrganicTracker && this.footSessionBodyKey && this.footSessionBodyKey !== bk) {
-      wipeOrganicSampleSession(this, getProjectRoot());
-    }
-
-    const lock: OrganicGenusLock = {
-      genusLocalised: genusLoc,
-      genusSymbol: genusSym,
-      speciesLocalised: speciesLoc,
-      speciesSymbol: speciesSym,
-      variantLocalised: variant,
-    };
-
-    const speciesKey = speciesKeyFromOrganicJournal(line);
-    const fullKey = `${bk}::${speciesKey}`;
-
-    /**
-     * The sampling run: first sample of a species on a body to the analyse that completes it.
-     *
-     * Keyed per species per body, because a commander taking two genera on one landing runs two
-     * of these and they interleave.
-     */
-    const runScanType = typeof line.ScanType === "string" ? line.ScanType : "";
-    const organicAt = Date.parse(ts);
-    if (Number.isFinite(organicAt)) {
-      if (runScanType === "Log" || runScanType === "Sample") {
-        if (!this.organicRunStartedAt.has(fullKey)) this.organicRunStartedAt.set(fullKey, organicAt);
-      } else if (runScanType === "Analyse") {
-        const startedAt = this.organicRunStartedAt.get(fullKey);
-        if (startedAt != null) {
-          const minutes = (organicAt - startedAt) / 60_000;
-          if (minutes > 0 && minutes < 90) this.samplingMinutesSamples.push(minutes);
-        }
-        this.organicRunStartedAt.delete(fullKey);
-      }
-    }
-
-    if (journalLineCarriesPlanetMetrics(line)) {
-      const lineBodyName =
-        typeof line.BodyName === "string" && line.BodyName.trim()
-          ? line.BodyName.trim()
-          : (this.findRecentJournalBodyName(systemAddress, bodyId) ??
-            this.explorationScans.get(bk)?.bodyName ??
-            `Body ${bodyId}`);
-      this.mergeExplorationScan({ ...line, BodyID: bodyId, BodyName: lineBodyName } as JournalLine, ts);
-    }
-
-    const prevProg = this.organicAnalyseByKey.get(fullKey) ?? { count: 0, label: "" };
-
-    const nextCountRaw = nextOrganicProgressCount(prevProg.count, line);
-    if (nextCountRaw !== null) {
-      const label = displayLabelFromOrganicLine(line);
-      const nextCount = Math.max(prevProg.count, nextCountRaw);
-      const nextLabel = label || prevProg.label;
-      this.organicAnalyseByKey.set(fullKey, { count: nextCount, label: nextLabel });
-      if (nextCount >= 3 && prevProg.count < 3) this.noteSampledAchievement(line, systemAddress, ts);
-      if (nextCount >= 3 && !this.pendingOrganicSales.some((p) => p.fullKey === fullKey)) {
-        this.pendingOrganicSales.push({
-          fullKey,
-          bodyKey: bk,
-          speciesKey,
-          label: nextLabel,
-        });
-      }
-    }
-
-    const scanType = (line.ScanType as string | undefined)?.trim();
-    /*
-     * `Log` counts, and used to be dropped.
-     *
-     * All three ScanOrganic types name the species — every one of this commander's 1,166 lines
-     * carries `Species_Localised` — so all three are first-hand proof the species was on that
-     * body. Only `Analyse` and `Sample` were recorded, which silently lost every species that
-     * was logged and then left alone: 85 of 352 observations, because skipping a low-value plant
-     * after logging it is a normal way to play, not an incomplete action.
-     */
-    const isOrganicConfirmation = scanType === "Analyse" || scanType === "Sample" || scanType === "Log";
-    if (isOrganicConfirmation && (genusLoc || genusSym)) {
-      const rec = this.explorationScans.get(bk);
-      const exo = this.bodies.get(bk);
-      const baseScan = exo?.scan ?? (rec ? planetScanFromExplorationRecord(rec) : null);
-      if (baseScan?.PlanetClass?.trim()) {
-        const fromPriorJournal = this.findRecentJournalBodyName(systemAddress, bodyId);
-        const lineBodyName =
-          typeof line.BodyName === "string" && line.BodyName.trim() ? line.BodyName.trim() : "";
-        const bodyName = fromPriorJournal || lineBodyName || rec?.bodyName || `Body ${bodyId}`;
-        const starSystem =
-          (line.StarSystem as string | undefined)?.trim() ||
-          this.findRecentJournalStarSystem(systemAddress) ||
-          rec?.starSystem ||
-          this.visitedSystems.get(systemAddress) ||
-          "";
-        try {
-          recordFootScanned(getProjectRoot(), {
-            systemAddress,
-            bodyId,
-            bodyName,
-            starSystem,
-            scan: baseScan,
-            lock,
-            ts,
-            includeBacterium: this.includeBacteriumInSearch,
-            confirmationSource:
-              scanType === "Analyse" ? "analyse" : scanType === "Sample" ? "sample" : "log",
-          });
-        } catch {
-          /* non-fatal: catalog file may be read-only */
-        }
-      }
-    }
-
-    const nameHint =
-      (line.BodyName as string) ||
-      this.explorationScans.get(bk)?.bodyName ||
-      this.findRecentJournalBodyName(systemAddress, bodyId) ||
-      `Body ${bodyId}`;
-    const recForStar = this.explorationScans.get(bk);
-    const starSystem =
-      (line.StarSystem as string | undefined)?.trim() ||
-      this.findRecentJournalStarSystem(systemAddress) ||
-      recForStar?.starSystem ||
-      this.visitedSystems.get(systemAddress) ||
-      this.currentSystem ||
-      "";
-
-    const b = ensureBody(this.bodies, systemAddress, bodyId, nameHint, starSystem, ts);
-
-    if (genusLoc || genusSym) {
-      upsertFootOrganicLock(b.organicGenusLocks, lock, scanType ?? "", ts);
-    }
-
-    if (variant && !b.confirmedVariants.includes(variant)) {
-      b.confirmedVariants.push(variant);
-      this.confirmedVariantsRevision += 1;
-    }
-    this.propagateExoAmongSimilarMoons(bodyId, systemAddress, ts, "organic");
-    return;
-  }
-
-  /** `Embark` / `Embarked` — one of apply()'s event handlers. */
-  private onEmbarkEtc(): void {
-    return;
-  }
-
-  /** `Disembark` / `Disembarked` — one of apply()'s event handlers. */
-  private onDisembarkEtc(line: JournalLine): void {
-    const onPlanet = line.OnPlanet === true;
-    const onStation = line.OnStation === true;
-    const bodyId = line.BodyID as number | undefined;
-    const systemAddress = line.SystemAddress as number | undefined;
-    if (onPlanet && !onStation && typeof bodyId === "number" && typeof systemAddress === "number") {
-      const bk = bodyKey(systemAddress, bodyId);
-      const detailedSaidUnfootfalled = this.bodyDetailedFootfallState.get(bk) === false;
-      /**
-       * Kept for a field the journal does not currently write.
-       *
-       * Audited 2026-09-08 against 244 journals: `Disembark` carries `Body`, `BodyID`, `ID`,
-       * `MarketID`, `Multicrew`, `OnPlanet`, `OnStation`, `SRV`, `StarSystem`, `StationName`,
-       * `StationType`, `SystemAddress`, `Taxi`, `event` and `timestamp` — and nothing resembling
-       * a first-footfall flag, in any casing, across 1,029 events. This half has never fired.
-       *
-       * Left in place rather than deleted because it costs nothing and would start working if
-       * Frontier ever adds the field. Documented because two other reads of never-written fields
-       * turned out to be real bugs — `WasDiscovered` on `FSDJump` and the missing `Log` scan type
-       * — and the next reader needs to know this one is *known* dead rather than assumed live.
-       *
-       * The line above carries the feature on its own, and correctly: of 253 planet bodies this
-       * commander has disembarked on, 87 had a scan saying not-footfalled, which is exactly the
-       * 87 in `firstFootfallBodies`. Of the remainder, 158 were landed on before `WasFootfalled`
-       * existed in the journal at all (first seen 2025-09-29), so they are unknowable rather than
-       * missed.
-       */
-      const journalFirstFootfall = line.firstfootfall === true || line.FirstFootfall === true;
-      if (detailedSaidUnfootfalled || journalFirstFootfall) {
-        this.firstFootfallBodies.add(bk);
-      }
-      // Read the eligibility above *before* recording this: standing on the body makes it
-      // footfalled from now on, and folding that in first would erase the `false` this
-      // commander's own ×5 bonus depends on.
-      this.observeFootfall(bk, true, "journal", (line.timestamp as string) ?? new Date().toISOString());
-    }
-    return;
-  }
-
-  /** `Died` — one of apply()'s event handlers. */
-  private onDied(): void {
-    // Unsold cartographic data is lost with the ship. The physics stays in the archive, and the
-    // bodies are not marked sold: scanning them again earns the data back.
-    this.clearExplorationDataForSystems(new Set([...this.explorationScans.values()].map((r) => r.systemAddress)), false);
-    this.organicAnalyseByKey.clear();
-    this.pendingOrganicSales = [];
-    this.exoOrganicLastFix = null;
-    wipeOrganicSampleSession(this, getProjectRoot());
-    return;
-  }
-
-  /** `SellOrganicData` — one of apply()'s event handlers. */
-  private onSellOrganicData(line: JournalLine): void {
-    const bios = line.BioData;
-    if (!Array.isArray(bios)) return;
-    const ts = typeof line.timestamp === "string" ? line.timestamp : "";
-    for (const raw of bios) {
-      if (!raw || typeof raw !== "object") continue;
-      const bio = raw as Record<string, unknown>;
-      const sk = speciesKeyFromSellBio(bio);
-      const idx = this.pendingOrganicSales.findIndex((p) => p.speciesKey === sk);
-      if (idx >= 0) {
-        const [removed] = this.pendingOrganicSales.splice(idx, 1);
-        if (removed) {
-          this.organicAnalyseByKey.delete(removed.fullKey);
-          /*
-            The sale names a price but not a place, and the station is not the place: the
-            credits belong to the system he walked on. The pending queue still knows which body
-            the completed sample came from, and it is about to be dropped — so the attribution
-            has to happen here or not at all.
-          */
-          const value = Number(bio.Value);
-          const bonus = Number(bio.Bonus);
-          const credits = (Number.isFinite(value) ? value : 0) + (Number.isFinite(bonus) ? bonus : 0);
-          const addr = systemAddressOfBodyKey(removed.bodyKey);
-          if (credits > 0 && Number.isFinite(addr)) {
-            this.addSoldTally(this.soldOrganicBySystem, addr, credits, 1, ts);
-          }
-        }
-      }
-    }
-    return;
-  }
-
-  /** `SellExplorationData` / `MultiSellExplorationData` — one of apply()'s event handlers. */
-  private onSellExplorationDataEtc(line: JournalLine, event: string): void {
-    const o = line as Record<string, unknown>;
-    // Recorded before the clear, which is what removes the rows this is attributed to.
-    this.recordExplorationSale(o, event === "MultiSellExplorationData" ? o.Discovered : o.Systems);
-    if (event === "SellExplorationData") this.clearExplorationForSoldSystems(o.Systems);
-    else this.clearExplorationForSoldSystemsMulti(o.Discovered);
-    return;
-  }
-
-
-  /**
-   * Resolve journal `StarSystem` names to addresses (visited list first, then merged exploration rows),
-   * for one sale. Built once per sale, not walked per sold system: each name used to lowercase every
-   * system the commander ever visited (plan 2.3, Opus 21).
-   */
-  private systemAddressesByName(): (name: string) => number | null {
-    let map: Map<string, number> | null = null;
-    return (name) => {
-      const n = name.trim().toLowerCase();
-      if (!n) return null;
-      if (!map) {
-        map = new Map();
-        for (const [addr, sys] of this.visitedSystems) {
-          const k = sys.trim().toLowerCase();
-          if (!map.has(k)) map.set(k, addr);
-        }
-        for (const rec of this.explorationScans.values()) {
-          const k = rec.starSystem?.trim().toLowerCase();
-          if (k && !map.has(k)) map.set(k, rec.systemAddress);
-        }
-      }
-      return map.get(n) ?? null;
-    };
-  }
-
-  /**
-   * Drop merged exploration / DSS state for a system after a cartographic sale (journal replay order),
-   * or after death with `sold = false` — the data is gone either way, but only sold bodies stay out of
-   * the unsold total when scanned again.
-   */
-  private clearExplorationDataForSystems(systemAddresses: Iterable<number>, sold = true): void {
-    const systems = new Set(systemAddresses);
-    if (systems.size === 0) return;
-    for (const systemAddress of systems) {
-      const prefix = `${systemAddress}:`;
-      const fresh = this.scanIndexIsFresh();
-      const moved: { kind: "live" | "sold"; rec: ExplorationScanRecord; drop?: boolean }[] = [];
-      // The system's own rows from the index when it is fresh, not a walk over every record.
-      const rows = fresh
-        ? [...this.liveScansInSystem(systemAddress)].map((r) => [bodyKey(r.systemAddress, r.bodyId), r] as const)
-        : [...this.explorationScans.entries()].filter(([k]) => k.startsWith(prefix));
-      for (const [k, rec] of rows) {
-        if (sold) this.soldBodyKeys.add(k);
-        // The value is sold; the physics is not. See soldExplorationScans.
-        this.soldExplorationScans.set(k, rec);
-        this.explorationScans.delete(k);
-        this.explorationScansRevision += 1;
-        moved.push({ kind: "sold", rec }, { kind: "live", rec, drop: true });
-      }
-      this.patchScanIndex(fresh, moved);
-      this.fssAllBodiesCompleteSystems.delete(systemAddress);
-      this.fssAllBodiesFoundCountBySystem.delete(systemAddress);
-      this.fssDiscoveryScanBySystem.delete(systemAddress);
-      const moons = this.orbitParentsInSystem(systemAddress);
-      if (moons.size) {
-        for (const bid of [...moons.keys()]) this.orbitParentPlanetByBody.delete(bodyKey(systemAddress, bid));
-        this.orbitParentRevision += 1;
-        // The index was fresh (just read): drop the system from it rather than rebuild it.
-        const memo = this.orbitParentMemo!;
-        memo.bySystem.delete(systemAddress);
-        memo.key = this.orbitParentKey();
-      }
-    }
-    /*
-      The body-keyed sets, walked once for the whole sale (plan 2.3, Opus 21). They hold every body the
-      commander ever mapped or resolved, and were walked once per sold system: a 50-system sale walked
-      each of them 50 times.
-    */
-    const inSold = (k: string) => systems.has(Number(k.slice(0, k.indexOf(":"))));
-    for (const k of [...this.dssMappedBodyKeys]) {
-      if (inSold(k)) {
-        this.dssMappedBodyKeys.delete(k);
-        this.archivedDssMappedBodyKeys.add(k);
-      }
-    }
-    for (const k of [...this.dssFirstMapperEligibleByBodyKey.keys()]) {
-      if (inSold(k)) this.dssFirstMapperEligibleByBodyKey.delete(k);
-    }
-    for (const k of [...this.dssMappingEfficientByBodyKey.keys()]) {
-      if (inSold(k)) this.dssMappingEfficientByBodyKey.delete(k);
-    }
-    for (const k of [...this.fssBodySignalsBodyKeys]) {
-      if (inSold(k)) this.fssBodySignalsBodyKeys.delete(k);
-    }
-  }
-
-  /** Add to a per-system tally, keeping the latest timestamp. */
-  private addSoldTally(
-    map: Map<number, SoldTally>,
-    systemAddress: number,
-    credits: number,
-    items: number,
-    at: string,
-  ): void {
-    const cur = map.get(systemAddress) ?? { credits: 0, items: 0, sales: 0, lastAt: "" };
-    cur.credits += credits;
-    cur.items += items;
-    cur.sales += 1;
-    if (at > cur.lastAt) cur.lastAt = at;
-    map.set(systemAddress, cur);
-  }
-
-  /**
-   * Credit an exploration sale to the systems it covered.
-   *
-   * The journal gives one `TotalEarnings` for the whole batch and, at best, a body count per system.
-   * So the money is **apportioned by body count** — twice the bodies, twice the credits — and where
-   * no counts are given it is split evenly. This is an estimate of a real payment rather than a
-   * real per-system payment, and the panel that shows it says so.
-   *
-   * `TotalEarnings` is preferred over `BaseValue + Bonus` because it is what actually arrived: the
-   * other two are the pre-discount figures and do not always sum to it.
-   */
-  private recordExplorationSale(line: Record<string, unknown>, listed: unknown): void {
-    if (!Array.isArray(listed) || listed.length === 0) return;
-    const total = Number(line.TotalEarnings);
-    const fallback = Number(line.BaseValue) + Number(line.Bonus);
-    const earned = Number.isFinite(total) && total > 0 ? total : Number.isFinite(fallback) ? fallback : 0;
-    if (!(earned > 0)) return;
-    const ts = typeof line.timestamp === "string" ? line.timestamp : "";
-
-    const rows: { addr: number; bodies: number }[] = [];
-    const byName = this.systemAddressesByName();
-    for (const item of listed) {
-      let addr: number | null = null;
-      let bodies = 0;
-      if (typeof item === "string") {
-        addr = byName(item);
-      } else if (item && typeof item === "object") {
-        const o = item as Record<string, unknown>;
-        if (typeof o.SystemAddress === "number" && Number.isFinite(o.SystemAddress)) addr = o.SystemAddress;
-        else {
-          const nm = o.SystemName ?? o.StarSystem ?? o.System;
-          if (typeof nm === "string") addr = byName(nm);
-        }
-        const n = Number(o.NumBodies);
-        if (Number.isFinite(n) && n > 0) bodies = n;
-      }
-      if (addr != null) rows.push({ addr, bodies });
-    }
-    if (rows.length === 0) return;
-
-    const totalBodies = rows.reduce((n, r) => n + r.bodies, 0);
-    for (const r of rows) {
-      const share = totalBodies > 0 ? r.bodies / totalBodies : 1 / rows.length;
-      this.addSoldTally(this.soldExplorationBySystem, r.addr, earned * share, r.bodies, ts);
-    }
-  }
-
-  /** `SellExplorationData.Systems` — string names and/or objects with SystemAddress / SystemName. */
-  private clearExplorationForSoldSystems(systems: unknown): void {
-    if (!Array.isArray(systems)) return;
-    const byName = this.systemAddressesByName();
-    const sold: number[] = [];
-    for (const item of systems) {
-      if (typeof item === "string") {
-        const addr = byName(item);
-        if (addr != null) sold.push(addr);
-        continue;
-      }
-      if (!item || typeof item !== "object") continue;
-      const o = item as Record<string, unknown>;
-      if (typeof o.SystemAddress === "number" && Number.isFinite(o.SystemAddress)) {
-        sold.push(o.SystemAddress);
-        continue;
-      }
-      const nm = o.SystemName ?? o.StarSystem ?? o.System;
-      if (typeof nm === "string") {
-        const addr = byName(nm);
-        if (addr != null) sold.push(addr);
-      }
-    }
-    this.clearExplorationDataForSystems(sold);
-  }
-
-  /** `MultiSellExplorationData.Discovered` — { SystemName, NumBodies }[] (optional SystemAddress). */
-  private clearExplorationForSoldSystemsMulti(discovered: unknown): void {
-    if (!Array.isArray(discovered)) return;
-    const byName = this.systemAddressesByName();
-    const sold: number[] = [];
-    for (const item of discovered) {
-      if (!item || typeof item !== "object") continue;
-      const o = item as Record<string, unknown>;
-      if (typeof o.SystemAddress === "number" && Number.isFinite(o.SystemAddress)) {
-        sold.push(o.SystemAddress);
-        continue;
-      }
-      const nm = o.SystemName;
-      if (typeof nm === "string") {
-        const addr = byName(nm);
-        if (addr != null) sold.push(addr);
-      }
-    }
-    this.clearExplorationDataForSystems(sold);
-  }
-
-  /**
-   * Moons of the same planet typically share biological signals, DSS genus lists, mapped state, and surface stats.
-   * Mirrors FSS → `fss_signals`, DSS probe → `saas_signals`, DSS complete → `dss_complete`, detailed `Scan` →
-   * `detailed_scan`, ScanOrganic → `organic`.
-   */
-  private propagateExoAmongSimilarMoons(
-    sourceBodyId: number,
-    systemAddress: number,
-    ts: string,
-    mode: "fss_signals" | "saas_signals" | "dss_complete" | "detailed_scan" | "organic",
-  ): void {
-    const sk = bodyKey(systemAddress, sourceBodyId);
-    const sourceBody = this.bodies.get(sk);
-    if (!sourceBody) return;
-
-    const sourceRec = this.explorationScans.get(sk) ?? null;
-    if (!sourceRec && !this.orbitParentPlanetByBody.has(sk)) return;
-
-    for (const bid of siblingMoonBodyIdsUnified(this, systemAddress, sourceBodyId)) {
-      const sibRec = this.explorationScans.get(bodyKey(systemAddress, bid)) ?? null;
-      if (sourceRec && sibRec && !explorationRecordsSimilarForSharedExo(sourceRec, sibRec)) continue;
-
-      const sibName =
-        sibRec?.bodyName?.trim() ||
-        this.bodies.get(bodyKey(systemAddress, bid))?.bodyName?.trim() ||
-        `Body ${bid}`;
-      const sibStar = sibRec?.starSystem?.trim() || sourceRec?.starSystem?.trim() || this.currentSystem || "";
-      const b = ensureBody(this.bodies, systemAddress, bid, sibName, sibStar, ts);
-
-      /**
-       * The sibling's own count, when the game has given it one, outranks anything inherited.
-       *
-       * `FSSBodySignals` is per body: the game says how many signals *that* rock has. Copying a
-       * neighbour's count over it invents biology. On `Plio Aip NM-U d3-13` the owner's 4 c reported
-       * two signals at 02:01:19 and 4 b's DSS reported three at 02:03:50; the propagation overwrote
-       * the two with three, and since 4 b's genera came with it — Bacterium, Tubus, Tussock — the
-       * panel then raised "1 genus missing from the candidate list" against a body that never had
-       * three signals and was never DSS'd. The gate it accused was correct: 4 c is 154 K and every
-       * Tubus starts at 160.
-       *
-       * Hints merge (below) because a genus really seen next door is worth suggesting here. A count
-       * cannot merge — it is a fact about one body, and the sibling's own is the only one that is
-       * about this one.
-       */
-      const sibOwnCount = this.fssBodySignalsBodyKeys.has(bodyKey(systemAddress, bid));
-      /**
-       * And the same for the genus list: a sibling the commander has DSS'd knows its own genera, and
-       * `SAASignalsFound` names all of them. Suggesting a neighbour's extra genus there contradicts
-       * the game. See the matching note in {@link syncExoStateFromSiblingMoons}.
-       */
-      const sibOwnGenera = this.dssMappedBodyKeys.has(bodyKey(systemAddress, bid));
-
-      if (mode === "fss_signals") {
-        if (sourceBody.biologicalSignals != null && !sibOwnCount)
-          b.biologicalSignals = sourceBody.biologicalSignals;
-        if (sourceBody.genusHints?.length && !sibOwnGenera) {
-          b.genusHints = mergeGenusHints(b.genusHints, sourceBody.genusHints);
-        }
-        if (sourceBody.signalHints?.length) {
-          const set = new Set<string>([...(b.signalHints ?? []), ...sourceBody.signalHints]);
-          b.signalHints = set.size ? [...set] : b.signalHints;
-        }
-      } else if (mode === "saas_signals") {
-        if (sourceBody.biologicalSignals != null && !sibOwnCount)
-          b.biologicalSignals = sourceBody.biologicalSignals;
-        // Merge, never replace: the sibling's own DSS result is at least as authoritative as this
-        // one's, and overwriting it deleted genera the commander went on to scan there. See the
-        // `fss_signals` branch above, which has always merged.
-        if (sourceBody.genusHints?.length && !sibOwnGenera) {
-          b.genusHints = mergeGenusHints(b.genusHints, sourceBody.genusHints);
-        }
-        if (sourceBody.signalHints?.length) {
-          const set = new Set<string>([...(b.signalHints ?? []), ...sourceBody.signalHints]);
-          b.signalHints = set.size ? [...set] : b.signalHints;
-        }
-      } else if (mode === "dss_complete") {
-        b.dssComplete = true;
-        if (sourceBody.genusHints?.length && !sibOwnGenera) {
-          b.genusHints = mergeGenusHints(b.genusHints, sourceBody.genusHints);
-        }
-        if (sourceBody.biologicalSignals != null && !sibOwnCount)
-          b.biologicalSignals = sourceBody.biologicalSignals;
-      } else if (mode === "detailed_scan") {
-        const srcScan = sourceBody.scan;
-        if (srcScan?.PlanetClass) {
-          b.scan = buildSiblingPlanetScan(this, srcScan, systemAddress, bid, sibRec);
-        }
-      } else {
-        const seen = new Set(b.organicGenusLocks.map(organicLockGenusKey));
-        for (const lock of sourceBody.organicGenusLocks) {
-          const gk = organicLockGenusKey(lock);
-          if (gk && seen.has(gk)) continue;
-          if (gk) seen.add(gk);
-          // A hint for the match here, not progress: nobody sampled anything on this moon.
-          const copy: OrganicGenusLock = { ...lock, fromSibling: true };
-          delete copy.samples;
-          delete copy.analysed;
-          delete copy.at;
-          b.organicGenusLocks.push(copy);
-        }
-        /*
-         * Logged variants are NOT copied (owner, 2026-09-26). A variant is what was logged on that
-         * moon; copied here it read as this moon's own colour: 76 Leonis 6 a, d, f and g all showed
-         * "Osseus Discus - Red" from one scan, overrode their own material prediction, and went in
-         * the outliers file as colour misses on moons nobody had set foot on.
-         */
-      }
-    }
-  }
 
   listBioBodies(): BodyExoState[] {
     const focus = this.viewingSystemAddress ?? this.currentSystemAddress;
@@ -3662,7 +1759,7 @@ export class GameStateStore {
     added, or all cleared: the index is rebuilt when the count moves and dropped on clear/load.
     Keys, not objects, so a body replaced in the map is still read fresh.
   */
-  private bodyKeysBySystem: Map<number, string[]> | null = null;
+  bodyKeysBySystem: Map<number, string[]> | null = null;
   /**
    * Bumped whenever a body gains a confirmed colour variant, or the bodies are cleared or loaded:
    * the colour-outlier sweep (snapshot.ts) skips its pass over every body when this has not moved.
@@ -3811,258 +1908,16 @@ export class GameStateStore {
     return true;
   }
 
-  /** Journal replay snapshot for disk cache (`format` must match {@link JOURNAL_MERGE_CACHE_FORMAT}). */
+  /** Journal replay snapshot for the disk cache (gameStatePayload.ts). */
   serializeJournalMergePayload(): JournalMergeCachePayload {
-    return {
-      format: JOURNAL_MERGE_CACHE_FORMAT,
-      commanderName: this.commanderName,
-      commanderFid: this.commanderFid,
-      currentSystem: this.currentSystem,
-      currentSystemAddress: this.currentSystemAddress,
-      viewingSystemAddress: this.viewingSystemAddress,
-      visitedSystems: [...this.visitedSystems.entries()],
-      systemVisitedAt: [...this.systemVisitedAt.entries()],
-      systemStarClass: [...this.systemStarClass.entries()],
-      targetedSystems: [...this.targetedSystems.entries()].map(([a, t]) => [a, t.name, t.starClass]),
-      bodies: [...this.bodies.entries()],
-      explorationScans: [...this.explorationScans.entries()],
-      soldExplorationScans: [...this.soldExplorationScans.entries()],
-      soldBodyKeys: [...this.soldBodyKeys],
-      fssBodySignalsBodyKeys: [...this.fssBodySignalsBodyKeys],
-      dssMappedBodyKeys: [...this.dssMappedBodyKeys],
-      archivedDssMappedBodyKeys: [...this.archivedDssMappedBodyKeys],
-      dssFirstMapperEligibleByBodyKey: [...this.dssFirstMapperEligibleByBodyKey.entries()],
-      dssMappingEfficientByBodyKey: [...this.dssMappingEfficientByBodyKey.entries()],
-      orbitParentPlanetByBody: [...this.orbitParentPlanetByBody.entries()],
-      lastEventIso: this.lastEventIso,
-      footJournalContextBuffer: this.footJournalContextBuffer.slice(),
-      organicAnalyseByKey: [...this.organicAnalyseByKey.entries()],
-      bodyDetailedFootfallState: [...this.bodyDetailedFootfallState.entries()],
-      commanderPos: this.commanderPos,
-      bodyFootfallFlag: [...this.bodyFootfallFlag.entries()],
-      bodyMappedFlag: [...this.bodyMappedFlag.entries()],
-      firstFootfallBodies: [...this.firstFootfallBodies],
-      codexLoggedSpecies: [...this.codexLoggedSpecies],
-      codexRegionLogged: [...this.codexRegionLogged],
-      codexRegionBySystem: [...this.codexRegionBySystem.entries()],
-      organicRunStartedAt: [...this.organicRunStartedAt.entries()],
-      fsdTarget: this.fsdTarget,
-      lastJumpTarget: this.lastJumpTarget,
-      codexMapLogged: [...this.codexMapLogged],
-      codexSightings: [...this.codexSightings],
-      achievementDone: [...this.achievementDone],
-      greenCodexBodies: [...this.greenCodexBodies],
-      k10Systems: [...this.k10Systems],
-      nspSeen: [...this.nspSeen],
-      landingMinutesSamples: [...this.landingMinutesSamples],
-      samplingMinutesSamples: [...this.samplingMinutesSamples],
-      pendingOrganicSales: this.pendingOrganicSales.map((p) => ({ ...p })),
-      surfaceShipMark: this.surfaceShipMark ? { ...this.surfaceShipMark } : null,
-      overlayTouchdownBodyKey: this.overlayTouchdownBodyKey,
-      currentBodyKey: this.currentBodyKey,
-      fssAllBodiesCompleteSystems: [...this.fssAllBodiesCompleteSystems],
-      systemLife: [...this.systemLife.entries()],
-      fssDiscoveryScanBySystem: [...this.fssDiscoveryScanBySystem.entries()],
-      fssAllBodiesFoundCountBySystem: [...this.fssAllBodiesFoundCountBySystem.entries()],
-      soldExplorationBySystem: [...this.soldExplorationBySystem.entries()],
-      soldOrganicBySystem: [...this.soldOrganicBySystem.entries()],
-      mainStarWasDiscoveredBySystem: [...this.mainStarWasDiscoveredBySystem.entries()],
-      mainStarSourceRankBySystem: [...this.mainStarSourceRankBySystem.entries()],
-      systemPositions: [...this.systemPositions.entries()],
-      remainingJumpsInRoute: this.remainingJumpsInRoute,
-      loadoutMaxJumpRangeLy: this.loadoutMaxJumpRangeLy,
-      loadoutFuelMainCapacityT: this.loadoutFuelMainCapacityT,
-      loadoutFuelReserveCapacityT: this.loadoutFuelReserveCapacityT,
-      lastFsdJumpFuelUsedT: this.lastFsdJumpFuelUsedT,
-      lastFsdJumpDistLy: this.lastFsdJumpDistLy,
-      jumpRange: structuredClone(this.jumpRange),
-      fsdFuel: structuredClone(this.fsdFuel),
-      fsdWear: structuredClone(this.fsdWear),
-      ownAssets: structuredClone(this.ownAssets),
-      jumponium: structuredClone(this.jumponium),
-    };
+    return journalPayload.serializeJournalMergePayload(this);
   }
 
   /**
-   * Restores journal-derived state after {@link resetAll}. User prefs on the store are unchanged
-   * (they were not cleared by `resetAll`).
+   * Restores journal-derived state after {@link resetAll}; user prefs are unchanged. False = not this cache format or
+   * not a payload: treat it as a cache miss and replay the logs (gameStatePayload.ts says why that matters).
    */
   hydrateJournalMergePayload(data: JournalMergeCachePayload): boolean {
-    /**
-     * **Returns whether it restored anything**, and the return value is not decoration.
-     *
-     * This used to return `void` and bail silently on a payload it did not recognise, leaving the
-     * store exactly as empty as it started. The caller could not tell that apart from a cache that
-     * legitimately held nothing, so it went on to apply the new journal lines and *save* — writing an
-     * empty history, with a complete file manifest, over a good cache. That is how the owner's
-     * 7.8 MB cache became 538 bytes at 11:18 on 2026-09-07, taking the whole system view and the
-     * accuracy probe's ground truth with it.
-     *
-     * A false here means "treat this as a cache miss and replay the logs".
-     */
-    // Exactly the current format, nothing else. This was an explicit allowlist (`!== 1 && !== 2`),
-    // a third place the version had to be remembered: bumping the constant without editing it here
-    // turns every cache into a permanent miss and replays 245 logs on every launch.
-    if (data.format !== JOURNAL_MERGE_CACHE_FORMAT) return false;
-    if (
-      !Array.isArray(data.bodies) ||
-      !Array.isArray(data.explorationScans) ||
-      !Array.isArray(data.visitedSystems)
-    ) {
-      return false;
-    }
-    this.resetAll();
-    this.commanderName = data.commanderName;
-    this.commanderFid = data.commanderFid ?? null;
-    this.currentSystem = data.currentSystem;
-    this.currentSystemAddress = data.currentSystemAddress;
-    this.viewingSystemAddress = data.viewingSystemAddress;
-    this.lastEventIso = data.lastEventIso;
-    for (const [addr, name] of data.visitedSystems) this.visitedSystems.set(addr, name);
-    this.systemVisitedAt.clear();
-    for (const [a, t] of data.systemVisitedAt ?? []) if (typeof a === "number" && typeof t === "string") this.systemVisitedAt.set(a, t);
-    this.systemStarClass.clear();
-    for (const [a, c] of data.systemStarClass ?? []) if (typeof a === "number" && typeof c === "string") this.systemStarClass.set(a, c);
-    this.targetedSystems.clear();
-    for (const [a, n, c] of data.targetedSystems ?? [])
-      if (typeof a === "number" && typeof n === "string") this.targetedSystems.set(a, { name: n, starClass: typeof c === "string" ? c : "" });
-    this.visitedSystemNames = null;
-    for (const [k, v] of data.bodies) this.bodies.set(k, v);
-    this.bodyKeysBySystem = null;
-    this.confirmedVariantsRevision += 1;
-    for (const [k, v] of data.explorationScans) this.explorationScans.set(k, v);
-    for (const [k, v] of data.soldExplorationScans ?? []) this.soldExplorationScans.set(k, v);
-    for (const k of data.soldBodyKeys ?? []) this.soldBodyKeys.add(k);
-    this.explorationScansRevision += 1;
-    for (const k of data.fssBodySignalsBodyKeys) this.fssBodySignalsBodyKeys.add(k);
-    for (const k of data.dssMappedBodyKeys) this.dssMappedBodyKeys.add(k);
-    for (const k of data.archivedDssMappedBodyKeys ?? []) this.archivedDssMappedBodyKeys.add(k);
-    for (const [k, v] of data.dssFirstMapperEligibleByBodyKey) this.dssFirstMapperEligibleByBodyKey.set(k, v);
-    for (const [k, v] of data.dssMappingEfficientByBodyKey) this.dssMappingEfficientByBodyKey.set(k, v);
-    for (const [k, v] of data.orbitParentPlanetByBody) this.orbitParentPlanetByBody.set(k, v);
-    this.orbitParentRevision += 1;
-    this.footJournalContextBuffer.length = 0;
-    this.footJournalContextBuffer.push(...data.footJournalContextBuffer);
-    for (const [k, v] of data.organicAnalyseByKey) this.organicAnalyseByKey.set(k, v);
-    for (const [k, v] of data.bodyDetailedFootfallState) this.bodyDetailedFootfallState.set(k, v);
-    this.commanderPos = data.commanderPos ?? null;
-    for (const [k, v] of data.bodyFootfallFlag ?? []) this.bodyFootfallFlag.set(k, v);
-    for (const [k, v] of data.bodyMappedFlag ?? []) this.bodyMappedFlag.set(k, v);
-    for (const k of data.firstFootfallBodies) this.firstFootfallBodies.add(k);
-    for (const k of data.codexLoggedSpecies ?? []) this.codexLoggedSpecies.add(k);
-    for (const k of data.codexRegionLogged ?? []) this.codexRegionLogged.add(k);
-    for (const [k, r] of data.codexRegionBySystem ?? []) this.codexRegionBySystem.set(k, r);
-    for (const [k, t] of data.organicRunStartedAt ?? []) this.organicRunStartedAt.set(k, t);
-    this.fsdTarget = data.fsdTarget ?? null;
-    this.lastJumpTarget = data.lastJumpTarget ?? null;
-    for (const k of data.codexMapLogged ?? []) this.codexMapLogged.add(k);
-    for (const [k, t] of data.codexSightings ?? []) this.codexSightings.set(k, t);
-    for (const [k, t] of data.achievementDone ?? []) this.achievementDone.set(k, t);
-    for (const [k, id] of data.greenCodexBodies ?? []) this.greenCodexBodies.set(k, id);
-    for (const a of data.k10Systems ?? []) this.k10Systems.add(a);
-    for (const [a, names] of data.nspSeen ?? []) this.nspSeen.set(a, [...names]);
-    this.landingMinutesSamples.push(...(data.landingMinutesSamples ?? []));
-    this.samplingMinutesSamples.push(...(data.samplingMinutesSamples ?? []));
-    this.pendingOrganicSales = data.pendingOrganicSales.map((p) => ({ ...p }));
-    /*
-      Format 6+. Two sources can know where the ship is parked and they arrive in a fixed order:
-      the marks file is read when the store is built, this cache lands on top of it.
-
-      So "last one wins" would mean the cache always wins, including when it is the older answer —
-      a full cache hit skips the journal entirely, so a Touchdown made after the cache was written
-      is not replayed and could be silently overwritten by a stale one. Whichever was recorded later
-      wins instead, and an absent cache value never clears a mark the file supplied.
-    */
-    const cachedShip = data.surfaceShipMark ? { ...data.surfaceShipMark } : null;
-    if (cachedShip) {
-      const have = this.surfaceShipMark;
-      if (!have || !have.atIso || (cachedShip.atIso ?? "") >= have.atIso) this.surfaceShipMark = cachedShip;
-    }
-    this.overlayTouchdownBodyKey = data.overlayTouchdownBodyKey ?? null;
-    this.currentBodyKey = data.currentBodyKey ?? null;
-    for (const addr of data.fssAllBodiesCompleteSystems) this.fssAllBodiesCompleteSystems.add(addr);
-    for (const [addr, life] of data.systemLife ?? []) this.systemLife.set(addr, life);
-    for (const [addr, row] of data.fssDiscoveryScanBySystem) {
-      this.fssDiscoveryScanBySystem.set(addr, { ...row });
-    }
-    this.fssAllBodiesFoundCountBySystem.clear();
-    for (const [addr, cnt] of data.fssAllBodiesFoundCountBySystem ?? []) {
-      if (typeof addr === "number" && typeof cnt === "number" && cnt > 0) {
-        this.fssAllBodiesFoundCountBySystem.set(addr, cnt);
-      }
-    }
-    for (const [target, rows] of [
-      [this.soldExplorationBySystem, data.soldExplorationBySystem],
-      [this.soldOrganicBySystem, data.soldOrganicBySystem],
-    ] as const) {
-      target.clear();
-      for (const [addr, t] of rows ?? []) {
-        if (typeof addr !== "number" || !t || typeof t.credits !== "number") continue;
-        target.set(addr, {
-          credits: t.credits,
-          items: typeof t.items === "number" ? t.items : 0,
-          sales: typeof t.sales === "number" ? t.sales : 0,
-          lastAt: typeof t.lastAt === "string" ? t.lastAt : "",
-        });
-      }
-    }
-    // No version branch here on purpose: the loader admits a payload only when its `format` equals
-    // JOURNAL_MERGE_CACHE_FORMAT exactly, so anything reaching this point is current. A `>= n` test
-    // reads as though older caches still flow through and quietly excuses a missing field — which is
-    // how `mainStarWasDiscoveredBySystem` shipped restoring nothing. Trust the per-value type checks.
-    this.systemPositions.clear();
-    for (const [a, p] of data.systemPositions ?? []) {
-      if (typeof a === "number" && p && typeof p.x === "number") this.systemPositions.set(a, p);
-    }
-    this.mainStarWasDiscoveredBySystem.clear();
-    for (const [a, w] of data.mainStarWasDiscoveredBySystem ?? []) {
-      if (typeof a === "number" && typeof w === "boolean") this.mainStarWasDiscoveredBySystem.set(a, w);
-    }
-    this.mainStarSourceRankBySystem.clear();
-    for (const [a, r] of data.mainStarSourceRankBySystem ?? []) {
-      if (typeof a === "number" && typeof r === "number") this.mainStarSourceRankBySystem.set(a, r);
-    }
-    // A cache from before the ranks were saved: every stored answer counts as already taken.
-    for (const a of this.mainStarWasDiscoveredBySystem.keys()) {
-      if (!this.mainStarSourceRankBySystem.has(a)) this.mainStarSourceRankBySystem.set(a, 0);
-    }
-    const rj = data.remainingJumpsInRoute;
-    this.remainingJumpsInRoute =
-      typeof rj === "number" && Number.isFinite(rj) ? Math.max(0, Math.floor(rj)) : null;
-    const lmj = data.loadoutMaxJumpRangeLy;
-    this.loadoutMaxJumpRangeLy = typeof lmj === "number" && Number.isFinite(lmj) && lmj > 0 ? lmj : null;
-    const lfm = data.loadoutFuelMainCapacityT;
-    this.loadoutFuelMainCapacityT = typeof lfm === "number" && Number.isFinite(lfm) && lfm > 0 ? lfm : null;
-    const lfr = data.loadoutFuelReserveCapacityT;
-    this.loadoutFuelReserveCapacityT =
-      typeof lfr === "number" && Number.isFinite(lfr) && lfr >= 0 ? lfr : null;
-    const lff = data.lastFsdJumpFuelUsedT;
-    this.lastFsdJumpFuelUsedT = typeof lff === "number" && Number.isFinite(lff) && lff > 0 ? lff : null;
-    const jr = data.jumpRange;
-    if (jr && Array.isArray(jr.long) && Array.isArray(jr.recent)) {
-      this.jumpRange = {
-        shipId: typeof jr.shipId === "number" ? jr.shipId : null,
-        loadoutLy: typeof jr.loadoutLy === "number" ? jr.loadoutLy : null,
-        long: jr.long.filter((d) => typeof d === "number" && d > 0),
-        recent: jr.recent.filter((d) => typeof d === "number" && d > 0),
-      };
-    }
-    const ff = data.fsdFuel;
-    if (ff && Array.isArray(ff.samples)) {
-      this.fsdFuel = {
-        shipId: typeof ff.shipId === "number" ? ff.shipId : null,
-        loadoutLy: typeof ff.loadoutLy === "number" ? ff.loadoutLy : null,
-        unladenT: typeof ff.unladenT === "number" ? ff.unladenT : null,
-        maxFuelPerJumpT: typeof ff.maxFuelPerJumpT === "number" ? ff.maxFuelPerJumpT : null,
-        cargoT: typeof ff.cargoT === "number" ? ff.cargoT : null,
-        samples: ff.samples.filter((s) => s && s.ly > 0 && s.fuelT > 0 && s.massT > 0),
-      };
-    }
-    this.fsdWear = hydrateFsdWear(data.fsdWear);
-    this.ownAssets = hydrateOwnAssets(data.ownAssets);
-    this.jumponium = hydrateJumponium(data.jumponium);
-    const ljd = data.lastFsdJumpDistLy;
-    this.lastFsdJumpDistLy = typeof ljd === "number" && Number.isFinite(ljd) && ljd > 0 ? ljd : null;
-    return true;
+    return journalPayload.hydrateJournalMergePayload(this, data);
   }
 }

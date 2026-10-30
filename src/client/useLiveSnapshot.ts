@@ -30,7 +30,9 @@ const IPC_UI_COMMANDS: boolean = (() => {
       };
     }
   ).edexoElectron;
-  if (!e?.tabs || typeof e.onUiCommand !== "function" || new URLSearchParams(location.search).has("tabwin")) return false;
+  const q = new URLSearchParams(location.search);
+  // Electron sends them to Compare's window only; Colonize (its own app on this shell) takes the socket's copy.
+  if (!e?.tabs || typeof e.onUiCommand !== "function" || q.has("tabwin") || q.get("screen") === "colonize") return false;
   e.onUiCommand((cmd) => {
     const got = typeof cmd.sentAt === "number" ? Date.now() - cmd.sentAt : -1;
     window.dispatchEvent(new CustomEvent(UI_COMMAND_EVENT, { detail: cmd }));
@@ -44,10 +46,16 @@ const IPC_UI_COMMANDS: boolean = (() => {
   return true;
 })();
 
-function websocketUrl(): string {
+function websocketUrl(channel: LiveChannel): string {
   const p = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${p}//${window.location.host}/ws`;
+  return `${p}//${window.location.host}/ws${channel === "app" ? "" : `?channel=${channel}`}`;
 }
+
+/**
+ * `app`: the whole state, for Compare. `shell`: the Colonize window's (discuss item 22, 1.3.1) - the same without the
+ * big fields only Compare's own screen uses (server/wsChannels.ts SHELL_OMIT), about 20 KB instead of ~1 MB.
+ */
+export type LiveChannel = "app" | "shell";
 
 /**
  * The backup check while the WebSocket is primary — recovers from half-open / silent drops without
@@ -56,6 +64,15 @@ function websocketUrl(): string {
  * the whole snapshot every 10 s regardless).
  */
 const HTTP_STATE_BACKUP_MS = 10_000;
+
+/**
+ * How long a new page waits for the socket's first frame before it fetches `/api/state` instead (audit 2026-10-22).
+ * The server's first frame on a socket is always the whole snapshot, so the fetch every page made at start-up as
+ * well had the server build, stringify and gzip it twice and the page parse and draw it twice: 0.8 MB, about 10 MB in
+ * a rich system, at the moment the server is busiest. Now the fetch is the fallback: no frame in this time, or a
+ * socket that closed before it sent one.
+ */
+const FIRST_FRAME_WAIT_MS = 1_500;
 
 /** Reconnect waits: 1.1 s first, doubling to 10 s while the socket keeps failing (plan 2.2, F-9.3). */
 const RECONNECT_FIRST_MS = 1_100;
@@ -88,7 +105,7 @@ export function useLastStateAt(): number | null {
   );
 }
 
-export function useLiveSnapshot(): {
+export function useLiveSnapshot(channel: LiveChannel = "app"): {
   snapshot: AppSnapshot | null;
   connected: boolean;
 } {
@@ -166,7 +183,7 @@ export function useLiveSnapshot(): {
     };
 
     const fetchFull = () =>
-      void fetch("/api/state", { cache: "no-store" })
+      void fetch(channel === "app" ? "/api/state" : `/api/state?channel=${channel}`, { cache: "no-store" })
         .then(async (r) => {
           const header = r.headers.get("X-Edexo-Rev");
           const rev = header == null ? NaN : Number(header);
@@ -183,12 +200,22 @@ export function useLiveSnapshot(): {
           if (!cancelled) setConnected(false);
         });
 
-    fetchFull();
+    // The socket's first frame brings the snapshot; `/api/state` only if it has not come in time (FIRST_FRAME_WAIT_MS).
+    let firstFrameTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      firstFrameTimer = null;
+      if (!cancelled && held === null) fetchFull();
+    }, FIRST_FRAME_WAIT_MS);
+    const clearFirstFrameTimer = () => {
+      if (firstFrameTimer != null) {
+        clearTimeout(firstFrameTimer);
+        firstFrameTimer = null;
+      }
+    };
 
     const connect = () => {
       if (cancelled) return;
       clearReconnect();
-      ws = new WebSocket(websocketUrl());
+      ws = new WebSocket(websocketUrl(channel));
       ws.onopen = () => {
         reconnectMs = RECONNECT_FIRST_MS;
         setConnected(true);
@@ -198,6 +225,12 @@ export function useLiveSnapshot(): {
         setConnected(false);
         shownRev = null;
         if (!cancelled) {
+          // Closed (or never opened: an error is always followed by a close) before any snapshot: the fallback fetch
+          // now, not at the end of the wait. Once only; after that the 10 s backup check keeps asking, as before.
+          if (held === null && firstFrameTimer != null) {
+            clearFirstFrameTimer();
+            fetchFull();
+          }
           reconnectRef.current = setTimeout(connect, reconnectMs);
           reconnectMs = Math.min(RECONNECT_MAX_MS, reconnectMs * 2);
         }
@@ -208,6 +241,7 @@ export function useLiveSnapshot(): {
           const raw = String(ev.data);
           const msg = JSON.parse(raw);
           if (msg.type === "state") {
+            clearFirstFrameTimer();
             perfSnapshotReceived(raw.length, arrivedAt);
             if (typeof msg.rev === "number") lastRev = shownRev = msg.rev;
             applyPayload(
@@ -245,10 +279,11 @@ export function useLiveSnapshot(): {
     return () => {
       cancelled = true;
       clearReconnect();
+      clearFirstFrameTimer();
       clearInterval(httpBackup);
       ws?.close();
     };
-  }, []);
+  }, [channel]);
 
   /** Runs after each snapshot commit; no-op unless client perf is enabled. */
   useEffect(() => {

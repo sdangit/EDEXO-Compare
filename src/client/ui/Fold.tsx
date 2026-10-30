@@ -54,6 +54,7 @@ export function FoldPanel({
   defaultOpen = true,
   className = "",
   bodyClassName = "",
+  heading,
   children,
 }: {
   /** localStorage key; also the id base for aria wiring. */
@@ -76,6 +77,11 @@ export function FoldPanel({
   defaultOpen?: boolean;
   className?: string;
   bodyClassName?: string;
+  /**
+   * Wrap the toggle in a heading of this level (the disclosure pattern: a heading holding its button), for a panel
+   * that is a section of the page, so it is found as a heading (Colonize, 1.3.0). Compare's panels leave it out.
+   */
+  heading?: "h2" | "h3";
   children: ReactNode;
 }) {
   const [open, toggle, setOpen] = useFold(foldKey, defaultOpen);
@@ -94,31 +100,30 @@ export function FoldPanel({
   return (
     <section className={`fold panel${open ? "" : " fold--closed"}${className ? ` ${className}` : ""}`}>
       <div className="fold-head">
-        <button
-          type="button"
-          className="fold-toggle"
-          onClick={toggle}
-          aria-expanded={open}
-          aria-controls={panelId}
-          title={open ? "Fold this panel" : "Unfold this panel"}
-        >
-          <span className="fold-chevron" aria-hidden="true" />
-          <span className="fold-title">{title}</span>
-          {summary != null ? <span className="fold-summary">{summary}</span> : null}
-        </button>
+        {wrapHeading(
+          heading,
+          <button
+            type="button"
+            className="fold-toggle"
+            onClick={toggle}
+            aria-expanded={open}
+            aria-controls={panelId}
+            title={open ? "Fold this panel" : "Unfold this panel"}
+          >
+            <span className="fold-chevron" aria-hidden="true" />
+            <span className="fold-title">{title}</span>
+            {summary != null ? <span className="fold-summary">{summary}</span> : null}
+          </button>,
+        )}
         {aside ? <div className="fold-aside">{aside}</div> : null}
         {tools ? <div className="fold-tools">{tools}</div> : null}
         {help ? (
-          <button
-            type="button"
-            className={`fold-help-btn${helpOpen ? " fold-help-btn--on" : ""}`}
-            onClick={toggleHelp}
-            aria-expanded={helpOpen}
-            aria-controls={`${panelId}-help`}
+          <HelpToggle
+            open={helpOpen}
+            onToggle={toggleHelp}
+            controls={`${panelId}-help`}
             title={helpOpen ? "Hide the explanations" : "What do these mean?"}
-          >
-            ?
-          </button>
+          />
         ) : null}
       </div>
       <div id={panelId} className="fold-body" aria-hidden={!open}>
@@ -132,5 +137,37 @@ export function FoldPanel({
         </div>
       </div>
     </section>
+  );
+}
+
+function wrapHeading(level: "h2" | "h3" | undefined, toggle: ReactNode): ReactNode {
+  if (level === "h2") return <h2 className="fold-heading">{toggle}</h2>;
+  if (level === "h3") return <h3 className="fold-heading">{toggle}</h3>;
+  return toggle;
+}
+
+/** The "?" that opens an explanation (fold heads, the browser's Privacy & Security rows). */
+export function HelpToggle({
+  open,
+  onToggle,
+  title,
+  controls,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  title: string;
+  controls?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`fold-help-btn${open ? " fold-help-btn--on" : ""}`}
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-controls={controls}
+      title={title}
+    >
+      ?
+    </button>
   );
 }
