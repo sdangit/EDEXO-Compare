@@ -18,12 +18,14 @@ import {
   type MarkerItem,
   type Selection,
 } from "./galaxy3d/GalaxyEngine";
+import { usePlotted } from "./galaxy3d/plottedSystems";
 import { detectGraphics, type Graphics } from "./galaxy3d/capabilities";
 import { SYSTEM_CHANGED_EVENT } from "./useLiveSnapshot";
 import { placeLabels } from "./galaxy3d/labelPlacement";
 import { formatCount } from "./galaxy3d/clusters";
 import type { GalaxySearchApplied } from "./GalaxySearchPanel";
 import { GalaxyIndexDownload } from "./GalaxyIndexDownload";
+import { DUE_CLASS, useGalaxyIndexDue } from "./galaxyIndexDue";
 import type { NavRouteSystemDTO } from "./GalaxyNavRoutePanel";
 import {
   EMPTY_GALAXY_FILTER,
@@ -54,6 +56,7 @@ import {
   GalaxySearchPanel,
   JumponiumDrawer,
   NeutronDrawer,
+  SpanshRouteDrawer,
   preloadGalaxyDrawers,
 } from "./galaxy3d/lazyDrawers";
 import { clearStationsAtCache } from "./galaxy3d/StationsAt";
@@ -125,6 +128,8 @@ const isColour = (v: unknown): v is Colour => v === 0 || v === 1 || v === 2;
 /** The Brightness slider's range. */
 const isExposure = (v: unknown): v is number => typeof v === "number" && v >= 0.2 && v <= 4;
 const isWaitMinM = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+/** Plotted systems marked at most, the most recently plotted (the engine's marker layers take thousands, not 10^5). */
+const PLOTTED_MARKERS = 20_000;
 /*
   Where the camera was when the map last closed: a map started again opens there, for as long as the window. Behind
   other tabs for ten minutes the map gives its memory back (TabSlot), and it came back zoomed out over the core
@@ -208,6 +213,8 @@ export function GalaxyMap3D() {
   const [route, setRoute] = useState<GalaxyRouteDTO | null>(null);
   // Peeked, not taken: this render may be thrown away (galaxyDrawerRequest.ts); taken below once the map is on screen.
   const [drawer, setDrawer] = useKeptState<Drawer>("galaxy.drawer", (kept) => peekGalaxyDrawer() ?? kept ?? drawerFromUrl());
+  // A newer galaxy index on the release: the View tab pulses (its Galaxy index row holds the Update).
+  const indexDue = useGalaxyIndexDue();
   // A drawer asked for from another screen while the map is open (Colonize's "Find colony sites", in the Galaxy tab).
   useEffect(() => {
     takeGalaxyDrawer();
@@ -248,8 +255,12 @@ export function GalaxyMap3D() {
   const [gggOn, setGggOn] = usePersistedState("galaxy.layer.ggg", false, isBool);
   const [heliumOn, setHeliumOn] = usePersistedState("galaxy.layer.helium", false, isBool);
   const [stationsOn, setStationsOn] = usePersistedState("galaxy.layer.stations", false, isBool);
+  const [guardianOn, setGuardianOn] = usePersistedState("galaxy.layer.guardian", false, isBool);
+  const [thargoidOn, setThargoidOn] = usePersistedState("galaxy.layer.thargoid", false, isBool);
   // The plotted route's systems you have not been to (owner, 2026-10-04): placed from NavRoute.json.
   const [navUnvisitedOn, setNavUnvisitedOn] = usePersistedState("galaxy.layer.navUnvisited", true, isBool);
+  // Every plotted route's systems not visited (plan 1.3.3 R-2): on unless switched off.
+  const [plottedOn, setPlottedOn] = usePersistedState("galaxy.layer.plotted", true, isBool);
   /* The status bar's legend folds away (owner, 2026-10-04, plan 3.7), remembered. */
   const [legendOn, setLegendOn] = usePersistedState("galaxy.legendOpen", true, isBool);
   /* The Filter drawer (owner, 2026-10-04): remembered between opens, so the button says when one is on. */
@@ -283,6 +294,8 @@ export function GalaxyMap3D() {
     ggg: gggOn,
     helium: heliumOn,
     stations: stationsOn,
+    guardian: guardianOn,
+    thargoid: thargoidOn,
   };
   const extraSet: Record<GalaxyLayerKind, (v: boolean) => void> = {
     poi: setPoiOn,
@@ -292,6 +305,8 @@ export function GalaxyMap3D() {
     ggg: setGggOn,
     helium: setHeliumOn,
     stations: setStationsOn,
+    guardian: setGuardianOn,
+    thargoid: setThargoidOn,
   };
   const [extraData, setExtraData] = useState<Partial<Record<GalaxyLayerKind, GalaxyLayerDTO>>>({});
   const [worthStep, setWorthStep] = useKeptState("galaxy.worthStep", 0);
@@ -594,7 +609,7 @@ export function GalaxyMap3D() {
       ).finally(() => layerAsked.current.delete(l.kind));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [poiOn, nspOn, carriersOn, bookmarksOn, gggOn, heliumOn, stationsOn, extraData]);
+  }, [poiOn, nspOn, carriersOn, bookmarksOn, gggOn, heliumOn, stationsOn, guardianOn, thargoidOn, extraData]);
   useEffect(() => {
     const e = engine.current;
     if (!e) return;
@@ -617,7 +632,7 @@ export function GalaxyMap3D() {
       e.setMarkerLayerVisible(name, extraOn[l.kind]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [extraData, poiOn, nspOn, carriersOn, bookmarksOn, gggOn, heliumOn, stationsOn, stats?.phase]);
+  }, [extraData, poiOn, nspOn, carriersOn, bookmarksOn, gggOn, heliumOn, stationsOn, guardianOn, thargoidOn, stats?.phase]);
 
   /*
     His own carrier's system and his colonies (owner, 2026-10-13: "a little icon"; server/routes/galaxyRoutes.ts
@@ -939,6 +954,25 @@ export function GalaxyMap3D() {
     engine.current?.setMarkers("navUnvisited", items, 2);
   }, [route?.navRoute, navUnvisitedOn]);
 
+  // ------------------------------------------------------------- every plotted route's systems, not visited
+  // Read again on a new route or a jump (visited moves), not on every scan: the list runs to 200,000 systems.
+  const plotted = usePlotted(`${route?.navRoute?.length ?? 0}|${route?.navRoute?.[0]?.address ?? ""}|${route?.system ?? ""}`);
+  const plottedLeft = useMemo(() => plotted.filter((s) => !s.visited), [plotted]);
+  useEffect(() => {
+    const items: MarkerItem[] = plottedOn
+      ? plottedLeft.slice(-PLOTTED_MARKERS).map((s) => ({
+          id: String(s.address),
+          x: s.x,
+          y: s.y,
+          z: s.z,
+          // The finder's green where EDSM does not know it: a system nobody has reported.
+          color: s.edsm === false ? [0.36, 0.9, 0.46] : [0.55, 0.45, 0.95],
+          size: 4,
+        }))
+      : [];
+    engine.current?.setMarkers("plotted", items, 1);
+  }, [plottedLeft, plottedOn]);
+
   // -------------------------------------------------------------------------- the NavRoute finder
   /* The systems its filters leave, marked on the map (owner, 2026-10-04); none while it is closed. */
   const [navShown, setNavShown] = useState<NavRouteSystemDTO[]>([]);
@@ -1167,7 +1201,7 @@ export function GalaxyMap3D() {
   */
   useEffect(() => {
     if (findText.trim().length < 2) return;
-    for (const kind of ["ggg", "helium", "bookmarks"] as const) {
+    for (const kind of ["ggg", "helium", "bookmarks", "guardian", "thargoid"] as const) {
       if (extraData[kind]) continue;
       void fetch(`/api/galaxy/layers?kind=${kind}`)
         .then((r) => (r.ok ? r.json() : null))
@@ -1426,6 +1460,9 @@ export function GalaxyMap3D() {
           extraSet={extraSet}
           navUnvisitedOn={navUnvisitedOn}
           setNavUnvisitedOn={setNavUnvisitedOn}
+          plottedOn={plottedOn}
+          setPlottedOn={setPlottedOn}
+          plottedCount={plottedLeft.length}
           waitMinM={waitMinM}
           setWaitMinM={setWaitMinM}
         />
@@ -1550,6 +1587,14 @@ export function GalaxyMap3D() {
         />
       ) : null}
 
+      {drawer === "spansh" ? (
+        <SpanshRouteDrawer
+          onRoute={setNeutronHops}
+          onFocus={(p) => engine.current?.flyTo({ x: p.x, y: p.y, z: p.z }, 400)}
+          onOpenNeutron={() => withTransition(() => setDrawer("neutron"))}
+        />
+      ) : null}
+
       {drawer === "navroute" ? (
         <aside className="g3d-drawer g3d-drawer--filter" aria-label="NavRoute" data-testid="g3d-navroute">
           <MenuHead title="NavRoute" help={G3D_HELP.navroute} />
@@ -1607,7 +1652,7 @@ export function GalaxyMap3D() {
               <Tooltip key={t.key} text={t.hint}>
                 <button
                   type="button"
-                  className={on ? "g3d-tab g3d-tab--on" : "g3d-tab"}
+                  className={`${on ? "g3d-tab g3d-tab--on" : "g3d-tab"}${t.key === "view" && indexDue && !on ? ` ${DUE_CLASS}` : ""}`}
                   aria-pressed={on}
                   aria-label={label}
                   onClick={() => openDrawer(t.key)}
@@ -1663,12 +1708,14 @@ export function GalaxyMap3D() {
                         400,
                         s.mine
                           ? { kind: "marker", layer: "you", id: s.addr!, x: s.x, y: s.y, z: s.z }
-                          : { kind: "index", ordinal: s.ordinal!, x: s.x, y: s.y, z: s.z },
+                          : s.plotted
+                            ? { kind: "marker", layer: "plotted", id: s.addr!, x: s.x, y: s.y, z: s.z }
+                            : { kind: "index", ordinal: s.ordinal!, x: s.x, y: s.y, z: s.z },
                       )
                     }
                   >
                     <span>{s.name}</span>
-                    <em>{s.mine ? "yours" : "system"}</em>
+                    <em title={s.plotted}>{s.mine ? "yours" : s.plotted ? "plotted" : "system"}</em>
                   </button>
                 </li>
               ))}

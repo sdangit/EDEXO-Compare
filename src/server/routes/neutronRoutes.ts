@@ -5,14 +5,16 @@
 import type express from "express";
 import { localOnly } from "../lanAuth.js";
 import { touchGalaxyMemory } from "../galaxyMemory.js";
-import { neutronShip } from "../neutronShip.js";
+import { lawFor, neutronShip } from "../neutronShip.js";
 import { downloadNeutrons, loadNeutronIndex, neutronsStatus, probeNeutronsRelease } from "../neutronIndex.js";
 import { applyJumponium, optimiseOrder, planNeutronRoute } from "../neutronRoute.js";
 import { jumponiumView, recipeFor } from "../../shared/jumponium.js";
 import { parseLiveHops, parseLivePlan } from "../neutronLive.js";
+import { localStopLookup, remoteStopLookup, withStopAddresses } from "../neutronStops.js";
+import { tileIndexAsync } from "../galaxyTiles.js";
 import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
 
-type Waypoint = { name: string; x: number; y: number; z: number };
+type Waypoint = { name: string; x: number; y: number; z: number; address?: number };
 
 const finite = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
@@ -91,7 +93,8 @@ export function registerNeutronRoutes(
       const z = finite(w.z);
       if (x == null || y == null || z == null)
         return void res.status(400).json({ error: "Every stop needs x, y and z." });
-      waypoints.push({ name: String(w.name ?? "").slice(0, 80) || "Stop", x, y, z });
+      const address = finite(w.address);
+      waypoints.push({ name: String(w.name ?? "").slice(0, 80) || "Stop", x, y, z, ...(address != null && address > 0 ? { address } : {}) });
     }
     if (waypoints.length < 2)
       return void res.status(400).json({ error: "A route needs at least two systems." });
@@ -111,7 +114,12 @@ export function registerNeutronRoutes(
       return void res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
     }
     if (!index) return void res.status(404).json({ error: "No neutron star data yet: download it first." });
-    const ordered = body.optimise === true ? optimiseOrder(waypoints) : waypoints;
+    // Any system a stop (S-4): one with a name and a place only gets its address, for its worth in the drawer.
+    const addressed = await withStopAddresses(waypoints, {
+      local: localStopLookup(await tileIndexAsync(), opts.getJournalStore?.() ?? null, opts.getImportedSystems?.() ?? []),
+      remote: remoteStopLookup,
+    });
+    const ordered = body.optimise === true ? optimiseOrder(addressed) : addressed;
     const t0 = Date.now();
     try {
       const route = await planNeutronRoute(index, ordered, {
@@ -119,11 +127,16 @@ export function registerNeutronRoutes(
         // How the range grows as the tank empties: this ship's, also for a range typed in (it scales it).
         rangeByFuel: s?.rangeByFuel ?? null,
         halfTank: body.halfTank === true,
+        // The reserve, in per cent of the tank (plan 1.3.4 S-7): 0-50 (neutronRoute.ts MAX_RESERVE).
+        reserve: Math.min(50, Math.max(0, finite(body.reservePct) ?? 0)) / 100,
         jumpsPerTank,
         jumpsNow: Math.min(jumpsPerTank, Math.max(0, jumpsNow ?? jumpsPerTank)),
         boost,
         fsdHealth: finite(body.fsdHealth) ?? s?.fsdHealth ?? null,
         wearPerBoost: finite(body.wearPerBoost) ?? s?.wearPerBoost ?? null,
+        // The drive's own law for this ship's range (neutronShip.ts): each supercharge's fuel at the mass aboard.
+        law: lawFor(opts.getJournalStore?.() ?? null, rangeLy),
+        fuelNowT: finite(body.jumpsNow) == null ? (s?.fuelNowT ?? null) : null,
       });
       // "Use Jumponium" (owner, 2026-10-13: a toggle): the route flown with FSD injections where one saves a jump.
       const store = opts.getJournalStore?.() ?? null;

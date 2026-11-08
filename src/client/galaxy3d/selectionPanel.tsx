@@ -8,6 +8,7 @@ import { fmtLy } from "@shared/format";
 import type { CodexMapRegionSummaryDTO } from "@shared/dto/codexMap.js";
 import type { FinderHit } from "@shared/finder";
 import { SystemBookmarkButton } from "../BookmarkButton";
+import { showPickedSystem } from "../tabs/tabStore";
 import { CopySystemButton } from "../CopySystemButton";
 import { ExpeditionBoxelCard, targetLabelOf } from "../ExpeditionDrawer";
 import type { Selection } from "./engineTypes";
@@ -100,7 +101,7 @@ export function selectionPanel(selection: Selection | null, ctx: SelectionPanelC
         </p>
         {route?.position ? <p className="dim">{fmtLy(dist(route.position, r))} from your ship</p> : null}
         <p className="dim">
-          {r.own ? "You scanned it." : "From Spansh's dump: the top 1 % of landable bodies for an element."}
+          {r.own ? "You scanned it." : r.source ? `${r.source}.` : "From Spansh's dump: the top 1 % of landable bodies for an element."}
         </p>
       </div>
     ) : null;
@@ -170,7 +171,7 @@ export function selectionPanel(selection: Selection | null, ctx: SelectionPanelC
         </h2>
         <p className="g3d-panel__meta">
           {ns.starClass ? `${ns.starClass} star · ` : ""}
-          {ns.visited ? "visited" : "on your plotted route, not visited yet"}
+          {ns.tag ?? (ns.visited ? "visited" : "on your plotted route, not visited yet")}
         </p>
         {route?.position ? <p className="dim">{fmtLy(dist(route.position, ns))} from your ship</p> : null}
         <p className="g3d-panel__bm">
@@ -180,7 +181,7 @@ export function selectionPanel(selection: Selection | null, ctx: SelectionPanelC
             pos={{ x: ns.x, y: ns.y, z: ns.z }}
           />
         </p>
-        <IndexRecord addr={String(ns.address)} fallbackName={ns.name} />
+        <IndexRecord addr={String(ns.address)} quiet />
       </div>
     );
   }
@@ -203,13 +204,14 @@ export function selectionPanel(selection: Selection | null, ctx: SelectionPanelC
             type="button"
             className="g3d-btn"
             title="Open it on the main screen: its bodies are fetched from Spansh"
-            onClick={() =>
+            onClick={() => {
               void fetch("/api/ui/view-system", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ systemAddress: h.systemAddress, starSystem: h.starSystem }),
-              })
-            }
+              });
+              showPickedSystem();
+            }}
           >
             Show on the main screen
           </button>

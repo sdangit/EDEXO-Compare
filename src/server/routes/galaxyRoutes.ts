@@ -1,4 +1,5 @@
 
+import { localOnly } from "../lanAuth.js";
 import { getCachedSpeciesDatabase } from "../snapshot.js";
 import express from "express";
 import { getProjectRoot } from "../paths.js";
@@ -37,7 +38,16 @@ import {
   systemTraitCounts,
 } from "../galaxyTraits.js";
 import { downloadGalaxyIndex, galaxyIndexStatus, probeGalaxyIndexSize } from "../galaxyIndexFiles.js";
-import { checkNavRouteSystemsOnEdsm, clearNavRouteLog, lastNavRoute, navRouteLog } from "../navRouteLog.js";
+import {
+  checkNavRouteSystemsOnEdsm,
+  clearNavRouteLog,
+  findPlottedSystems,
+  lastNavRoute,
+  navRouteLog,
+  plottedSystem,
+  plottedSystemsCompact,
+} from "../navRouteLog.js";
+import { plottedTag } from "../../shared/plottedTag.js";
 import { BODY_TRAIT_GROUP, BODY_TRAITS, STAR_CLASSES } from "../../shared/galaxyTraits.js";
 import { loadRegionMap } from "../regionMapData.js";
 import { galaxyFind, galaxySector } from "../galaxyFind.js";
@@ -315,15 +325,17 @@ export function registerGalaxyRoutes(
   let indexProbedAt = 0;
   app.get("/api/galaxy/index", async (_req, res) => {
     const st = galaxyIndexStatus();
-    // The release's sizes (HEAD requests), at most every ten minutes: the download and the update check.
-    if ((st.downloadBytes == null || st.updateAvailable == null) && Date.now() - indexProbedAt > 600_000) {
+    // The release's sizes (HEAD requests): every ten minutes at most while unknown, and again after an hour, so a
+    // release published while the app runs lights the update buttons (owner, 2026-11-01).
+    const since = Date.now() - indexProbedAt;
+    if (((st.downloadBytes == null || st.updateAvailable == null) && since > 600_000) || since > 3_600_000) {
       indexProbedAt = Date.now();
       await Promise.all([probeGalaxyIndexSize(), probeStationsRelease(), probeNeutronsRelease(), probeJumponiumRelease()]);
     }
     res.json(combinedStatus());
   });
   let combinedRunning = false;
-  app.post("/api/galaxy/index/download", (req, res) => {
+  app.post("/api/galaxy/index/download", localOnly, (req, res) => {
     // `{ extrasOnly: true }`: the index is current, only the stations and neutron stars are missing.
     const extrasOnly = (req.body as { extrasOnly?: unknown } | undefined)?.extrasOnly === true;
     if (!combinedRunning) {
@@ -358,7 +370,26 @@ export function registerGalaxyRoutes(
    * clock: it is the commander's own small list.
    */
   app.get("/api/navroutes", (_req, res) => {
-    res.json({ ...navRouteLog(), last: lastNavRoute().map((s) => s.address) });
+    // EDSM's answers for the route plotted now (the finder's Next): the kept systems now run to 200,000.
+    const last = lastNavRoute();
+    const ids = new Set(last.map((s) => s.address));
+    const log = navRouteLog();
+    res.json({ ...log, systems: log.systems.filter((s) => ids.has(s.address)), last: last.map((s) => s.address) });
+  });
+  /**
+   * Every system on a route the commander plotted in the game (plan 1.3.3 R-2), for the map's "Plotted systems"
+   * layer: compact rows (navRouteLog.ts `plottedSystemsCompact`) with whether the journals have him there.
+   */
+  app.get("/api/navroutes/plotted", (_req, res) => {
+    const store = opts.getJournalStore?.() ?? null;
+    res.json({ systems: plottedSystemsCompact().map((r) => [...r, store?.visitedSystems.has(r[0]) ? 1 : 0]) });
+  });
+  /** One plotted system with its tag (`?addr=`): the map's panel for a system the galaxy index does not have. */
+  app.get("/api/navroutes/system", (req, res) => {
+    const s = plottedSystem(Number(req.query.addr));
+    if (!s) return void res.status(404).json({ error: "not on a plotted route" });
+    const visited = !!opts.getJournalStore?.()?.visitedSystems.has(s.address);
+    res.json({ ...s, visited, tag: plottedTag({ visited, edsm: s.edsm }) });
   });
   /** `{ addresses: number[] }` — ask EDSM about these (at most 2,000), in the background. */
   app.post("/api/navroutes/edsm-check", (req, res) => {
@@ -373,7 +404,7 @@ export function registerGalaxyRoutes(
     void checkNavRouteSystemsOnEdsm(addresses);
     res.json({ ok: true });
   });
-  app.delete("/api/navroutes", (_req, res) => {
+  app.delete("/api/navroutes", localOnly, (_req, res) => {
     clearNavRouteLog();
     res.json({ ok: true });
   });
@@ -484,9 +515,26 @@ export function registerGalaxyRoutes(
   /** Regions are the client's; this finds sectors and systems by name: `?q=`. */
   app.get("/api/galaxy/find", (req, res) => {
     const t = tileIndex();
-    if (!t) return void noIndex(res);
     const q = String(req.query.q ?? "").slice(0, 80);
-    const found = galaxyFind(t, opts.getJournalStore?.() ?? null, q, opts.getImportedSystems?.() ?? []);
+    const store = opts.getJournalStore?.() ?? null;
+    // Without the galaxy index downloaded his own and the plotted systems below are still found (plan 1.3.3 R-2).
+    const found: GalaxyFindDTO = galaxyFind(t, store, q, opts.getImportedSystems?.() ?? []);
+    // Systems only a plotted route knows (plan 1.3.3 R-2): after the index's and his own, tagged.
+    const have = new Set(found.systems.map((s) => s.name.toLowerCase()));
+    for (const p of findPlottedSystems(q)) {
+      if (have.has(p.name.toLowerCase())) continue;
+      const visited = !!store?.visitedSystems.has(p.address);
+      found.systems.push({
+        name: p.name,
+        x: p.pos[0],
+        y: p.pos[1],
+        z: p.pos[2],
+        ordinal: null,
+        addr: String(p.address),
+        mine: false,
+        plotted: plottedTag({ visited, edsm: p.edsm }) ?? "Plotted in-game, visited",
+      });
+    }
     // Stations by name, when they are downloaded (owner, 2026-10-13); a duplicated name says its system.
     let stations: NonNullable<GalaxyFindDTO["stations"]> = [];
     if (stationsStatus().present) {

@@ -7,24 +7,34 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fmtLy } from "@shared/format";
+import { LiveRouteBanner, type LiveRouteView } from "./galaxy3d/LiveRouteBanner";
 import type { GalaxyFindDTO } from "@shared/dto/galaxy";
-import { FlaskConical, Fuel, Zap } from "lucide-react";
+import { FlaskConical } from "lucide-react";
 import { G3D_HELP, MenuCheck, MenuHead, MenuRow } from "./galaxy3d/G3dMenu";
 import { keepNeutronMarks, keptNeutronMarks, type NeutronMark } from "./galaxy3d/neutronMarks";
 import { PickList, type PickOption } from "./galaxy3d/PickList";
-import { CopySystemButton } from "./CopySystemButton";
+import { NeutronHopTable, NeutronLiveStops, type LiveStop } from "./galaxy3d/NeutronHopTable";
 import { isBool, usePersistedState } from "./usePersistedState";
 import { onServerChange } from "./serverChanges";
+import { routeTotals, routeValueLine, useRouteValues } from "./routeValues";
+import { fmtCrShort } from "@shared/format";
 
 const isBoost = (v: unknown): v is number | null => v === null || v === 4 || v === 6;
+/** The fuel reserve, in per cent of the tank (plan 1.3.4 S-7). */
+const isReservePct = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 50;
 
 type Pt = { x: number; y: number; z: number };
-type Stop = Pt & { name: string };
+/** A stop: its place, and its address when the search gave one (its worth from Spansh, plan 1.3.3 R-3). */
+type Stop = Pt & { name: string; address?: number };
 
 interface Ship {
   rangeLy: number | null;
   jumpsPerTank: number | null;
   jumpsNow: number | null;
+  /** The main tank the plan starts from (t): live, or the last known with its time; null unknown (a full tank). */
+  fuelNowT?: number | null;
+  fuelNowFrom?: "live" | "last" | null;
+  fuelNowAt?: string | null;
   fsdHealth: number | null;
   wearPerBoost: number;
   wearIsDefault: boolean;
@@ -63,11 +73,16 @@ export interface NeutronHopDTO {
   scoopOnWay: boolean;
   scoopLs: number | null;
   jumpsLeft: number;
+  /** The plan's fuel there in jumps, on arrival and on leaving: sent back with "Fly this route" (plan 1.3.4 S-9). */
+  fuelArrive?: number;
+  fuelLeave?: number;
   fsdHealth: number | null;
   /** "Use Jumponium": the FSD injections planned for this hop's normal jumps (one jump fewer), else null. */
   inject?: { tier: "basic" | "standard" | "premium"; count: number } | null;
   /** The unboosted range the hop is planned with: the fuel aboard as it leaves sets it. */
   rangeLy?: number;
+  /** The neutron star's system address: its worth from Spansh (plan 1.3.3 R-3). */
+  address?: number;
 }
 interface RouteDTO {
   hops: NeutronHopDTO[];
@@ -78,6 +93,8 @@ interface RouteDTO {
   refuels: number;
   repairBefore: number | null;
   unsafeLegs: number[];
+  /** Legs planned without the reserve: no way kept it (plan 1.3.4 S-7). */
+  reserveDropped?: number[];
   waypoints: Stop[];
   ms: number;
   /** "Use Jumponium" (owner, 2026-10-13: a toggle): what the injections do on this route and what they take. */
@@ -110,15 +127,9 @@ const SYMBOL: Record<string, string> = {
 /** The route being flown (`/api/neutron/live`, plan 8.5). */
 interface LiveDTO {
   active: boolean;
-  view: {
-    at: number;
-    total: number;
-    next: string | null;
-    destination: string;
-    done: boolean;
-    replanning: boolean;
-  } | null;
-  hops: NeutronMark[] | null;
+  view: (LiveRouteView & { done: boolean }) | null;
+
+  hops: LiveStop[] | null;
   /** Bumped with every new route, a re-plot from where the ship went included. */
   version: number;
 }
@@ -140,12 +151,28 @@ const kept = {
   boostNow: null as number | null,
   optimise: false,
   route: null as RouteDTO | null,
+  /** `route` is the one being flown ("Fly this route" from here): a re-plot or the end of it replaces it. */
+  routeFlown: false,
   liveVersion: -1,
   /** The newest plan asked for, by any opening of the drawer: an older answer is stale. */
   planSeq: 0,
   /** A plan still on its way, for a drawer opened while it runs. */
   inFlight: null as Promise<RouteDTO | null> | null,
+  /** The first stop handed over (handToNeutron), until the ship's system is known: dropped when the ship is there. */
+  handedStart: null as string | null,
 };
+
+/**
+ * A route's ends handed over from the Spansh drawer (review P12, 2026-11-05: "Open in Neutron tab" instead of adding
+ * them again by hand): they replace the stops and the plan shown; the start is dropped once the ship turns out to be
+ * there (the plan starts from the ship).
+ */
+export function handToNeutron(ends: Stop[]): void {
+  kept.stops = ends;
+  kept.route = null;
+  kept.routeFlown = false;
+  kept.handedStart = ends.length > 1 ? ends[0]!.name : null;
+}
 
 export function NeutronDrawer({
   onRoute,
@@ -157,7 +184,8 @@ export function NeutronDrawer({
   const [status, setStatus] = useState<Status | null>(null);
   const [stops, setStops] = useState<Stop[]>(kept.stops);
   const [query, setQuery] = useState("");
-  const [found, setFound] = useState<Stop[]>([]);
+  // What the search found: the galaxy map's systems, the stations' (by station name), then Spansh's and EDSM's.
+  const [found, setFound] = useState<(Stop & { label?: string })[]>([]);
   const [range, setRange] = useState(kept.range);
   const [tank, setTank] = useState(kept.tank);
   /*
@@ -170,6 +198,10 @@ export function NeutronDrawer({
   const [optimise, setOptimise] = useState(kept.optimise);
   const [useJump, setUseJump] = usePersistedState("galaxy.neutron.jumponium", false, isBool);
   const [halfTank, setHalfTank] = usePersistedState("galaxy.neutron.halfTank", false, isBool);
+  const [reservePct, setReservePct] = usePersistedState("galaxy.neutron.reservePct", 0, isReservePct);
+  // The reserve as typed: a slider and a box (owner, 2026-11-01: "a slider with the percent field fillable as text").
+  const [reserveText, setReserveText] = useState(String(reservePct));
+  useEffect(() => setReserveText(String(reservePct)), [reservePct]);
   const [route, setRoute] = useState<RouteDTO | null>(kept.route);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -227,22 +259,27 @@ export function NeutronDrawer({
         if (j.version === kept.liveVersion) return;
         const first = kept.liveVersion < 0;
         kept.liveVersion = j.version;
-        if (j.active && j.hops) {
-          draw(j.hops);
-          // A re-plot replaced the plan in the table: the map shows the one being flown.
-          if (!first) setRoute(null);
-        } else {
-          // Ended (arrived, stopped, a boxel run) — also while the drawer was closed: no line stays (review 1.2.16).
-          if (!first) setRoute(null);
-          draw([]);
+        /*
+          A re-plot or the end replaces the plan in the table only when it is the one that was flown: a plan made to
+          compare, or before flying a Spansh route, stays (review 2026-11-05: any new version wiped it).
+        */
+        const flownGone = !first && kept.routeFlown;
+        if (flownGone) {
+          kept.routeFlown = false;
+          setRoute(null);
         }
+        if (j.active && j.hops) draw(j.hops);
+        // Ended (arrived, stopped, a boxel run) — also while the drawer was closed: no line of it stays (review 1.2.16).
+        // The first look with nothing flown leaves the map alone: a Spansh route read meanwhile keeps its line.
+        else if (!first) draw(!flownGone && kept.route ? kept.route.hops : []);
       })
       .catch(() => undefined);
   }, [draw]);
   useEffect(readLive, [readLive]);
   // A re-plot, an arrival or a stop from another window (R2, 2026-10-24: was asked every 4 s while flying).
   useEffect(() => onServerChange("neutron-live", readLive), [readLive]);
-  const setFlying = async (body: object) => {
+  /** `ownPlan`: the hops are the plan in the table, now the route being flown. */
+  const setFlying = async (body: object, ownPlan = false) => {
     setError(null);
     try {
       const r = await fetch("/api/neutron/live", {
@@ -253,6 +290,7 @@ export function NeutronDrawer({
       const j = (await r.json()) as LiveDTO & { error?: string };
       if (!r.ok) throw new Error(j.error ?? `Failed (${r.status})`);
       kept.liveVersion = j.version;
+      if (ownPlan && j.active) kept.routeFlown = true;
       setLive(j);
       return j;
     } catch (e) {
@@ -264,8 +302,11 @@ export function NeutronDrawer({
   const stopFlying = async () => {
     const j = await setFlying({ stop: true });
     if (j && !j.active) {
-      setRoute(null);
-      draw([]);
+      // A plan made here and not flown stays, with its line.
+      const keep = !kept.routeFlown && kept.route;
+      kept.routeFlown = false;
+      if (!keep) setRoute(null);
+      draw(keep ? keep.hops : []);
     }
   };
   useEffect(() => {
@@ -303,19 +344,70 @@ export function NeutronDrawer({
   // A jump or an outfitting changed the ship (R2, 2026-10-24: was asked every 5 s).
   useEffect(() => onServerChange("neutron-status", load), []);
   const from: Stop | null = ship?.position ? { name: ship.system ?? "Your ship", ...ship.position } : null;
+  // Handed over from the Spansh drawer: its start is where the ship is, so the plan starts there already.
+  useEffect(() => {
+    const start = kept.handedStart;
+    if (!start || !ship) return;
+    kept.handedStart = null;
+    if (ship.system && ship.system.toLowerCase() === start.toLowerCase())
+      setStops((p) => (p[0]?.name.toLowerCase() === start.toLowerCase() ? p.slice(1) : p));
+  }, [ship]);
   // Without a position from the journals (no jump yet), the first stop is where the route starts.
   const waypoints = from ? [from, ...stops] : stops;
 
+  /*
+    The galaxy map's index holds systems with biology recorded (and the commander's own): a system without, the
+    destination of a trip to a station, was "Nothing matches" (owner, 2026-10-30: Stuemeae FG-Y d7561, Explorer's
+    Anchorage). The stations by name, then Spansh's name search, which gives any system it knows with its place, and
+    EDSM's (plan 1.3.4 S-4: any system a stop, "even Spansh/EDSM found systems"), asked at the same time, listed after.
+  */
   useEffect(() => {
     const q = query.trim();
     if (q.length < 2) return setFound([]);
     const ac = new AbortController();
+    const merged: (Stop & { label?: string })[] = [];
+    const have = new Set<string>();
+    const add = (rows: (Stop & { label?: string })[]) => {
+      for (const r of rows) {
+        const k = r.name.toLowerCase();
+        if (have.has(k)) continue;
+        have.add(k);
+        merged.push(r);
+      }
+      if (!ac.signal.aborted) setFound(merged.slice(0, 40));
+    };
+    type Hit = { systemAddress: number; starSystem: string; x?: number; y?: number; z?: number };
+    const named = (url: string): Promise<Hit[]> =>
+      fetch(url, { signal: ac.signal })
+        .then((r) => (r.ok ? (r.json() as Promise<{ systems?: Hit[] }>) : null))
+        .then((j) => j?.systems ?? [])
+        .catch(() => []);
+    // The name typed in full first: Spansh's and EDSM's completion list near names in their own order.
+    const rows = (hits: Hit[], source: string) =>
+      hits
+        .filter((s) => s.x != null && s.y != null && s.z != null)
+        .sort((a, b) => Number(b.starSystem.toLowerCase() === q.toLowerCase()) - Number(a.starSystem.toLowerCase() === q.toLowerCase()))
+        .map((s) => ({ name: s.starSystem, x: s.x!, y: s.y!, z: s.z!, address: s.systemAddress, label: `${s.starSystem} · ${source}` }));
     const t = window.setTimeout(() => {
+      const remote =
+        q.length < 3
+          ? null
+          : { spansh: named(`/api/system/spansh-search?q=${encodeURIComponent(q)}`), edsm: named(`/api/system/edsm-search?q=${encodeURIComponent(q)}`) };
       void fetch(`/api/galaxy/find?q=${encodeURIComponent(q)}`, { signal: ac.signal })
         .then((r) => (r.ok ? r.json() : null))
         .then((j: GalaxyFindDTO | null) => {
-          if (!ac.signal.aborted)
-            setFound((j?.systems ?? []).slice(0, 30).map((s) => ({ name: s.name, x: s.x, y: s.y, z: s.z })));
+          add(
+            (j?.systems ?? [])
+              .slice(0, 30)
+              .map((s) => ({ name: s.name, x: s.x, y: s.y, z: s.z, ...(s.addr ? { address: Number(s.addr) } : {}) })),
+          );
+          add((j?.stations ?? []).slice(0, 10).map((s) => ({ name: s.system, x: s.x, y: s.y, z: s.z, label: `${s.name} · ${s.system}` })));
+        })
+        .catch(() => undefined)
+        .then(async () => {
+          if (!remote) return;
+          add(rows(await remote.spansh, "Spansh"));
+          add(rows(await remote.edsm, "EDSM"));
         })
         .catch(() => undefined);
     }, 250);
@@ -324,7 +416,18 @@ export function NeutronDrawer({
       clearTimeout(t);
     };
   }, [query]);
-  const options: PickOption[] = useMemo(() => found.map((s) => ({ value: s.name, label: s.name })), [found]);
+  const options: PickOption[] = useMemo(() => found.map((s) => ({ value: s.name, label: s.label ?? s.name })), [found]);
+  // Each hop's system valued from Spansh while a route is shown (routeValues.ts), at most the first 150 hops.
+  const valued = useMemo(
+    () =>
+      (route?.hops ?? [])
+        .filter((h): h is NeutronHopDTO & { address: number } => typeof h.address === "number")
+        .slice(0, 150)
+        .map((h) => ({ addr: h.address, name: h.name })),
+    [route],
+  );
+  const { values: hopValues, read: hopsRead } = useRouteValues(valued, valued.length > 0);
+  const hopTotals = routeTotals(hopValues.values());
 
   const move = (i: number, d: number) =>
     setStops((prev) => {
@@ -364,6 +467,7 @@ export function NeutronDrawer({
           optimise,
           useJumponium: useJump,
           halfTank,
+          reservePct,
         }),
       });
       const j = (await r.json()) as RouteDTO & { error?: string };
@@ -371,7 +475,9 @@ export function NeutronDrawer({
       if (seq !== kept.planSeq) return null;
       if (!r.ok) throw new Error(j.error ?? `Plan failed (${r.status})`);
       kept.route = j;
-      if (optimise) kept.stops = from ? j.waypoints.slice(1) : j.waypoints;
+      kept.routeFlown = false;
+      // In the plan's order (optimised), with the addresses the server found for stops picked by name (S-4).
+      kept.stops = from ? j.waypoints.slice(1) : j.waypoints;
       setRoute(j);
       setStops(kept.stops);
       draw(j.hops);
@@ -391,6 +497,17 @@ export function NeutronDrawer({
     if (route && waypoints.length >= 2) void plan();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the toggles replan
   }, [useJump, halfTank]);
+  // The reserve changed with a route on screen: planned again once the typing stops.
+  const reserveSeen = useRef(reservePct);
+  useEffect(() => {
+    if (reserveSeen.current === reservePct) return;
+    const t = setTimeout(() => {
+      reserveSeen.current = reservePct;
+      if (route && waypoints.length >= 2) void plan();
+    }, 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the reserve replans
+  }, [reservePct]);
   /*
     Fly: from where the ship is now. A plan made somewhere else is made again from here first; the destinations go
     with it, so the server can plot again from wherever the ship goes off the route.
@@ -409,8 +526,9 @@ export function NeutronDrawer({
         boost: boost ?? undefined,
         useJumponium: r.jumponium?.on === true,
         halfTank,
+        ...(reservePct ? { reserve: reservePct / 100 } : {}),
       },
-    });
+    }, true);
   };
 
   /*
@@ -431,58 +549,49 @@ export function NeutronDrawer({
   const download = () => void fetch("/api/neutron/download", { method: "POST" }).then(load);
   const rel = status?.release;
 
+  /*
+    The route being flown, above everything else: also without the neutron stars downloaded (review 2026-11-05: a
+    Spansh route flown on a fresh install showed only "Download neutron stars", no stop and no Stop).
+  */
+  const flying = live?.active && live.view ? <LiveRouteBanner view={live.view} onStop={() => void stopFlying()} /> : null;
+  // The plan in the table is the one flown (made here, not re-plotted since): its next hop is marked there.
+  const flownNext = live?.active && live.view && route && kept.routeFlown ? live.view.at + 1 : null;
+  // Its stops ahead, unless the table below is that same plan (made here and flown, not re-plotted since).
+  const liveStops =
+    live?.active && live.view && live.hops && !(route && kept.routeFlown) ? (
+      <NeutronLiveStops hops={live.hops} at={live.view.at} onFocus={onFocus} fsdWarn={ship?.fsdWarn} />
+    ) : null;
+
   return (
     <aside className="g3d-drawer g3d-menu g3d-plan" aria-label="Neutron route" data-testid="g3d-neutron">
       <MenuHead title="Neutron route" help={G3D_HELP.neutron} />
+      {flying}
       {!status?.present ? (
-        <div className="g3d-menu__section g3d-menu__section--first">
-          <p className="g3d-panel__note">
-            The planner needs the neutron stars:{" "}
-            {rel ? `${rel.neutrons.toLocaleString("en-US")} of them, ` : ""}one download
-            {rel ? ` of ${Math.round(rel.bytes / 1e6)} MB` : ""} beside the galaxy index. Routes are planned
-            on this machine.
-          </p>
-          <button
-            type="button"
-            className="btn-top-toggle"
-            onClick={download}
-            disabled={!!status?.downloading}
-          >
-            {status?.downloading
-              ? `Downloading… ${status.downloading.total ? Math.round((status.downloading.done / status.downloading.total) * 100) : 0} %`
-              : "Download neutron stars"}
-          </button>
-          {status?.error ? <p className="g3d-panel__note">Download failed: {status.error}</p> : null}
-        </div>
+        <>
+          {liveStops}
+          <div className={`g3d-menu__section${flying ? "" : " g3d-menu__section--first"}`}>
+            <p className="g3d-panel__note">
+              The planner needs the neutron stars:{" "}
+              {rel ? `${rel.neutrons.toLocaleString("en-US")} of them, ` : ""}one download
+              {rel ? ` of ${Math.round(rel.bytes / 1e6)} MB` : ""} beside the galaxy index. Routes are planned
+              on this machine.
+            </p>
+            <button
+              type="button"
+              className="btn-top-toggle"
+              onClick={download}
+              disabled={!!status?.downloading}
+            >
+              {status?.downloading
+                ? `Downloading… ${status.downloading.total ? Math.round((status.downloading.done / status.downloading.total) * 100) : 0} %`
+                : "Download neutron stars"}
+            </button>
+            {status?.error ? <p className="g3d-panel__note">Download failed: {status.error}</p> : null}
+          </div>
+        </>
       ) : (
         <>
-          {live?.active && live.view ? (
-            <div className="g3d-menu__section g3d-menu__section--first">
-              <p className="g3d-panel__note">
-                Flying a route to <strong>{live.view.destination}</strong>: stop {live.view.at} of{" "}
-                {live.view.total}
-                {live.view.next ? (
-                  <>
-                    , next <strong>{live.view.next}</strong> (on the clipboard: target it in the galaxy map, don't plot to it; F6
-                    copies it again)
-                  </>
-                ) : null}
-                .
-              </p>
-              {live.view.replanning ? (
-                <p className="g3d-panel__note">Off the route: re-plotting from where you are…</p>
-              ) : null}
-              <button
-                type="button"
-                className="btn-top-toggle g3d-neutron-stop"
-                title="Ends the route: the HUD, the clipboard line and the line on the map clear"
-                onClick={() => void stopFlying()}
-              >
-                ■ Stop flying this route
-              </button>
-            </div>
-          ) : null}
-          <div className={`g3d-menu__section${live?.active ? "" : " g3d-menu__section--first"}`}>
+          <div className={`g3d-menu__section${flying ? "" : " g3d-menu__section--first"}`}>
             <p className="g3d-menu__sub">From</p>
             <p className="g3d-panel__note">
               {from ? (
@@ -525,14 +634,14 @@ export function NeutronDrawer({
             </ol>
             <PickList
               label="Add"
-              hint="A system from the galaxy map's search: it goes at the end of the stops"
+              hint="Any system by name (yours, the galaxy map's, a station's, or any Spansh or EDSM knows): it goes at the end of the stops"
               value=""
               valueLabel="Add a system"
               options={options}
               onQuery={setQuery}
               onChange={(name) => {
                 const s = found.find((x) => x.name === name);
-                if (s) setStops((p) => [...p, s]);
+                if (s) setStops((p) => [...p, { name: s.name, x: s.x, y: s.y, z: s.z, ...(s.address ? { address: s.address } : {}) }]);
               }}
               placeholder="Search a system"
             />
@@ -581,6 +690,20 @@ export function NeutronDrawer({
               />
             </MenuRow>
             <MenuRow
+              label="Fuel now"
+              hint="The main tank the plan starts from: live while the game runs, else the last your journals said (a jump, a scoop, a refuel); a full tank only when nothing is known"
+            >
+              <span className="g3d-row__val">{ship?.fuelNowT != null ? `${ship.fuelNowT.toFixed(1)} t` : "Full tank"}</span>
+            </MenuRow>
+            {/* Where the figure comes from on a line of its own: in the value box it ran over the label (1.3.4 tour). */}
+            {ship?.fuelNowT == null || ship.fuelNowFrom === "last" ? (
+              <p className="g3d-panel__note">
+                {ship?.fuelNowT == null
+                  ? "Fuel unknown: planned from a full tank."
+                  : `Last known${ship.fuelNowAt ? ` ${new Date(ship.fuelNowAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""} (the game is not running).`}
+              </p>
+            ) : null}
+            <MenuRow
               label="FSD health"
               hint="The last Loadout's, less the supercharges since; under 80 % the plan says to repair"
             >
@@ -612,6 +735,38 @@ export function NeutronDrawer({
               disabled={busy}
               note={route && halfTank ? `(${route.hops.filter((h) => h.refuelHalf).length} of ${route.refuels} stops)` : undefined}
             />
+            <MenuRow
+              label="Keep in the tank"
+              hint="No jump arrives with less than this share of the tank (up to 50 %), so the plan scoops sooner: 0 % is the fastest (a jump's fuel to spare), more is calmer. A re-plot in flight keeps it."
+            >
+              <span className="g3d-reserve">
+                <input
+                  type="range"
+                  className="g3d-row__range"
+                  min={0}
+                  max={50}
+                  step={1}
+                  value={reservePct}
+                  onChange={(e) => setReservePct(Number(e.target.value))}
+                  aria-label="Fuel reserve slider"
+                />
+                <input
+                  className="g3d-input g3d-reserve__num"
+                  type="text"
+                  inputMode="numeric"
+                  value={reserveText}
+                  onChange={(e) => {
+                    setReserveText(e.target.value);
+                    const t = e.target.value.replace("%", "").trim();
+                    const v = Math.round(Number(t));
+                    if (t !== "" && Number.isFinite(v)) setReservePct(Math.min(50, Math.max(0, v)));
+                  }}
+                  onBlur={() => setReserveText(String(reservePct))}
+                  aria-label="Fuel reserve (per cent of the tank)"
+                />
+                <span aria-hidden="true">%</span>
+              </span>
+            </MenuRow>
             <MenuCheck
               label="Use Jumponium"
               hint="Plan with FSD injections: on every hop where one takes a jump off its normal jumps (it never adds to a supercharged jump), the cheapest by material, one per jump. The HUD says which to synthesise on the way."
@@ -634,13 +789,21 @@ export function NeutronDrawer({
             </button>
             {error ? <p className="g3d-panel__note">{error}</p> : null}
           </div>
+          {liveStops}
           {route ? (
             <div className="g3d-menu__section">
               <p className="g3d-panel__note">
                 <strong>{route.jumps}</strong> jumps ({route.boosted} supercharged) instead of{" "}
                 {route.plainJumps} · {fmtLy(route.distanceLy)} · {route.refuels} refuel stop
-                {route.refuels === 1 ? "" : "s"} · {route.ms} ms
+                {route.refuels === 1 ? "" : "s"}
+                {reservePct ? ` · ${reservePct} % kept in the tank` : ""} · {route.ms} ms
               </p>
+              {route.reserveDropped?.length ? (
+                <p className="g3d-panel__note g3d-panel__note--warn">
+                  No way keeps {reservePct} % in the tank on leg {route.reserveDropped.join(", ")} (too little aboard, or no
+                  scoopable neutron star in reach): planned without it there.
+                </p>
+              ) : null}
               <button
                 type="button"
                 className="btn-top-toggle"
@@ -705,91 +868,24 @@ export function NeutronDrawer({
                   there.
                 </p>
               ) : null}
-              <table className="fdb-table g3d-neutron-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>System</th>
-                    <th>Jumps</th>
-                    <th>Fuel</th>
-                    <th>FSD</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {route.hops.map((h, i) => (
-                    <tr key={`${h.name}-${i}`} className={h.kind === "waypoint" ? "is-waypoint" : undefined}>
-                      <td>{i}</td>
-                      <td>
-                        <button type="button" className="g3d-linkbtn" onClick={() => onFocus(h)}>
-                          {h.name}
-                        </button>{" "}
-                        <CopySystemButton system={h.name} />
-                        {h.refuel ? (
-                          <span
-                            className="g3d-neutron-fuel"
-                            title={
-                              h.refuelHalf
-                                ? "Scoop the system's own star to half a tank before supercharging: the lighter ship reaches the next stops, a full tank would not"
-                                : "Scoop the system's own star before supercharging"
-                            }
-                          >
-                            {" "}
-                            <Fuel className="g3d-neutron-ico" aria-hidden="true" /> {h.refuelHalf ? "scoop to half" : "scoop"}
-                            {h.scoopLs != null ? ` (${h.scoopLs.toLocaleString("en-US")} ls)` : ""}
-                          </span>
-                        ) : null}
-                        {h.scoopOnWay ? (
-                          <span
-                            className="g3d-neutron-fuel"
-                            title="More normal jumps than the tank holds: scoop a K G B F O A M star on the way"
-                          >
-                            {" "}
-                            <Fuel className="g3d-neutron-ico" aria-hidden="true" /> on the way
-                          </span>
-                        ) : null}
-                      </td>
-                      <td>
-                        {/* Past a supercharge's reach: the supercharged jump, then the game's own plot (a tester
-                            read "905 ly" as one jump, 2026-10-28). */}
-                        {h.boosted && h.jumps > 1 ? (
-                          <span
-                            title={`One supercharged jump, then ${h.jumps - 1} normal jump${h.jumps === 2 ? "" : "s"}: plot the system in the game's galaxy map after supercharging. ${reachNote(h)}`}
-                          >
-                            <Zap className="g3d-neutron-ico" aria-label="Supercharged" /> + {h.jumps - 1}
-                          </span>
-                        ) : h.boosted ? (
-                          <span title={`One supercharged jump. ${reachNote(h)}`}>
-                            <Zap className="g3d-neutron-ico" aria-label="Supercharged" />
-                          </span>
-                        ) : h.jumps ? (
-                          String(h.jumps)
-                        ) : (
-                          ""
-                        )}
-                        {h.inject ? (
-                          <span
-                            className="g3d-neutron-inject"
-                            title={`${h.inject.count} ${TIER_NAME[h.inject.tier]} FSD injection${h.inject.count > 1 ? "s" : ""}, one per normal jump: one jump fewer`}
-                          >
-                            {" "}
-                            <FlaskConical className="g3d-neutron-ico" aria-hidden="true" /> {h.inject.count}{" "}
-                            {TIER_NAME[h.inject.tier]}
-                          </span>
-                        ) : null}{" "}
-                        <span className="dim">{h.distanceLy ? fmtLy(h.distanceLy) : ""}</span>
-                      </td>
-                      <td>{h.jumpsLeft}</td>
-                      <td
-                        className={
-                          h.fsdHealth != null && h.fsdHealth < (ship?.fsdWarn ?? 0.8) ? "is-warn" : undefined
-                        }
-                      >
-                        {pct(h.fsdHealth)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {valued.length ? (
+                <p className="g3d-panel__note" title="From Spansh (others' scans, at 1×): every body scanned, the worthwhile planets mapped, the expected exobiology">
+                  {hopsRead < valued.length ? `Reading the stops… ${hopsRead} of ${valued.length}. ` : ""}
+                  {hopTotals.known
+                    ? `${hopTotals.known} discovered: scan ${fmtCrShort(hopTotals.fss)} · map ${fmtCrShort(hopTotals.dss)} · bio ${fmtCrShort(hopTotals.bio)}${hopTotals.missing ? ` · ${hopTotals.missing} bodies missing` : ""}`
+                    : hopsRead
+                      ? "None of the stops is on Spansh yet."
+                      : ""}
+                </p>
+              ) : null}
+              <NeutronHopTable
+                hops={route.hops}
+                next={flownNext}
+                onFocus={onFocus}
+                fsdWarn={ship?.fsdWarn}
+                worth={(h) => (h.address != null ? routeValueLine(hopValues.get(h.address)) : null)}
+                reach={reachNote}
+              />
             </div>
           ) : null}
         </>

@@ -1,0 +1,105 @@
+/* The screen marker (aim/main.tsx): transparent everywhere but the marks, never in the way of the mouse. */
+html,
+body.aim-body {
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+.aim {
+  position: fixed;
+  inset: 0;
+  font-family: var(--hud-font, "Segoe UI", sans-serif);
+  --aim: var(--bio, #7be07b);
+}
+.aim text {
+  fill: #fff;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.85);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+/* Glide between readings rather than snap (4 a second). */
+.aim-mark,
+.aim-edge {
+  transition: transform 0.2s linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .aim-mark,
+  .aim-edge {
+    transition: none;
+  }
+}
+.aim-ring {
+  fill: none;
+  stroke: var(--aim);
+  stroke-width: 1.6;
+  opacity: 0.85;
+}
+.aim-mark.is-level .aim-ring {
+  stroke-dasharray: 4 3;
+}
+.aim-dot,
+.aim-edge polygon {
+  fill: var(--aim);
+}
+.aim-mark.is-target .aim-ring {
+  stroke-width: 2.6;
+  opacity: 1;
+}
+.aim-dist,
+.aim-edge text {
+  font-size: 13px;
+}
+.aim-hex {
+  fill: rgba(0, 0, 0, 0.35);
+  stroke: var(--aim);
+  stroke-width: 2.4;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: aim-open 0.22s ease-out;
+}
+.aim-name {
+  font-size: 20px;
+  font-weight: 700;
+  fill: var(--aim);
+}
+.aim-sub {
+  font-size: 14px;
+}
+/* The pitch reader's status line (main.tsx ReaderLine): quiet unless it is reading. */
+.aim-reader {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.aim text.aim-clear {
+  font-size: 16px;
+  font-weight: 700;
+  fill: var(--bad, #ff5a3c);
+}
+.aim-reader.is-ok {
+  fill: var(--aim);
+  opacity: 0.85;
+}
+@keyframes aim-open {
+  from {
+    transform: scale(0.45) rotate(-30deg);
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aim-hex {
+    animation: none;
+  }
+}
+/* Samples taken (owner, 2026-11-04): a diamond in their own colour. Their genus's sample distance stays on the radar
+   (owner, 2026-11-06: the ring projected on the ground ran across the whole screen). */
+.aim-mark.is-sample {
+  --aim: var(--aim-sample, #8fd0ff);
+}
+/* A held reading (the HUD not read for 3 s): the marks stay put, dashed to say they are not following the nose. */
+.aim.is-held .aim-ring {
+  stroke-dasharray: 4 3;
+  opacity: 0.6;
+}

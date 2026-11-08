@@ -251,6 +251,12 @@ export interface HudPrefsDTO {
   /** The panel fill's opacity, 0.1–1 (text and lines stay solid). */
   opacity?: number;
   candOrder?: "likelihood" | "value";
+  /** Exo candidates' scanned species (3/3): in the order above, first, or left out (owner, 2026-11-05). */
+  candScanned?: "place" | "top" | "hidden";
+  /** Exo candidates: the most rows shown, 1–30 (default 9). */
+  candMax?: number;
+  /** Exo candidates: the species being sampled always first (default on). */
+  candActiveTop?: boolean;
   region?: boolean;
   audio?: boolean;
   /** Compact overlays: no explanatory lines, only the readings (guild tester, 2026-09-30). */
@@ -263,6 +269,25 @@ export interface HudPrefsDTO {
   credit?: "off" | "top" | "bottom";
   /** "Next boxel" line under the Next jump HUD (plan 2.7). */
   nextBoxel?: boolean;
+  /** The fuel bar at a neutron route's refuel stop: how much to scoop (2026-10-29; default on). */
+  refuelBar?: boolean;
+  /** The radar stays open while flying near a planet, not only on it; closes in supercruise (owner, 2026-11-04; default off). */
+  radarAlways?: boolean;
+  /**
+   * Read the ship's pitch off the game's HUD for the screen marker (owner, 2026-11-04; default off): a local capture of
+   * the game's monitor, read every 2 s while there are plants to point at; falls back to the estimate when unread.
+   */
+  pitchReader?: boolean;
+  /**
+   * Read the target's distance off the game's HUD for the Scan route (plan 1.3.8; default off): the same local capture,
+   * four times a second while the Scan route tab shows, in supercruise with a body of the current system targeted.
+   */
+  distanceReader?: boolean;
+  /**
+   * The HUD colours the pitch reader expects (owner 2026-11-06): the game's default, or the GUIColour matrix in
+   * GraphicsConfigurationOverride.xml. The distance reader learns the colour from the screen (any HUD, EDHM's too).
+   */
+  hudColour?: "default" | "xml";
   /** Colonize HUD (1.3.0): the followed site's materials with bars (default on). */
   czNeeds?: boolean;
   /** Colonize HUD: the other sites being built (default on). */

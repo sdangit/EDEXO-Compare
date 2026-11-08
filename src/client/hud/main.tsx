@@ -12,6 +12,7 @@
     edexoHudTheme      {"preset":"orange"} or {"preset":"custom","accent":"#rrggbb","text":"#rrggbb"}
     edexoHudCandOrder  "likelihood" (default) | "value"
     edexoHudRegion     "1" (default) | "0"  — show the current region line in the candidates card
+    edexoHudRadarAlways "0" (default) | "1" — the radar stays open flying near a planet, not only on it
     edexoHudCompact    "0" (default) | "1"  — compact: hide the explanatory lines (.hud-explain)
     edexoHudRelevant   "0" (default) | "1"  — only when relevant: a section with nothing to say steps aside
 
@@ -22,7 +23,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Settings } from "lucide-react";
 import { HUD, api, setPort } from "./core";
 import { audioOn, cueFromOverlay } from "./audio";
-import { PHONE, PRESETS, applyTheme, onThemeApplied, readOpacity, readScale } from "./theme";
+import { PHONE, PRESETS, applyTheme, onThemeApplied, readOpacity, readScale, currentScreenPlace } from "./theme";
 import { hudStore } from "./store";
 import { Panel, RELEVANT_HOLD_MS } from "./Panel";
 import type { HudSection } from "./parts";
@@ -38,7 +39,8 @@ import { notable } from "./sections/notable";
 import { notices } from "./sections/notices";
 import { colonize } from "./sections/colonize";
 import { ship } from "./sections/ship";
-import { tiltDepthPx } from "./tilt";
+import { carrier } from "./sections/carrier";
+import { sharedTiltDepthPx } from "./tilt";
 
 export const SECTIONS: Record<string, HudSection> = {
   jump,
@@ -51,6 +53,7 @@ export const SECTIONS: Record<string, HudSection> = {
   notices,
   colonize,
   ship,
+  carrier,
 };
 // The one list of section names (shared/hudSections.ts), which the server's prefs check and the CLI read too.
 export const ORDER: string[] = [...HUD_SECTION_KEYS];
@@ -58,6 +61,9 @@ export { RELEVANT_HOLD_MS };
 
 type ElectronHud = {
   hudDrag?: (phase: string) => Promise<unknown>;
+  hudChain?: (dir: "below" | "right") => Promise<unknown>;
+  hudUnchain?: () => Promise<unknown>;
+  onHudChainOffers?: (cb: (v: unknown) => void) => void;
   onHudPrefs?: (cb: (p: unknown) => void) => void;
   onHudMoveMode?: (cb: (v: unknown) => void) => void;
   resizeHudOverlay?: (o: { height?: number; scale?: number; idle?: boolean }) => Promise<unknown>;
@@ -65,12 +71,30 @@ type ElectronHud = {
 const electron = (): ElectronHud | undefined =>
   (window as unknown as { edexoElectron?: ElectronHud }).edexoElectron;
 
-/** The Elite Style's turn at the same angle on every panel: the depth follows the panel's height (hud/tilt.ts). */
+/**
+ * The Elite Style's turn with one depth for every panel (hud/tilt.ts): from the height of the screen the window is on,
+ * read again as the window moves (free move, another monitor), written only when it changed. A window moved on its
+ * screen gets its angle again (theme.ts `currentScreenPlace`), pointed at the screen's middle.
+ */
 function trackTiltDepth(shell: HTMLElement | null): void {
   if (!shell) return;
-  const set = () => document.documentElement.style.setProperty("--hud-tilt-depth", tiltDepthPx(shell.offsetHeight) + "px");
+  let last = "";
+  let place = JSON.stringify(currentScreenPlace());
+  const set = () => {
+    const depth = `${sharedTiltDepthPx(window.screen.availHeight)}px`;
+    if (depth !== last) {
+      last = depth;
+      document.documentElement.style.setProperty("--hud-tilt-depth", depth);
+    }
+    // Moved on the screen: the angle follows (theme.ts currentScreenPlace).
+    const now = JSON.stringify(currentScreenPlace());
+    if (now !== place) {
+      place = now;
+      applyTheme();
+    }
+  };
   set();
-  if (typeof ResizeObserver === "function") new ResizeObserver(set).observe(shell);
+  window.setInterval(set, 1000);
 }
 
 /* ============================================================== HUD object ================== */
@@ -262,6 +286,39 @@ function mountPhoneBar(onPick: (next: string[]) => void): (list: string[]) => vo
   whole stack, so every HUD window follows the one being dragged. "Done" ends placing for every window.
 */
 let moveFrame: HTMLDivElement | null = null;
+/*
+  Chain buttons on the frame (owner, 2026-11-01: "if two panels of HUD are close to each other, a 'chain' button
+  appears there, allowing you to click it and merge only those panels"): the app says which HUD touches this one below
+  and to the right (electron/hudWindows.cjs sendChainOffers); a chained group gets Unchain beside Done.
+*/
+type ChainOffers = { below: boolean; right: boolean; group: boolean };
+let chainOffers: ChainOffers = { below: false, right: false, group: false };
+const CHAIN_BTN =
+  "position:absolute;cursor:pointer;font:600 12px/1 var(--hud-font,'Segoe UI',sans-serif);letter-spacing:0.06em;" +
+  "text-transform:uppercase;padding:0.35em 0.7em;color:#111;background:var(--hud-hi,#ffb060);border:0;z-index:1;";
+function drawChainButtons(): void {
+  const f = moveFrame;
+  const ee = electron();
+  if (!f || !ee) return;
+  for (const old of Array.from(f.querySelectorAll(".hud-chain"))) old.remove();
+  const add = (label: string, title: string, style: string, onClick: () => void, inline = false) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "hud-chain";
+    b.textContent = label;
+    b.title = title;
+    b.style.cssText = inline ? CHAIN_BTN.replace("position:absolute;", "") + style : CHAIN_BTN + style;
+    b.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    b.addEventListener("click", onClick);
+    f.appendChild(b);
+  };
+  if (chainOffers.below && typeof ee.hudChain === "function")
+    add("\u26d3 Combine", "Combine this HUD with the one below into one panel", "left:50%;bottom:4px;transform:translateX(-50%);", () => void ee.hudChain!("below"));
+  if (chainOffers.right && typeof ee.hudChain === "function")
+    add("\u26d3 Combine", "Combine this HUD with the one to its right into one panel", "right:4px;top:50%;transform:translateY(-50%);", () => void ee.hudChain!("right"));
+  if (chainOffers.group && typeof ee.hudUnchain === "function")
+    add("Split", "Split this panel back into its separate HUDs", "", () => void ee.hudUnchain!(), true);
+}
 HUD.setMoveMode = function (on: boolean): void {
   const ee = electron();
   if (!on) {
@@ -330,6 +387,7 @@ HUD.setMoveMode = function (on: boolean): void {
   f.addEventListener("lostpointercapture", end);
   document.body.appendChild(f);
   moveFrame = f;
+  drawChainButtons();
 };
 
 /* ============================================================== mount + feed ================ */
@@ -392,6 +450,13 @@ HUD.mount = function (names: string[] | null | undefined, opts?: { noTimers?: bo
       ee.onHudMoveMode((v) =>
         (HUD.setMoveMode as (on: boolean) => void)(!!(v && (v as { on?: boolean }).on)),
       );
+    }
+    if (!PHONE && ee && typeof ee.onHudChainOffers === "function") {
+      ee.onHudChainOffers((v) => {
+        const o = (v && typeof v === "object" ? v : {}) as Partial<ChainOffers>;
+        chainOffers = { below: o.below === true, right: o.right === true, group: o.group === true };
+        drawChainButtons();
+      });
     }
   } catch {
     /* the snapshot mirror still arrives; no free move outside the app */

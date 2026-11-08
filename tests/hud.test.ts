@@ -85,6 +85,40 @@ describe("HUD candidates", () => {
     expect(rows.at(-1)?.textContent).toBe("+3 more — all of them in the app");
   });
 
+  it("candidate settings: the active scan first, scanned ones first or hidden, at most N rows (owner, 2026-11-05)", () => {
+    const snap = {
+      exoOverlayFocusBodyKey: "1:2",
+      bodies: [
+        {
+          ...body("1:2", "A 2", [
+            match("Aleoida", "arcus", 1),
+            match("Stratum", "tectonicas", 1, { organicAnalysisComplete: true }),
+            match("Tussock", "propagito", 1),
+            match("Osseus", "discus", 1),
+          ]),
+          genusLikelihoods: [],
+        },
+      ],
+      exoOrganicOverlay: { visible: true, trackingBodyKey: "1:2", speciesDisplay: "Tussock propagito", sampleCount: 1 },
+    };
+    const names = () => [...document.querySelectorAll(".hud-list li")].map((li) => (li.textContent ?? "").split(" ")[0]);
+    // As the launcher changes them: a storage event re-renders the HUD (main.tsx).
+    const set = (key: string, v: string) => {
+      window.localStorage.setItem(key, v);
+      window.dispatchEvent(new StorageEvent("storage", { key }));
+    };
+    HUD.render(snap);
+    expect(names()).toEqual(["Tussock", "Aleoida", "Stratum", "Osseus"]); // on by default
+    set("edexoHudCandScanned", "top");
+    expect(names()).toEqual(["Tussock", "Stratum", "Aleoida", "Osseus"]);
+    set("edexoHudCandActiveTop", "0");
+    expect(names()).toEqual(["Stratum", "Aleoida", "Tussock", "Osseus"]);
+    set("edexoHudCandScanned", "hidden");
+    set("edexoHudCandMax", "2");
+    const rows = [...document.querySelectorAll(".hud-list li")].map((li) => li.textContent);
+    expect(rows).toEqual([expect.stringContaining("Aleoida"), expect.stringContaining("Tussock"), "+1 more — all of them in the app", "1 scanned, not listed"]);
+  });
+
   it("capitalises the species and shows the live run's progress only for the active species", () => {
     HUD.render({
       exoOverlayFocusBodyKey: "1:2",
@@ -208,9 +242,18 @@ describe("HUD tracker", () => {
     expect(document.querySelector('[data-f="status"]')?.textContent).toBe("On foot");
   });
 
+  it("folds in supercruise with a run in progress (no radar there), the head still naming the run", () => {
+    const run = { visible: true, phase: "tracking", sampleCount: 1, nearestSampleMeetsMin: true, minSampleDistanceM: 500, speciesDisplay: "Bacterium Alcyoneum" };
+    HUD.render({ exoOrganicOverlay: run, exoMinimap: null });
+    expect(document.querySelector(".trk")?.className).toContain("trk--away");
+    expect(document.querySelector('[data-f="status"]')?.textContent).toMatch(/1\s*\/\s*3/);
+    HUD.render({ exoOrganicOverlay: run, exoMinimap: { headingDeg: 0, radiusM: 500, minSampleDistanceM: 500, marks: [] } });
+    expect(document.querySelector(".trk")?.className).not.toContain("trk--away");
+  });
+
   /** Owner, 2026-10-02: the Log names the species, so the payout shows from the first scan. */
   it("shows the payout estimate from the first scan, with the walk guidance still under it", () => {
-    const run = (sampleCount: number) => {
+    const run = (sampleCount: number, footfallMult: 1 | 5 = 1) => {
       HUD.render({
         exoMinimap: { headingDeg: 0, radiusM: 500, minSampleDistanceM: 200, marks: [] },
         exoOrganicOverlay: {
@@ -220,17 +263,43 @@ describe("HUD tracker", () => {
           nearestSampleMeetsMin: true,
           minSampleDistanceM: 200,
           speciesDisplay: "Tussock propagito",
-          payNewCodex: 5_000_000,
-          payLoggedCodex: 1_000_000,
+          payEstimate: footfallMult === 5 ? 5_000_000 : 1_000_000,
+          footfallMult,
         },
       });
       return document.querySelector('[data-f="pay"]')?.textContent ?? "";
     };
     expect(run(0)).toBe("—");
-    expect(run(1)).toContain("new");
-    expect(run(1)).toContain("logged");
+    expect(run(1)).toMatch(/1\s?000\s?000/);
     expect(document.querySelector(".trk")?.textContent).toContain("from first sample before second");
-    expect(run(2)).toContain("logged");
+    // The 5× is the first footfall's only, never a new codex entry's (owner 2026-11-06, a commander's 5,000,000 "new
+    // codex 5×" where the app said 1.00 M, the footfall another commander's).
+    expect(run(2)).toMatch(/1\s?000\s?000/);
+    expect(run(2)).not.toContain("5×");
+    expect(run(2, 5)).toMatch(/5\s?000\s?000/);
+    expect(run(2, 5)).toContain("first footfall 5×");
+  });
+
+  it("completes at the list price where the footfall was another commander's, codex entry new or not", () => {
+    for (const analyseWasLogged of [false, true]) {
+      HUD.render({
+        exoMinimap: { headingDeg: 0, radiusM: 500, minSampleDistanceM: 500, marks: [] },
+        exoOrganicOverlay: {
+          visible: true,
+          phase: "celebrate",
+          sampleCount: 3,
+          minSampleDistanceM: 500,
+          speciesDisplay: "Bacterium Acies",
+          payEstimate: 1_000_000,
+          finalCredits: 1_000_000,
+          analyseWasLogged,
+          footfallMult: 1,
+        },
+      });
+      const pay = document.querySelector('[data-f="pay"]')?.textContent ?? "";
+      expect(pay).toMatch(/1\s?000\s?000/);
+      expect(pay).not.toContain("codex");
+    }
   });
 
   it("draws the walk-this-way arc only when the second sample would be too close", () => {
@@ -794,5 +863,50 @@ describe("HUD Colonize (1.3.0)", () => {
     expect(document.querySelector('[data-section="colonize"]')!.classList.contains("hud-section--idle")).toBe(false);
     expect(f("status")?.textContent).toBe("Buy here");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("HUD carrier (owner, 2026-11-02: carrier jump timer)", () => {
+  it("counts down to lockdown and departure, tones once at each edge, and says idle with nothing scheduled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const dep = Date.parse("2026-11-02T12:15:10Z");
+      vi.setSystemTime(dep - 10 * 60_000);
+      const HUD = await loadHud();
+      const cues: string[] = [];
+      HUD.onCue = (k: string) => cues.push(k);
+      HUD.mount(["carrier"], { noTimers: true });
+      const cj = {
+        name: "NO MONEY FOR SQUADRON",
+        callsign: "KBX-05T",
+        fuel: 512,
+        system: "Col 285 Sector DR-C c13-20",
+        pending: { system: "G 224-46", body: null, departureMs: dep, lockdownMs: dep - 200_000, arriveMs: dep + 60_000 },
+        cooldownUntilMs: dep + 360_000,
+      };
+      HUD.render({ carrierJump: cj });
+      const f = (k: string) => document.querySelector(`[data-section="carrier"] [data-f="${k}"]`)?.textContent;
+      expect(f("status")).toBe("10:00");
+      expect(f("to")).toBe("G 224-46");
+      expect(f("lockdown")).toBe("06:40");
+      expect(f("who")).toBe("NO MONEY FOR SQUADRON (KBX-05T) · 512 t tritium");
+      vi.setSystemTime(dep - 60_000);
+      HUD.render({ carrierJump: cj });
+      expect(f("status")).toBe("Locked down");
+      expect(f("depart")).toBe("01:00");
+      vi.setSystemTime(dep + 30_000);
+      HUD.render({ carrierJump: cj });
+      HUD.render({ carrierJump: cj });
+      expect(f("status")).toBe("Jumping");
+      expect(cues).toEqual(["carrierLockdown", "carrierJump"]);
+      vi.setSystemTime(dep + 120_000);
+      HUD.render({ carrierJump: cj });
+      expect(f("cooldown")).toBe("04:00");
+      HUD.render({ carrierJump: null });
+      expect(f("idle")).toBe("No carrier jump scheduled.");
+      expect(f("status")).toBe("Idle");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

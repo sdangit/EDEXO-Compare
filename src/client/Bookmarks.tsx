@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { withTransition } from "./motion";
+import { showPickedSystem } from "./tabs/tabStore";
 import { type BookmarkRowDTO, type BookmarksListDTO } from "@shared/bookmarks";
 import { useModal } from "./ui/useModal";
 import { LoadingNote } from "./ui/Loading";
@@ -11,6 +12,7 @@ import { CopySystemButton } from "./CopySystemButton";
 import { isStr, isStrArr, usePersistedState } from "./usePersistedState";
 import { BookmarkEditor, removeBookmark } from "./BookmarkButton";
 import { fmtLyAway } from "@shared/format";
+import { usePullToRefresh } from "./ui/usePullToRefresh";
 
 const ly = fmtLyAway;
 
@@ -43,6 +45,8 @@ export function BookmarksModal({
       .catch(() => setFailed(true));
   }, []);
   useEffect(load, [load]);
+  // M2: pull the list down at its top to fetch it again.
+  const pullRef = usePullToRefresh<HTMLDivElement>(load);
 
   const tagsInUse = useMemo(() => {
     const m = new Map<string, string>();
@@ -78,7 +82,8 @@ export function BookmarksModal({
         });
       }
     })();
-    onClose();
+    // Main to the front, the bookmarks staying in their tab (a pop-up closes).
+    showPickedSystem(onClose);
   };
 
   return (
@@ -157,7 +162,7 @@ export function BookmarksModal({
           </div>
         ) : null}
 
-        <div className="fdb-scroll">
+        <div ref={pullRef} className="fdb-scroll">
           <table className="fdb-table carriers-table bm-table">
             <thead>
               <tr>

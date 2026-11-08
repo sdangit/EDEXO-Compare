@@ -133,6 +133,7 @@ describe("jumponium inventory", () => {
       learned: {},
       made: {},
       afmu: null,
+      mats: null,
     });
     expect(hydrateJumponium(null)).toEqual(newJumponium());
   });
@@ -472,6 +473,31 @@ describe("Use Jumponium on a neutron route", () => {
       needs: { carbon: 2, vanadium: 1, germanium: 2, arsenic: 1, niobium: 1, yttrium: 1, polonium: 1 },
       short: 0,
     });
+  });
+
+  it("plans a jump more fuel aboard after each injected hop, until a refuel fills the tank (plan 1.3.4 S-9)", () => {
+    // The same two injected hops, the fuel the route being flown checks against; the last hop refuels to a full 8.
+    const f = (h: ReturnType<typeof hop>, arrive: number, leave: number, refuel = false) => ({
+      ...h,
+      fuelArrive: arrive,
+      fuelLeave: leave,
+      refuel,
+    });
+    const r = route([
+      f(hop(0, 0, 0), 8, 8),
+      f(hop(110, 3, 0), 5, 5),
+      f(hop(255, 3, 0), 2, 2),
+      f(hop(275, 1, 0), 1, 8, true),
+      f(hop(475, 1, 1), 7, 7),
+    ] as unknown as ReturnType<typeof hop>[]);
+    const out = applyJumponium(r, 50, 4).route.hops;
+    expect(out.map((h) => [h.fuelArrive, h.fuelLeave])).toEqual([
+      [8, 8],
+      [6, 6],
+      [4, 4],
+      [3, 8],
+      [7, 7],
+    ]);
   });
 
   // Owner, 2026-10-15: "fix jumponium use when not available" — it planned injections the hold could not make.

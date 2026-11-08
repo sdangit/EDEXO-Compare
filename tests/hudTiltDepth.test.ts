@@ -27,3 +27,15 @@ describe("the HUD's turn depth", () => {
     expect(css.match(/perspective\(var\(--hud-tilt-depth, 60rem\)\)/g)).toHaveLength(2);
   });
 });
+
+describe("one door for every panel (owner, 2026-11-01: separate panels fanned out)", () => {
+  it("gives every panel the same depth, deep enough that short panels close in only a little", async () => {
+    const { sharedTiltDepthPx } = await import("../src/client/hud/tilt");
+    expect(sharedTiltDepthPx(1440)).toBe(1440);
+    // The far edge's inward pull for a 130 px panel, 404 px wide, turned 22 degrees: (h / 2) * (1 - d / (d + w sin t)).
+    const pull = (d: number) => 65 * (1 - d / (d + 404 * Math.sin((22 * Math.PI) / 180)));
+    expect(pull(sharedTiltDepthPx(1440))).toBeLessThan(7);
+    // With the depth from its own height, as before: about four times that.
+    expect(pull(tiltDepthPx(130))).toBeGreaterThan(20);
+  });
+});

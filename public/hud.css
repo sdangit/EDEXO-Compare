@@ -814,9 +814,129 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
 .minimap-arrow--ship {
   fill: var(--hud-text);
 }
+/* Where the commander left the SRV (plan 1.3.6 S-2). */
+.minimap-srv {
+  fill: none;
+  stroke: var(--hud-text);
+  stroke-width: 1.3;
+}
+.minimap-srv-wheel {
+  fill: var(--hud-text);
+}
+.minimap-arrow--srv {
+  fill: none;
+  stroke: var(--hud-text);
+  stroke-width: 1.2;
+}
+/* Where the composition scanner named a plant (CodexEntry position): a waypoint until it is logged on foot. */
+.minimap-codex {
+  fill: none;
+  stroke: var(--bio);
+  stroke-width: 1.4;
+  stroke-dasharray: 2 1.5;
+}
+.minimap-arrow--codex {
+  fill: none;
+  stroke: var(--bio);
+  stroke-width: 1.2;
+}
+/* Placed by two crossing scans: a second, solid ring (scanLocate.ts). */
+.minimap-codex--outer {
+  stroke-dasharray: none;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+/* Scanned from here, no range known: the way the ship was pointed. */
+.minimap-codex-heading {
+  stroke: var(--bio);
+  stroke-width: 1;
+  stroke-dasharray: 1.5 2;
+  opacity: 0.8;
+}
+/* The next plant to sample (owner, 2026-11-04): filled, and a line from you to it. */
+.minimap-codex--target {
+  fill: var(--bio);
+  fill-opacity: 0.35;
+  stroke-dasharray: none;
+  stroke-width: 1.8;
+}
+/* Composition scans of other species than the one being sampled (review P14, owner 2026-11-05): yellow, green is the run's. */
+.minimap-codex--other,
+.minimap-codex-heading--other {
+  stroke: #ffd23f;
+}
+.minimap-arrow--codex-other {
+  fill: none;
+  stroke: #ffd23f;
+  stroke-width: 1.2;
+}
+/* The run's samples numbered 1-3 (review P15), so the Scan rows map to the dots. */
+.minimap-scan-no {
+  fill: var(--hud-text);
+  font-size: 6.5px;
+  font-weight: 700;
+  font-family: inherit;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.85);
+  stroke-width: 1.4px;
+}
+.minimap-target-line {
+  stroke: var(--bio);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
+  opacity: 0.85;
+}
+
+/* Heading to a scan (guide.tsx): the tape under the radar and the line naming what the nose points at. */
+.guide {
+  margin: 4px 0 2px;
+}
+.guide__tape {
+  display: block;
+  width: 100%;
+  height: 12px;
+  border-bottom: 1px solid var(--hud-dim);
+}
+.guide__centre {
+  stroke: var(--hud-text);
+  stroke-width: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+.guide__tick {
+  stroke: var(--hud-dim);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.guide__tick--codex {
+  stroke: var(--bio);
+}
+.guide__tick.is-target,
+.guide__tick.is-on {
+  stroke: var(--bio);
+  stroke-width: 3;
+}
+.guide__off {
+  fill: var(--bio);
+}
+.guide__line {
+  font-size: 0.92em;
+  min-height: 1.3em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.guide--on .guide__name b {
+  color: var(--bio);
+  font-size: 1.15em;
+}
+.guide__how,
+.guide__hint {
+  color: var(--hud-dim);
+}
 /* SVG text takes no text-shadow: a dark stroke behind the fill does the same. */
 .minimap-far-label,
-.minimap-north {
+.minimap-north,
+.minimap-clear {
   paint-order: stroke;
   stroke: rgba(0, 0, 0, 0.85);
   stroke-width: 1.6px;
@@ -834,6 +954,12 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
   font-family: inherit;
   font-weight: 700;
   letter-spacing: 0.16em;
+}
+.minimap-clear {
+  fill: var(--bad);
+  font-size: 9px;
+  font-family: inherit;
+  font-weight: 700;
 }
 
 /* ---- next jump: system name with the arrival star's scoop verdict as a triangle -------------------- */
@@ -925,8 +1051,9 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
 .jump__copied-run {
   color: var(--bio);
 }
-/* The neutron route being flown (plan 8.5) and the FSD's health (8.4). */
+/* The neutron route being flown (plan 8.5) and the FSD's health (8.4); a route the game did not save (2026-11-01). */
 .jump__neutron,
+.jump__unsaved,
 .jump__fsd {
   margin-top: 0.4rem;
   font-size: 0.62rem;
@@ -935,6 +1062,15 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* With something to do there (scoop, supercharge) the line wraps: one line cut the next stop off at 420 px (2026-10-29). */
+.jump__unsaved {
+  white-space: normal;
+  line-height: 1.45;
+}
+.jump__neutron--act {
+  white-space: normal;
+  line-height: 1.45;
 }
 .jump__neutron-k {
   font-weight: 700;
@@ -974,6 +1110,55 @@ html.hud-type--title .hud-section--credit-bottom .hud-head {
 .jump__fsd--warn {
   color: var(--bad);
   font-weight: 700;
+}
+/* The refuel stop's fuel bar (2026-10-29): green where the tank should end up, the fuel aboard filling over it. */
+.jump__refuel {
+  margin-top: 0.35rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: #ffd23f;
+}
+.jump__refuel-txt {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jump__refuel-st--ok {
+  color: var(--bio);
+}
+.jump__refuel-st--low {
+  color: var(--hud-hi);
+}
+.jump__refuel-st--high {
+  color: var(--bad);
+  font-weight: 700;
+}
+.jump__refuel-bar {
+  position: relative;
+  height: 0.45rem;
+  margin-top: 0.2rem;
+  border: 1px solid var(--hud-dim, rgba(255, 255, 255, 0.25));
+  background: rgba(0, 0, 0, 0.35);
+}
+.jump__refuel-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(123, 224, 123, 0.3);
+  box-shadow: inset 0 0 0 1px var(--bio);
+}
+.jump__refuel-fill {
+  position: absolute;
+  left: 0;
+  top: 25%;
+  bottom: 25%;
+  background: #ffd23f;
+}
+.jump__refuel-fill--ok {
+  background: var(--bio);
+}
+.jump__refuel-fill--high {
+  background: var(--bad);
 }
 /* "Next boxel" (plan 2.7): the expedition planner's pick, off unless chosen in the launcher. */
 .jump__boxel {
@@ -1520,8 +1705,8 @@ html.hud-type--elite {
   --hud-elite-shadow: 0 0 3px #000, 0 0 7px rgba(0, 0, 0, 0.85), 1px 1px 1px #000;
 }
 html.hud-type--elite .shell {
-  /* The far edge goes into the screen, so nothing grows past the window (origin from theme.js). The depth follows
-     the panel's height (hud/main.tsx trackTiltDepth), so every panel turns at the same angle. */
+  /* The far edge goes into the screen, so nothing grows past the window (origin from theme.js). One depth for every
+     panel (hud/main.tsx trackTiltDepth), so they swing alike and do not fan out. */
   transform: perspective(var(--hud-tilt-depth, 60rem)) rotateY(var(--hud-tilt, 0deg));
   transform-origin: var(--hud-tilt-origin, left) center;
   padding: 0.2rem 0.5rem 0.4rem;

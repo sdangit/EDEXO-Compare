@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { BRAIN_TREE_SYSTEM_REQUIREMENT } from "../shared/systemBodyGates.js";
 import { gateForSpeciesId } from "../shared/spatialGates.js";
 import { unrecognisedConditionKeys } from "./conditionKeyAudit.js";
+import { gameOrderSpeciesName } from "../shared/codexLog.js";
 
 /**
  * Warnings raised while reading the species tree, kept so `/api/status` can show them.
@@ -142,34 +143,38 @@ export function findGenusJsonPath(genusDirPath: string, folderBaseName: string):
   return null;
 }
 
-/** Read genus `meta.general.min_sample_distance_m` / `meta.minSampleDistanceM` from a genus JSON path. */
-export function readGenusMinSampleDistanceM(jsonPath: string): number | null {
-  let raw: string;
-  try {
-    raw = readFileSync(jsonPath, "utf8");
-  } catch {
-    return null;
-  }
-  let j: unknown;
-  try {
-    j = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!j || typeof j !== "object") return null;
-  const root = j as Record<string, unknown>;
-  const meta = root.meta && typeof root.meta === "object" ? (root.meta as Record<string, unknown>) : null;
-  if (meta) {
-    const ms = meta.minSampleDistanceM;
-    if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) return Math.round(ms);
-    const gen =
-      meta.general && typeof meta.general === "object" ? (meta.general as Record<string, unknown>) : null;
-    const m2 = gen?.min_sample_distance_m;
-    if (typeof m2 === "number" && Number.isFinite(m2) && m2 > 0) return Math.round(m2);
-  }
-  return null;
+/**
+ * The sample distance of the genus of the species named `label` ("Rubeum Bioluminescent Anemone", in the game's word
+ * order or the database's); 0 when no species carries that name. For genera the game misnames (exoOrganicTracker.ts).
+ */
+export function speciesGenusSampleDistanceM(
+  species: readonly { displayName: string; genusMinSampleDistanceM?: number | null }[],
+  label: string,
+): number {
+  const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const want = fold(label);
+  if (!want) return 0;
+  const e = species.find((x) => fold(gameOrderSpeciesName(x.displayName)) === want || fold(x.displayName) === want);
+  return e?.genusMinSampleDistanceM ?? 0;
 }
 
+/**
+ * A plant's sample distance (review P16, 2026-11-05: one function where three were, two of them reading the genus file
+ * from disk again): its genus's, by the name the game gives the genus (`Genus_Localised`), else the genus of the species
+ * named `label`, for the genera the game names after a species ("Luteolum Anemone"). 0 when neither is known. The
+ * distance is the genus file's, kept on each species when the database loads.
+ */
+export function sampleDistanceM(
+  species: readonly { genus: string; displayName: string; genusMinSampleDistanceM?: number | null }[],
+  genus: string,
+  label = "",
+): number {
+  const g = genus.trim().toLowerCase();
+  const e = g ? species.find((x) => x.genus.trim().toLowerCase() === g && (x.genusMinSampleDistanceM ?? 0) > 0) : undefined;
+  return e?.genusMinSampleDistanceM ?? (label ? speciesGenusSampleDistanceM(species, label) : 0);
+}
+
+/** A genus file's `meta.minSampleDistanceM` / `meta.general.min_sample_distance_m`, kept on each species at load. */
 function readMinSampleDistanceFromMetaRecord(meta: Record<string, unknown> | null): number | undefined {
   if (!meta) return undefined;
   const ms = meta.minSampleDistanceM;

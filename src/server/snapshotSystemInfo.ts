@@ -4,6 +4,7 @@
 import { greenGiantLabel } from "../shared/greenGasGiant.js";
 import { bodyFeatures, directParent } from "../shared/bodyFeatures.js";
 import { notableOptions } from "./notableOptions.js";
+import { customRuleHits } from "../shared/customBodyRules.js";
 import { greenGiantForRecord, type GreenGiantSources } from "./greenGiants.js";
 import { isTerraformableState } from "../shared/terraformState.js";
 import type {
@@ -234,7 +235,8 @@ export function buildLiveShipFuelRangeDTO(
   const hasLiveStatusFuel = (main != null && Number.isFinite(main)) || (res != null && Number.isFinite(res));
   const fuelMain = main != null && Number.isFinite(main) ? Math.max(0, main) : 0;
   const fuelRes = res != null && Number.isFinite(res) ? Math.max(0, res) : 0;
-  const fuelTotalTForNav = hasLiveStatusFuel ? fuelMain + fuelRes : null;
+  // Jumps burn the main tank only, and the reserve is not part of the jump's mass (fsdDrives.ts).
+  const fuelTotalTForNav = hasLiveStatusFuel ? fuelMain : null;
 
   /*
     Ask about the systems ahead before the route is analysed, so the verdicts are in the cache by the
@@ -263,7 +265,7 @@ export function buildLiveShipFuelRangeDTO(
 
   if (!hasLiveStatusFuel && !navRoute) return null;
 
-  const fuelTotal = hasLiveStatusFuel ? fuelMain + fuelRes : 0;
+  const fuelTotal = hasLiveStatusFuel ? fuelMain : 0;
   const maxR = store.loadoutMaxJumpRangeLy;
   const fu = store.lastFsdJumpFuelUsedT;
   const jd = store.lastFsdJumpDistLy;
@@ -293,7 +295,7 @@ export function buildLiveShipFuelRangeDTO(
     hasLiveStatusFuel,
     fuelMainT: fuelMain,
     fuelReserveT: fuelRes,
-    fuelTotalT: fuelTotal,
+    fuelTotalT: fuelMain + fuelRes,
     maxJumpRangeLy: maxR,
     ladenMaxJumpLy,
     estFuelPerMaxJumpT: estFuelPerMaxJump,
@@ -371,7 +373,7 @@ function abbreviateNotablePlanetClass(pc: string): string {
   return n.split(/\s+/).slice(0, 3).join(" ");
 }
 
-function notableTagForRecord(rec: ExplorationScanRecord): string | null {
+export function notableTagForRecord(rec: ExplorationScanRecord): string | null {
   const pc = (rec.planetClass ?? "").trim();
   const norm = pc.toLowerCase().replace(/\s+/g, " ");
   const tf = explorationRecordIsTerraformable(rec);
@@ -447,7 +449,7 @@ export function notableBodiesForSystem(
     all.set(rec.bodyId, rec);
     // Stars only count through a feature (ancient, ringed); planets through anything.
     const star = explorationRecordIsStellar(rec) && !rec.isSynthetic && !!rec.starType;
-    if (!isPlanetLikeExplorationRecord(rec) && !(star && opts.features.size)) continue;
+    if (!isPlanetLikeExplorationRecord(rec) && !(star && (opts.features.size || opts.rules.length))) continue;
     byBodyId.set(rec.bodyId, rec);
   }
 
@@ -461,6 +463,9 @@ export function notableBodiesForSystem(
       const hits = bodyFeatures(rec, parent).filter((f) => opts.features.has(f.key));
       if (hits.length) features = hits;
     }
+    // His own rules after the features (owner, 2026-11-02).
+    const ruleHits = opts.rules.length ? customRuleHits(rec, opts.rules) : [];
+    if (ruleHits.length) features = [...(features ?? []), ...ruleHits];
     const tag =
       notableTagForRecord(rec) ?? (green ? greenGiantLabel(green) : null) ?? (features ? features.map((f) => f.label).join(" · ") : null);
     if (!tag) continue;

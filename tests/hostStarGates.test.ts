@@ -359,6 +359,15 @@ describe("a gate measured on the main star", () => {
     expect(evaluateHostStarGate(ARANEAMUS, ["A"], "F")!.passes).toBe(false);
   });
 
+  it("passes on any A, neutron, B or black hole in the system (fresh EDDN, 2026-10)", () => {
+    // Aidown FL-P d5-0 ABCD 5 d: main star F, an A VI companion.
+    const aidown = [{ type: "F", luminosity: "Vb" }, { type: "A", luminosity: "VI" }, { type: "M" }, { type: "G" }];
+    expect(evaluateHostStarGate(ARANEAMUS, [], "F", null, aidown)!.passes).toBe(true);
+    // HD 15137 B 3 e: main star O, round a T dwarf that orbits the black hole B.
+    expect(evaluateHostStarGate(ARANEAMUS, ["T"], "O", null, [{ type: "O" }, { type: "T" }, { type: "H" }])!.passes).toBe(true);
+    expect(evaluateHostStarGate(ARANEAMUS, [], "F", null, [{ type: "F" }, { type: "M" }])!.passes).toBe(false);
+  });
+
   it("abstains when the main star is not known, however the host reads", () => {
     expect(evaluateHostStarGate(ARANEAMUS, ["F"], null)).toBeNull();
     expect(evaluateHostStarGate(ARANEAMUS, ["F"], undefined)).toBeNull();
@@ -398,6 +407,38 @@ describe("a DSS-named genus restores the row the star allows", () => {
     expect(unlikely[0]!.unlikelyReasons!.map((r) => r.field)).toEqual(["AtmosphereType", "StarType"]);
     restoreDemotionsBelowSignalCount(strict, unlikely, 2, new Set(["anemone"]));
     expect(strict.map((m) => m.entry.id)).toEqual(["anemone_prasinum_bioluminescent"]);
+  });
+});
+
+/*
+ * Phrua Flyi WQ-B d14-14 B 1 (EDDN, 2026-10-31): one signal, its Amphora hidden on the silicate vapour, and the
+ * signal-count restore listed Prasinum Bioluminescent under an A V main star in its place. An Anemone colour's gate is
+ * firm once the arrival star is known: no fitting star in the system, no row. With the arrival star unscanned the main
+ * star is a stand-in (Qaugnaae CL-Y e1 2, Roseum bioluminescent with only its T dwarfs scanned), and the row comes back.
+ */
+describe("the signal-count restore and the Anemone colours' star (plan 1.3.4)", () => {
+  type Row = Omit<SpeciesMatch, "photoUrl" | "photoNote" | "priceCredits">;
+  const rows = (): Row[] =>
+    [{ entry: { id: "anemone_prasinum_bioluminescent", displayName: "P", genusDataDir: "anemone" } as SpeciesEntry, reasons: [] }] as Row[];
+  const ctx = (arrival: boolean) =>
+    ({
+      hostStarClasses: ["A"],
+      systemMainStarClass: "A",
+      systemMainStarType: "A",
+      systemMainStarLuminosity: "Vb",
+      systemStars: [{ type: "A", luminosity: "Vb" }, { type: "F", luminosity: "Vb" }],
+      ...(arrival ? { systemMainStarIsArrival: true } : {}),
+    }) as SpeciesMatchContext;
+
+  it("restores it with no arrival star, and holds with one", () => {
+    for (const arrival of [false, true]) {
+      const strict: Row[] = rows();
+      const unlikely: Row[] = [];
+      demoteFailedHostStarGates(strict, unlikely, ctx(arrival));
+      expect(unlikely.map((m) => m.unlikelyReasons?.map((r) => r.field))).toEqual([["StarType"]]);
+      restoreDemotionsBelowSignalCount(strict, unlikely, 1, null, arrival);
+      expect(strict.map((m) => m.entry.id)).toEqual(arrival ? [] : ["anemone_prasinum_bioluminescent"]);
+    }
   });
 });
 

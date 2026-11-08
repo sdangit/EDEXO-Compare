@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const hw = require("../electron/hudWindows.cjs") as {
@@ -54,6 +54,8 @@ type Huds = {
   raiseVisible: () => void;
   isMoving: () => boolean;
   dragFromPage: (win: unknown, phase: string) => { ok: boolean };
+  chainFromPage: (win: unknown, dir: string) => Promise<{ ok: boolean; path?: string }>;
+  unchainFromPage: (win: unknown) => Promise<{ ok: boolean }>;
   loadLayout: () => void;
   relayout: () => void;
 };
@@ -487,7 +489,7 @@ describe("free move (owner, 2026-10-02: the HUD anywhere, on any screen)", () =>
     expect(file.free).toMatchObject({ x: before.x, y: before.y, bottom: false });
   });
 
-  it("placing: the windows take the mouse and show the frame, a drag moves the whole stack, Done ends it", async () => {
+  it("placing: the windows take the mouse and show the frame, a drag moves the window grabbed alone, Done ends it", async () => {
     const huds = make();
     const [a, b] = await twoHuds(huds);
     huds.setLayout({ freeOn: true });
@@ -497,15 +499,26 @@ describe("free move (owner, 2026-10-02: the HUD anywhere, on any screen)", () =>
     expect(a!.visible).toBe(true);
     expect(a!.ignoresMouse).toBe(false);
     expect(b!.sent).toContainEqual(["edexo:hud-move-mode", { on: true }]);
-    const start = { ...a!.bounds };
+    const startA = { ...a!.bounds };
+    const startB = { ...b!.bounds };
+    // Unmerged, every HUD moves on its own (owner, 2026-11-01): the one grabbed, the other stays.
     cursor = { x: 1600, y: 40 };
     expect(huds.dragFromPage(b, "start").ok).toBe(true);
     cursor = { x: 900, y: 240 };
     huds.dragFromPage(b, "move");
-    expect(a!.bounds).toMatchObject({ x: start.x - 700, y: start.y + 200 });
-    expect(b!.bounds).toMatchObject({ x: start.x - 700, y: start.y + 200 + 120 + 6 });
+    expect(b!.bounds).toMatchObject({ x: startB.x - 700, y: startB.y + 200 });
+    expect(a!.bounds).toMatchObject({ x: startA.x, y: startA.y });
     huds.dragFromPage(b, "end");
-    expect(JSON.parse(readFileSync(layoutFile, "utf8")).free).toMatchObject({ x: start.x - 700, y: start.y + 200, bottom: false });
+    const file = JSON.parse(readFileSync(layoutFile, "utf8"));
+    expect(file.freeEach["/distance-overlay.html"]).toMatchObject({ x: startB.x - 700, y: startB.y + 200, bottom: false });
+    // The other one: grabbed next, it moves alone too, and the first keeps its spot.
+    cursor = { x: 1600, y: 20 };
+    huds.dragFromPage(a, "start");
+    cursor = { x: 1500, y: 520 };
+    huds.dragFromPage(a, "move");
+    huds.dragFromPage(a, "end");
+    expect(a!.bounds).toMatchObject({ x: startA.x - 100, y: startA.y + 500 });
+    expect(b!.bounds).toMatchObject({ x: startB.x - 700, y: startB.y + 200 });
     huds.dragFromPage(b, "done");
     expect(huds.isMoving()).toBe(false);
     expect(a!.ignoresMouse).toBe(true);
@@ -513,23 +526,93 @@ describe("free move (owner, 2026-10-02: the HUD anywhere, on any screen)", () =>
     expect(a!.visible).toBe(false);
   });
 
-  it("dropped in the lower half of the second screen it hangs from its bottom edge and grows upwards", async () => {
+  it("merged into one window, a drag moves it from the shared spot", async () => {
+    const huds = make();
+    await huds.request("/hud-overlay.html", 404, 330, null, "open");
+    const [w] = live();
+    huds.setLayout({ freeOn: true });
+    huds.setMoveMode(true);
+    const start = { ...w!.bounds };
+    cursor = { x: 1600, y: 40 };
+    huds.dragFromPage(w, "start");
+    cursor = { x: 900, y: 240 };
+    huds.dragFromPage(w, "move");
+    huds.dragFromPage(w, "end");
+    const file = JSON.parse(readFileSync(layoutFile, "utf8"));
+    expect(file.free).toMatchObject({ x: start.x - 700, y: start.y + 200, bottom: false });
+    expect(file.freeEach ?? {}).toEqual({});
+    huds.setMoveMode(false);
+  });
+
+  it("a separate HUD keeps its own spot while the other one is idle (code review 2026-11-02)", async () => {
+    const huds = make();
+    const [a, b] = await twoHuds(huds);
+    huds.setLayout({ freeOn: true });
+    huds.toggleVisibility(true);
+    huds.setMoveMode(true);
+    const startB = { ...b!.bounds };
+    cursor = { x: 1600, y: 40 };
+    huds.dragFromPage(b, "start");
+    cursor = { x: 900, y: 240 };
+    huds.dragFromPage(b, "move");
+    huds.dragFromPage(b, "end");
+    huds.dragFromPage(b, "done");
+    const own = { x: startB.x - 700, y: startB.y + 200 };
+    expect(b!.bounds).toMatchObject(own);
+    // The other page has nothing to show: it leaves the stack, and the one left must not go to the shared spot.
+    huds.resizeFromPage(a, { height: 200, idle: true });
+    expect(b!.bounds).toMatchObject(own);
+    huds.resizeFromPage(a, { height: 200, idle: false });
+    expect(b!.bounds).toMatchObject(own);
+  });
+
+  it("each separate HUD stays inside the screen it is on: one on each screen, none across an edge", async () => {
+    const huds = make();
+    const [a, b] = await twoHuds(huds);
+    huds.setLayout({ freeOn: true });
+    huds.setMoveMode(true);
+    // b to the second screen, past its right edge: held inside it.
+    cursor = { x: 0, y: 0 };
+    huds.dragFromPage(b, "start");
+    const sb = { ...b!.bounds };
+    cursor = { x: SECOND.x + SECOND.width + 300 - sb.x, y: 200 - sb.y };
+    huds.dragFromPage(b, "move");
+    huds.dragFromPage(b, "end");
+    expect(b!.bounds.x).toBe(SECOND.x + SECOND.width - 404);
+    expect(b!.bounds.x).toBeGreaterThanOrEqual(SECOND.x);
+    // a to the top left of the primary, past its edge: held inside the primary.
+    cursor = { x: 0, y: 0 };
+    huds.dragFromPage(a, "start");
+    const sa = { ...a!.bounds };
+    cursor = { x: -500 - sa.x, y: -50 - sa.y };
+    huds.dragFromPage(a, "move");
+    huds.dragFromPage(a, "end");
+    expect(a!.bounds).toMatchObject({ x: WORK.x, y: WORK.y });
+    // Each on its own screen.
+    expect(a!.bounds.x + a!.bounds.width).toBeLessThanOrEqual(WORK.x + WORK.width);
+    expect(b!.bounds.x).toBeGreaterThanOrEqual(SECOND.x);
+    huds.setMoveMode(false);
+  });
+
+  it("dropped in the lower half of the second screen a HUD hangs from its bottom edge and grows upwards", async () => {
     const huds = make();
     const [a, b] = await twoHuds(huds);
     huds.setLayout({ freeOn: true });
     huds.setMoveMode(true);
     cursor = { x: 0, y: 0 };
-    huds.dragFromPage(a, "start");
-    const start = { ...a!.bounds };
+    huds.dragFromPage(b, "start");
+    const start = { ...b!.bounds };
     cursor = { x: 2400 - start.x, y: 900 - start.y };
-    huds.dragFromPage(a, "move");
-    huds.dragFromPage(a, "end");
-    const free = JSON.parse(readFileSync(layoutFile, "utf8")).free;
-    expect(free).toEqual({ x: 2400, y: 900 + 120 + 6 + 330, bottom: true });
+    huds.dragFromPage(b, "move");
+    huds.dragFromPage(b, "end");
+    const own = JSON.parse(readFileSync(layoutFile, "utf8")).freeEach["/distance-overlay.html"];
+    expect(own).toEqual({ x: 2400, y: 900 + 330, bottom: true });
     // A taller page keeps the bottom edge where it was dropped.
     huds.resizeFromPage(b, { height: 400 });
-    expect(b!.bounds.y + b!.bounds.height).toBe(free.y);
-    expect(a!.bounds.x).toBe(2400);
+    expect(b!.bounds.y + b!.bounds.height).toBe(own.y);
+    expect(b!.bounds.x).toBe(2400);
+    // The other HUD stayed in the stack.
+    expect(a!.bounds.x).not.toBe(2400);
     huds.setMoveMode(false);
   });
 
@@ -875,5 +958,134 @@ describe("loads that finish late (review O-18)", () => {
     expect(w).toHaveLength(1);
     expect(w[0]!.url).toContain("s=nsp");
     expect(huds.paths()).toEqual(["/hud-overlay.html?s=nsp"]);
+  });
+});
+
+/*
+  Chained HUDs (owner, 2026-11-01): "if two panels of HUD are close to each other, a 'chain' button appears there,
+  allowing you to click it and merge only those panels ... Merging is dependent on their initial order".
+*/
+describe("chaining HUDs while placing", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  const offersOf = (w: { sent: unknown[][] }) =>
+    w.sent.filter((m) => m[0] === "edexo:hud-chain-offers").map((m) => m[1] as { below: boolean; right: boolean; group: boolean }).at(-1);
+
+  it("offers a chain between touching HUDs, joins them in the stack's order, and splits them back", async () => {
+    const huds = make();
+    await huds.request("/fss-scan-overlay.html", 404, 120, null, "open");
+    await huds.request("/jump-overlay.html", 404, 200, null, "open");
+    await huds.request("/distance-overlay.html", 404, 150, null, "open");
+    // The launcher's order: jump first, then the discovery scan.
+    huds.setLayout({ freeOn: true, order: ["/jump-overlay.html", "/fss-scan-overlay.html", "/distance-overlay.html"] });
+    huds.setMoveMode(true);
+    await settle();
+    huds.relayout();
+    // Top to bottom on the screen: jump, the discovery scan, the tracker.
+    const [top, mid, bottom] = live().filter((w) => w.visible).sort((x, y) => x.bounds.y - y.bounds.y);
+    expect(top!.url).toContain("/jump-overlay.html");
+    expect(offersOf(top!)).toMatchObject({ below: true, group: false });
+    expect(offersOf(bottom!)).toMatchObject({ below: false });
+    // Chain the top two: one panel, jump before the discovery scan, where the top one was.
+    const at = { ...top!.bounds };
+    const r = await huds.chainFromPage(top, "below");
+    expect(r.ok).toBe(true);
+    expect(r.path).toBe("/hud-overlay.html?s=jump,fss&g=1");
+    expect(huds.paths()).toContain("/hud-overlay.html?s=jump,fss&g=1");
+    expect(huds.paths()).not.toContain("/jump-overlay.html");
+    expect(huds.paths()).toContain("/distance-overlay.html");
+    const group = live().find((w) => w.url?.includes("g=1"));
+    expect(group!.bounds).toMatchObject({ x: at.x, y: at.y });
+    await settle();
+    huds.relayout();
+    expect(offersOf(group!)).toMatchObject({ group: true });
+    // Apart again: separate windows, the first where the group was.
+    expect((await huds.unchainFromPage(group)).ok).toBe(true);
+    expect(huds.paths()).toEqual(expect.arrayContaining(["/jump-overlay.html", "/fss-scan-overlay.html", "/distance-overlay.html"]));
+    expect(huds.paths().some((p) => p.includes("g="))).toBe(false);
+    huds.setMoveMode(false);
+    void mid;
+  });
+
+  it("offers nothing outside placing, nor for HUDs far apart", async () => {
+    const huds = make();
+    await huds.request("/fss-scan-overlay.html", 404, 120, null, "open");
+    await huds.request("/jump-overlay.html", 404, 200, null, "open");
+    const [a] = live();
+    expect(offersOf(a!)?.below ?? false).toBe(false);
+    expect((await huds.chainFromPage(a, "below")).ok).toBe(false);
+  });
+});
+
+describe("the combine buttons follow a drop (owner, 2026-11-01: sometimes none by a HUD dropped next to another)", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  const lastOffers = (w: { sent: unknown[][] }) =>
+    w.sent.filter((m) => m[0] === "edexo:hud-chain-offers").map((m) => m[1] as { below: boolean }).at(-1);
+
+  it("offers combining once a HUD is dropped beside another, and stops once it is dragged away", async () => {
+    const huds = make();
+    await huds.request("/fss-scan-overlay.html", 404, 120, null, "open");
+    await huds.request("/jump-overlay.html", 404, 200, null, "open");
+    huds.setLayout({ freeOn: true });
+    huds.setMoveMode(true);
+    await settle();
+    huds.relayout();
+    const [top, bottom] = live().filter((w) => w.visible).sort((x, y) => x.bounds.y - y.bounds.y);
+    expect(lastOffers(top!)?.below).toBe(true);
+    // The lower one far off: no offer once it is dropped.
+    cursor = { x: 0, y: 0 };
+    huds.dragFromPage(bottom, "start");
+    cursor = { x: -600, y: 500 };
+    huds.dragFromPage(bottom, "move");
+    huds.dragFromPage(bottom, "end");
+    expect(lastOffers(top!)?.below).toBe(false);
+    // Back under it, 30 px apart: offered again the moment it is dropped.
+    const t = top!.bounds;
+    const b = bottom!.bounds;
+    cursor = { x: 0, y: 0 };
+    huds.dragFromPage(bottom, "start");
+    cursor = { x: t.x - b.x, y: t.y + t.height + 30 - b.y };
+    huds.dragFromPage(bottom, "move");
+    huds.dragFromPage(bottom, "end");
+    expect(lastOffers(top!)?.below).toBe(true);
+    huds.setMoveMode(false);
+  });
+});
+
+// Review 2026-11-07: the screen marker's window was re-placed only on HUD changes, never when the display changed
+// under it (a resolution change, the game moving monitors), so its marks and the readers' crop went stale.
+describe("a display change", () => {
+  it("re-places the HUD stack and tells the screen marker, once per burst", () => {
+    vi.useFakeTimers();
+    const handlers: Record<string, () => void> = {};
+    let displayChanges = 0;
+    const huds = hw.createHudWindows({
+      electron: {
+        app: { getPath: () => dir },
+        BrowserWindow: FakeWindow,
+        screen: {
+          getPrimaryDisplay: () => ({ workArea: WORK }),
+          getDisplayNearestPoint: nearestDisplay,
+          getCursorScreenPoint: () => ({ ...cursor }),
+          on: (ev: string, fn: () => void) => (handlers[ev] = fn),
+        },
+      },
+      getRuntime: () => runtime,
+      preloadPath: "preload.cjs",
+      onDisplayChange: () => (displayChanges += 1),
+    }) as Huds & { watchDisplays: () => void };
+    huds.setLayoutPathResolver(() => layoutFile);
+    huds.watchDisplays();
+    // Windows sends several events for one resolution change.
+    handlers["display-metrics-changed"]!();
+    handlers["display-metrics-changed"]!();
+    handlers["display-added"]!();
+    expect(displayChanges).toBe(0);
+    vi.advanceTimersByTime(300);
+    expect(displayChanges).toBe(1);
+    vi.useRealTimers();
   });
 });

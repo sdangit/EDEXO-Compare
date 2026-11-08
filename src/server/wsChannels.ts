@@ -63,7 +63,12 @@ const HUD_KEYS = [
   "exoOrganicOverlay",
   "exoMinimap",
   "statusDestination",
+  // The Scan route's distance reader: when to read (shipInSystem.ts hudReadDistance).
+  "hudReadDistance",
   "jumpTarget",
+  // A route the game did not save to NavRoute.json: the Next jump section's line with the jumps left (2026-11-01).
+  "navRouteUnsaved",
+  "remainingJumpsInRoute",
   // The Next jump section's optional "Next boxel" line asks again when this changes (plan 2.7).
   "currentSystemAddress",
   // What a boxel run or key put on the clipboard: the Next jump section's "Copied" line (2026-10-06).
@@ -90,6 +95,8 @@ const HUD_KEYS = [
   "colonizeHud",
   // The Ship section (discuss item 32): the ship's damage part by part.
   "shipDamage",
+  // The Carrier section (owner, 2026-11-02): his carrier's jump countdown and cooldown.
+  "carrierJump",
 ] as const satisfies readonly (keyof AppSnapshot)[];
 
 /** What the launcher's `applyLauncherSnapshotData` reads; its live strip polls `/api/status` on its own. */

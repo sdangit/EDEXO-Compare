@@ -11,7 +11,7 @@ const gpuSafe = require("./gpuSafeMode.cjs");
 const { hudPathFrom, hudWidthFrom, hudHeightFrom } = require("./hudWindows.cjs");
 
 function registerLauncherIpc(
-  { electron, huds, appWindows, keybinds, trayControl, quitFlow, tray, graphics, gpuSafeDir, hotkey, getRuntime, getMainWindow },
+  { electron, huds, aim, appWindows, keybinds, trayControl, quitFlow, tray, graphics, gpuSafeDir, hotkey, getRuntime, getMainWindow },
   iconForChild,
 ) {
   const { app, dialog, ipcMain, BrowserWindow } = electron;
@@ -23,6 +23,10 @@ function registerLauncherIpc(
   }));
 
   ipcMain.handle("edexo:hud-overlay-state", () => ({ paths: huds.paths() }));
+  // The screen marker (aimWindow.cjs): the launcher's switch, off by default.
+  // The screen marker's pitch reader: the game monitor's capture id, to the marker's own page only (aimWindow.cjs).
+  ipcMain.handle("edexo:aim-capture-source", (evt) => (aim ? aim.captureSource(evt.sender) : null));
+  ipcMain.handle("edexo:set-aim-overlay", (_evt, opts) => ({ on: aim ? aim.set(!!(opts && typeof opts === "object" && opts.on === true)) : false }));
 
   ipcMain.handle("edexo:open-app-window", () => appWindows.openAppUiWindow(iconForChild));
   ipcMain.handle("edexo:open-colonize-window", () => appWindows.openColonizeWindow(iconForChild));
@@ -182,6 +186,8 @@ function registerLauncherIpc(
   ipcMain.on("edexo:push-hud-prefs", (evt, prefs) => {
     if (!getMainWindow() || evt.sender !== getMainWindow().webContents) return;
     huds.pushPrefs(prefs);
+    // The Scan route's distance reader runs in the screen marker's window (aimWindow.cjs).
+    aim?.setReader(!!(prefs && typeof prefs === "object" && prefs.distanceReader === true));
   });
 
   // An overlay reporting how tall it actually is (hudWindows.cjs `resizeFromPage`).
@@ -198,6 +204,12 @@ function registerLauncherIpc(
     if (!["start", "move", "end", "done", "frame", "hover"].includes(phase)) return { ok: false };
     return huds.dragFromPage(BrowserWindow.fromWebContents(evt.sender), phase);
   });
+  // Chain buttons while placing (owner, 2026-11-01): this HUD with the one touching it below / right, or a group apart.
+  ipcMain.handle("edexo:hud-chain", (evt, opts) => {
+    const dir = opts && typeof opts === "object" ? opts.dir : null;
+    return huds.chainFromPage(BrowserWindow.fromWebContents(evt.sender), dir);
+  });
+  ipcMain.handle("edexo:hud-unchain", (evt) => huds.unchainFromPage(BrowserWindow.fromWebContents(evt.sender)));
 
   ipcMain.handle("edexo:toggle-foot-overlay", async () => {
     try {

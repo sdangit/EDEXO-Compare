@@ -46,4 +46,18 @@ describe("sanitizeHudPrefs", () => {
       slant: 15,
     });
   });
+
+  it("keeps the pitch reader's HUD colours: default or the XML only (2026-11-06; no picked colour)", () => {
+    expect(sanitizeHudPrefs({ hudColour: "xml" })).toEqual({ hudColour: "xml" });
+    expect(sanitizeHudPrefs({ hudColour: "pick", hudTextColour: "#A5C305" })).toEqual({});
+  });
+
+  it("keeps the candidate settings, the most rows within 1 to 30", () => {
+    expect(sanitizeHudPrefs({ candScanned: "hidden", candMax: 99, candActiveTop: false })).toEqual({
+      candScanned: "hidden",
+      candMax: 30,
+      candActiveTop: false,
+    });
+    expect(sanitizeHudPrefs({ candScanned: "first", candMax: 0.2 })).toEqual({ candMax: 1 });
+  });
 });

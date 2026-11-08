@@ -175,11 +175,12 @@ describe("matchDatabaseToScan", () => {
     // Sinuous Tubers left when they got their measured 200-500 K (2026-09-28): this body is 198.7 K,
     // and none of the 8,000+ Tubers bodies measured is under 200 K.
     // Bark Mounds left when their profile grew to the 8,036 Spansh DSS bodies (2026-10-14): none under 200.0 K,
-    // nor any of the EDDN year's 1,381, so the observed envelope demotes them here (soft, one click away).
+    // nor any of the EDDN year's 1,381, so they are demoted here (soft, one click away): by the firm 200 K edge
+    // since 2026-11-02 (firmTemperatureEdges.ts), which the observed envelope did before.
     expect([...genera].sort()).toEqual(["anemone", "fumerola"]);
     const bark = r.matches.find((m) => m.entry.genusDataDir === "bark-mound");
     expect(bark?.unlikely).toBe(true);
-    expect(bark!.unlikelyReasons!.map((x) => x.field)).toEqual(["ObservedTemperature"]);
+    expect(bark!.unlikelyReasons!.map((x) => x.field)).toEqual(["FirmTemperature"]);
 
     const gypseeum = r.matches.find((m) => m.entry.displayName === "Brain Tree Gypseeum");
     expect(gypseeum?.unlikely).toBe(true);
@@ -414,5 +415,31 @@ describe("matchDatabaseToScan", () => {
     // the gates until something appeared, which hid exactly that.
     expect(r.matches).toEqual([]);
     expect(r.genusFilterActive).toBe(true);
+  });
+});
+
+describe("Anemone on hot thin silicate vapour (plan 1.3.4)", () => {
+  it("lists the three metal-world Anemones logged there, and not Roseum bioluminescent", () => {
+    // Hypoae Briae LR-W e1-300 A 2 as EDDN carries it: metal-rich, 1,789 K, major metallic magma.
+    const scan: PlanetScan = {
+      BodyName: "Hypoae Briae LR-W e1-300 A 2",
+      BodyID: 2,
+      StarSystem: "Hypoae Briae LR-W e1-300",
+      SystemAddress: 623379621,
+      PlanetClass: "Metal rich body",
+      Atmosphere: "hot thin silicate vapour atmosphere",
+      AtmosphereType: "SilicateVapour",
+      atmosphereComposition: [{ Name: "Silicates", Percent: 100 }],
+      Volcanism: "major metallic magma volcanism",
+      SurfaceGravity: 1.466 * 9.80665,
+      SurfaceTemperature: 1789,
+      SurfacePressure: 0.0247 * 101_325,
+      Landable: true,
+    };
+    const ids = shown(matchDatabaseToScan(db, scan, null, null, { includeBacterium: true })).map((m) => m.entry.id);
+    expect(ids).toEqual(
+      expect.arrayContaining(["anemone_blatteum_bioluminescent", "anemone_rubeum_bioluminescent", "anemone_prasinum_bioluminescent"]),
+    );
+    expect(ids).not.toContain("anemone_roseum_bioluminescent");
   });
 });

@@ -16,6 +16,8 @@ export interface NeutronLiveDTO {
   /** Scoop to half a tank there, not full: the plan's next jumps count on the lighter ship's range. */
   refuelHalf: boolean;
   scoopLs: number | null;
+  /** At a refuel stop: how much to scoop (server/neutronFuelWindow.ts); null elsewhere or when unknown. */
+  refuelWindow?: RefuelWindowDTO | null;
   superchargeHere: boolean;
   /** The normal jumps to the next stop need a scoopable star on the way. */
   scoopOnWay: boolean;
@@ -23,10 +25,43 @@ export interface NeutronLiveDTO {
   nextInject: { tier: "basic" | "standard" | "premium"; count: number } | null;
   /** The ship left the route: it is being planned again from here. */
   replanning: boolean;
+  /** Why, when it is not the ship leaving the route: the tank differs from the plan's (plan 1.3.4 S-9). */
+  replanWhy?: string;
   /** The last stop is reached: shown until the next jump. */
   done: boolean;
   /** The route's last stop. */
   destination: string;
+  /**
+   * A fleet carrier route from Spansh (plan 1.3.6): the stops follow the commander's carrier, not the ship, and the
+   * next one goes to the clipboard when the carrier arrives at a stop.
+   */
+  carrier?: boolean;
+  /** No neutron star among the stops (a Spansh exobiology, riches or plotter route): labelled "Route", not "Neutron". */
+  noNeutrons?: boolean;
+  /** Jumps and destinations done (shared/routeProgress.ts); absent from an older server and once the route is done. */
+  progress?: RouteProgressDTO;
+}
+
+/** How far along a route is: jumps, destinations (the commander's waypoints) and stops (every hop), done and in all. */
+export interface RouteProgressDTO {
+  jump: number;
+  jumps: number;
+  dest: number;
+  dests: number;
+  stop: number;
+  stops: number;
+}
+
+/**
+ * The fuel to scoop to at a refuel stop (t): at least `minT` to reach the next refuel, at most `maxT` for every
+ * supercharge before it to reach as planned; the tank, the fuel aboard now, and the stops until the next refuel.
+ */
+export interface RefuelWindowDTO {
+  minT: number;
+  maxT: number;
+  tankT: number;
+  nowT: number | null;
+  toStop: number;
 }
 
 /** The FSD's health now (shared/fsdWear.ts): from the last Loadout, less the supercharges since. */

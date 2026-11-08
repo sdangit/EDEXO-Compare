@@ -99,7 +99,7 @@ export function judgeRegionalPresence(count: number, bioSystems: number): Region
  * answer is the species' share of the genus there.
  *
  * Calibrated over 78,343 genus slots from the Spansh corpus, an EDDN capture and the commander's
- * journals (`scripts/precision-region-share.ts`):
+ * journals (`scripts/probes/precision-region-share.ts`):
  *
  * ```
  *   cut      truth lost   species per slot   exactly one     journal truth
@@ -155,7 +155,7 @@ export interface RegionGenusShareVerdict {
  * (0.3 % of Tubus there) and 15 of 36 Bacterium scopulum bodies with it (0.6 % of Bacterium in Inner
  * Orion Spur, and 1.2× its galaxy-wide share — exactly where it belongs).
  *
- * Calibrated over the 78,343 genus slots of the replay (`scripts/precision-phase1.ts`) and the
+ * Calibrated over the 78,343 genus slots of the replay (`scripts/probes/precision-phase1.ts`) and the
  * owner's journals (`scripts/accuracy-probe.ts`), on top of the 0.25 % share cut:
  *
  * ```
@@ -186,6 +186,33 @@ export const REGION_SIBLING_DEPLETION = 0.05;
  * 1, 2, 5 or 10 % changes none of those slots (2026-10-04).
  */
 export const REGION_SIBLING_DEPLETION_MAX_SHARE = 0.05;
+
+/**
+ * Below this share of what a region should record of a species, it is not growing there (plan 1.3.5, 2026-11-01).
+ *
+ * "Should" is the species' share of the galaxy's biology times the region's recorded bio systems. The absence cut above
+ * (0.02 % of a region's biology) misses a species that is common somewhere else and present here only as stray records:
+ * Cactoida cortexum is 22,643 systems in Inner Orion Spur and 20 in Empyrean Straits (0.04 % there, "present"), where
+ * 1,093 would be expected (1.8 %). Cactoida is region-locked: a year of EDDN finds holds no cortexum and no pullulanta in
+ * Empyrean Straits (only vermis), and the app listed both on Lyaisa AU-R d4-1964 8 c, 10 rows for 6 signals.
+ *
+ * Measured on every region-tagged EDDN find of the year (1,439,118, every species): under 5 % of the expected count where
+ * at least 200 were expected, no find at all; at 100 expected, 9 Electricae radialem (a nebula species, not a region
+ * one), hence {@link REGION_DEPLETION_MIN_EXPECTED}.
+ */
+export const REGION_DEPLETION_MAX_RATIO = 0.05;
+
+/** The region must expect at least this many systems with the species before its scarcity there counts. */
+export const REGION_DEPLETION_MIN_EXPECTED = 200;
+
+/** The line a commander sees when a species is far below what its region should hold. */
+export function regionDepletionDetail(regionName: string, count: number, expected: number): string {
+  return (
+    `Not growing in ${regionName}: ${count.toLocaleString("en-US")} systems there record it, where about ` +
+    `${Math.round(expected).toLocaleString("en-US")} would be expected from how common it is elsewhere. ` +
+    `Listed as a low-probability find rather than excluded.`
+  );
+}
 
 /** The line a commander sees when the sibling test demotes a row. */
 export function regionSiblingDepletionDetail(regionName: string, name: string, favourite: string, ratio: number): string {

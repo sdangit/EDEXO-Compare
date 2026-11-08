@@ -46,7 +46,7 @@ import { codexEntryKey } from "../shared/codexLog.js";
 import { isLegacyPlantKey } from "../shared/achievements.js";
 import { regionForSystem } from "./regionMapData.js";
 import { parseBoxel } from "../shared/boxel.js";
-import { emptyFsdFuel, fsdFuelCargo, fsdFuelJump, type FsdFuelState } from "../shared/fsdFuel.js";
+import { emptyFsdFuel, fsdFuelCargo, fsdFuelEngineerCraft, fsdFuelJump, type FsdFuelState } from "../shared/fsdFuel.js";
 import { fsdWearJump, fsdWearRepair, newFsdWear, type FsdWearState } from "../shared/fsdWear.js";
 import { newOwnAssets, ownAssetsLine, type OwnAssetsState } from "../shared/ownAssets.js";
 import { JUMPONIUM_EVENTS, jumponiumLine, newJumponium, type JumponiumState } from "../shared/jumponium.js";
@@ -82,6 +82,8 @@ import * as journalEvents from "./gameStateEvents.js";
 import * as explorationSales from "./gameStateSales.js";
 import * as explorationMerge from "./gameStateExploration.js";
 import * as journalPayload from "./gameStatePayload.js";
+import { nextShipFlight } from "./shipInSystem.js";
+import type { ShipFlight } from "../shared/dto/routeSystem.js";
 // tests/genusProgress.test.ts imports upsertFootOrganicLock from here.
 export { signsOfLife, upsertFootOrganicLock } from "./gameStateHelpers.js";
 
@@ -513,11 +515,31 @@ export class GameStateStore {
 
   /** From live `Status.json` poll (tonnes); null when file missing or parse failed. */
   liveStatusFuelMainT: number | null = null;
+  /**
+   * The main tank's last known level (t) and when (owner, 2026-10-30: "log the last known fuel level instead of
+   * assuming the fuel is full if the game is not running"): live Status.json while it has fuel, else the journal's
+   * last word on it (LoadGame, FSDJump, FuelScoop, refuels, the reservoir). Another ship or a death: unknown.
+   */
+  lastFuelMainT: number | null = null;
+  lastFuelAt: string | null = null;
+  /** Whether Elite runs (gamePresence.ts, the desktop app only); null when not known. */
+  gameRunning: boolean | null = null;
   liveStatusFuelReserveT: number | null = null;
   private lastLiveShipFuelPushKey: string | null = null;
 
-  /** Parsed `NavRoute.json` from the journal folder (live file; not journal-cached). */
+  /**
+   * Parsed `NavRoute.json` from the journal folder (live file; not journal-cached), while it agrees with the game's
+   * last FSDTarget ({@link navRouteAgrees}); null when it does not.
+   */
   liveNavRoute: NavRouteWaypointDTO[] | null = null;
+  /** The file as last read, agreeing or not, and when the game wrote it (its `timestamp`, ms; null when unknown). */
+  private liveNavRouteFile: NavRouteWaypointDTO[] | null = null;
+  private liveNavRouteFileAtMs: number | null = null;
+  /**
+   * The file a FSDTarget last found wrong (its systems and when it was written): still wrong after that target is spent
+   * on arrival, until the game rewrites the file (code review 2026-11-02: the old route came back at the destination).
+   */
+  private rejectedNavRouteKey: string | null = null;
   private lastLiveNavRoutePushKey: string | null = null;
 
   /** User pref: show HUD + poll Status.json (launcher / settings). */
@@ -548,7 +570,8 @@ export class GameStateStore {
    * The system locked in the nav panel (`FSDTarget`), which fires well before the countdown. Cleared
    * on arriving there. Second rung of the next-jump ladder, see {@link nextJumpTarget}.
    */
-  fsdTarget: { starSystem: string; systemAddress: number; starClass: string; at: string } | null = null;
+  /** `remaining`: the line's RemainingJumpsInRoute, when it came with a plotted route (checks NavRoute.json against it). */
+  fsdTarget: { starSystem: string; systemAddress: number; starClass: string; at: string; remaining?: number } | null = null;
   /**
    * The boxel system last put on the clipboard (server/boxelRun.ts), for the HUD's next-jump card:
    * "Copied … · boxel run". Not journal state; this session only.
@@ -739,6 +762,9 @@ export class GameStateStore {
   overlayTouchdownBodyKey: string | null = null;
   /** The body the ship is at, as `system:body` — arrival body after a jump, then approach / drop / landing. */
   currentBodyKey: string | null = null;
+  /** Supercruise, normal flight, landed or docked, from the journal's events (shipInSystem.ts), and when it last moved. */
+  shipFlight: ShipFlight = "unknown";
+  shipEventMs = 0;
 
   /**
    * Where the ship is parked, from `Touchdown` (A-list: the overlay minimap).
@@ -765,6 +791,12 @@ export class GameStateStore {
    */
   surfaceSampleMarks: SurfaceMark[] = [];
 
+  /** Composition-scan waypoints (surfaceMarksFile.ts `codex`): live `CodexEntry` lines only, kept on disk. */
+  surfaceCodexMarks: SurfaceMark[] = [];
+
+  /** Where the commander left the SRV (exoOrganicTracker.ts `srvMarkLine`): live lines only, kept on disk. */
+  surfaceSrvMark: SurfaceMark | null = null;
+
   /**
    * Record a sampled plant's position, and remember it across restarts.
    *
@@ -786,9 +818,9 @@ export class GameStateStore {
     conditions?: { temperatureK: number | null; gravityG: number | null; elevationM: number | null },
   ): void {
     if (!Number.isFinite(latDeg) || !Number.isFinite(lonDeg)) return;
+    // The same plant twice (Analyse after Log); another species logged without moving is its own mark (2026-11-05).
     const dup = this.surfaceSampleMarks.some(
-      (m) =>
-        m.bodyKey === bodyKeyStr && Math.abs(m.latDeg - latDeg) < 1e-5 && Math.abs(m.lonDeg - lonDeg) < 1e-5,
+      (m) => m.bodyKey === bodyKeyStr && m.label === label && Math.abs(m.latDeg - latDeg) < 1e-5 && Math.abs(m.lonDeg - lonDeg) < 1e-5,
     );
     if (dup) return;
     const tK = conditions?.temperatureK;
@@ -814,6 +846,8 @@ export class GameStateStore {
   loadSurfaceMarksFromDisk(): void {
     const f = loadSurfaceMarks();
     this.surfaceSampleMarks = f.samples;
+    this.surfaceCodexMarks = f.codex ?? [];
+    this.surfaceSrvMark = f.srv ?? null;
     // The ship also arrives from the journal replay; whichever is newer wins, and Touchdown always
     // overwrites this afterwards, so a stale file cannot outlive a real landing.
     if (!this.surfaceShipMark) this.surfaceShipMark = f.ship;
@@ -824,6 +858,8 @@ export class GameStateStore {
       formatVersion: 1,
       samples: this.surfaceSampleMarks,
       ship: this.surfaceShipMark,
+      codex: this.surfaceCodexMarks,
+      srv: this.surfaceSrvMark,
     });
   }
 
@@ -1366,12 +1402,11 @@ export class GameStateStore {
    * DSS physical slack percents are user prefs and are intentionally preserved.
    */
   resetAll(): void {
-    this.bodies.clear();
+    // The journal Maps and Sets the cache carries, from its one table (gameStatePayload.ts CACHED_MAPS / CACHED_SETS).
+    for (const k of journalPayload.CACHED_MAPS) this[k].clear();
+    for (const k of journalPayload.CACHED_SETS) this[k].clear();
     this.bodyKeysBySystem = null;
     this.confirmedVariantsRevision += 1;
-    this.explorationScans.clear();
-    this.soldExplorationScans.clear();
-    this.soldBodyKeys.clear();
     this.explorationScansRevision += 1;
     this.edsmExplorationByKey.clear();
     this.commanderName = null;
@@ -1380,50 +1415,29 @@ export class GameStateStore {
     this.currentSystemAddress = null;
     this.commanderPos = null;
     this.viewingSystemAddress = null;
-    this.visitedSystems.clear();
     this.systemVisitedAt.clear();
     this.systemStarClass.clear();
     this.targetedSystems.clear();
     this.visitedSystemNames = null;
     this.lastEventIso = null;
-    this.organicAnalyseByKey.clear();
-    this.bodyDetailedFootfallState.clear();
-    this.bodyFootfallFlag.clear();
-    this.bodyMappedFlag.clear();
-    this.firstFootfallBodies.clear();
-    this.codexLoggedSpecies.clear();
-    this.codexRegionLogged.clear();
-    this.codexMapLogged.clear();
-    this.codexSightings.clear();
-    this.achievementDone.clear();
-    this.codexRegionBySystem.clear();
-    this.greenCodexBodies.clear();
     this.greenCodexMatcher.clear();
-    this.k10Systems.clear();
     this.nspSeen.clear();
     this.landingMinutesSamples.length = 0;
     this.samplingMinutesSamples.length = 0;
     this.scExitAt = null;
-    this.organicRunStartedAt.clear();
     this.pendingOrganicSales = [];
-    this.fssAllBodiesCompleteSystems.clear();
-    this.systemLife.clear();
     this.fssAllBodiesFoundCountBySystem.clear();
     this.soldExplorationBySystem.clear();
     this.soldOrganicBySystem.clear();
     this.fssDiscoveryScanBySystem.clear();
-    this.orbitParentPlanetByBody.clear();
     this.orbitParentRevision += 1;
-    this.dssMappedBodyKeys.clear();
-    this.archivedDssMappedBodyKeys.clear();
-    this.dssFirstMapperEligibleByBodyKey.clear();
-    this.dssMappingEfficientByBodyKey.clear();
-    this.fssBodySignalsBodyKeys.clear();
     this.footJournalContextBuffer.length = 0;
     this.pendingUiAutoSelectBodyKey = null;
     this.uiSelectedBodyKey = null;
     this.overlayTouchdownBodyKey = null;
     this.currentBodyKey = null;
+    this.shipFlight = "unknown";
+    this.shipEventMs = 0;
     this.mainStarWasDiscoveredBySystem.clear();
     this.mainStarSourceRankBySystem.clear();
     this.systemPositions.clear();
@@ -1442,8 +1456,13 @@ export class GameStateStore {
     this.jumponium = newJumponium();
     this.liveStatusFuelMainT = null;
     this.liveStatusFuelReserveT = null;
+    this.lastFuelMainT = null;
+    this.lastFuelAt = null;
     this.lastLiveShipFuelPushKey = null;
     this.liveNavRoute = null;
+    this.liveNavRouteFile = null;
+    this.liveNavRouteFileAtMs = null;
+    this.rejectedNavRouteKey = null;
     this.lastLiveNavRoutePushKey = null;
     this.fsdTarget = null;
     this.lastJumpTarget = null;
@@ -1583,6 +1602,8 @@ export class GameStateStore {
       // The ship's SRVs, fighters and the Nomad (1.3.1): launched, docked, lost, rebuilt, taken over. First, because
       // LoadGame and others return early below.
       shipDamageVehicle(this.shipDamage, line as Record<string, unknown>);
+      // The tank's last known level, before LoadGame and others return early below.
+      if (event) this.noteJournalFuel(event, line as Record<string, unknown>, ts);
       if (event === "Commander") return journalEvents.onCommander(this, line);
 
       if (event === "LoadGame") return journalEvents.onLoadGame(this, line);
@@ -1590,6 +1611,8 @@ export class GameStateStore {
       if (event === "Loadout") return journalEvents.onLoadout(this, line);
       // The hold, for the fuel model's jump mass (fsdFuel.ts cargoT); another ship's or after a death: unknown.
       if (event === "Cargo") fsdFuelCargo(this.fsdFuel, line as Record<string, unknown>);
+      // An engineer's roll changes the drive and the mass at once; the next Loadout comes at the next login (fsdFuel.ts).
+      if (event === "EngineerCraft") fsdFuelEngineerCraft(this.fsdFuel, line as Record<string, unknown>);
       if (event === "ShipyardSwap" || event === "ShipyardNew" || event === "Died") this.fsdFuel.cargoT = null;
       if (event === "Repair" || event === "RepairAll") {
         fsdWearRepair(this.fsdWear, line as Record<string, unknown>);
@@ -1611,8 +1634,8 @@ export class GameStateStore {
 
       /*
         Which body the ship is at: the arrival body on a jump or a load, then whatever it approaches,
-        drops out of supercruise at, or lands on. The System card's "you are here" (Discord batch O-E2)
-        and, later, "closest first" in the body sort read it.
+        drops out of supercruise at, lands on, or maps (a DSS is fired from beside the body). The System
+        card's "you are here" (Discord batch O-E2), the ship's proximity and the Scan route's start read it.
       */
       if (
         (event === "FSDJump" ||
@@ -1620,7 +1643,8 @@ export class GameStateStore {
           event === "Location" ||
           event === "ApproachBody" ||
           event === "SupercruiseExit" ||
-          event === "Touchdown") &&
+          event === "Touchdown" ||
+          event === "SAAScanComplete") &&
         typeof line.SystemAddress === "number" &&
         typeof (line as Record<string, unknown>).BodyID === "number"
       ) {
@@ -1628,6 +1652,12 @@ export class GameStateStore {
           line.SystemAddress as number,
           (line as Record<string, unknown>).BodyID as number,
         );
+        this.shipEventMs = Date.parse(ts) || this.shipEventMs;
+      }
+      const flight = nextShipFlight(event as string, line as Record<string, unknown>, this.shipFlight);
+      if (flight !== this.shipFlight) {
+        this.shipFlight = flight;
+        this.shipEventMs = Date.parse(ts) || this.shipEventMs;
       }
 
       if (event === "FSDJump") {
@@ -1781,6 +1811,11 @@ export class GameStateStore {
     return this.bodyKeysBySystem.get(systemAddress) ?? [];
   }
 
+  /** A system's bio bodies from the journals (the scan route, scanRouteView.ts), whichever system is in view. */
+  bioBodiesInSystem(systemAddress: number): BodyExoState[] {
+    return this.journalBioBodies(systemAddress);
+  }
+
   private journalBioBodies(focus: number): BodyExoState[] {
     const inSystem: BodyExoState[] = [];
     for (const k of this.bodyKeysIn(focus)) {
@@ -1825,11 +1860,33 @@ export class GameStateStore {
     return Math.abs(t - this.liveStatusCargoAtMs) <= 5 * 60_000 ? this.liveStatusCargoT : null;
   }
 
+  /** A journal line's word on the main tank (see `lastFuelMainT`). */
+  private noteJournalFuel(event: string, line: Record<string, unknown>, ts: string | null): void {
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+    let t: number | null | undefined;
+    if (event === "LoadGame" || event === "FSDJump") t = num(line.FuelLevel);
+    else if (event === "FuelScoop") t = num(line.Total);
+    else if (event === "ReservoirReplenished") t = num(line.FuelMain);
+    else if (event === "RefuelAll") t = this.loadoutFuelMainCapacityT;
+    else if (event === "RefuelPartial") {
+      const add = num(line.Amount);
+      t = add != null && this.lastFuelMainT != null ? Math.min(this.loadoutFuelMainCapacityT ?? Infinity, this.lastFuelMainT + add) : null;
+    } else if (event === "ShipyardSwap" || event === "ShipyardNew" || event === "Died") t = null;
+    else return;
+    this.lastFuelMainT = t ?? null;
+    this.lastFuelAt = t != null ? ts : null;
+  }
+
   /**
    * Live `Status.json` fuel — returns true when main/reserve changed (for snapshot push).
    */
   applyLiveShipFuel(mainT: number | null, reserveT: number | null, cargoT?: number | null): boolean {
     this.liveStatusFuelMainT = mainT;
+    // A closed game's leftover Status.json says nothing new: the journal had the last word (and its time).
+    if (mainT != null && Number.isFinite(mainT) && mainT >= 0 && this.gameRunning !== false) {
+      this.lastFuelMainT = mainT;
+      this.lastFuelAt = new Date().toISOString();
+    }
     this.liveStatusFuelReserveT = reserveT;
     if (cargoT !== undefined) {
       this.liveStatusCargoT = cargoT;
@@ -1895,7 +1952,54 @@ export class GameStateStore {
   /**
    * Live `NavRoute.json` — returns true when the plotted route changed (for snapshot push).
    */
-  applyLiveNavRoute(waypoints: NavRouteWaypointDTO[] | null): boolean {
+  applyLiveNavRoute(waypoints: NavRouteWaypointDTO[] | null, writtenAt?: string | null): boolean {
+    this.liveNavRouteFile = waypoints;
+    const at = writtenAt ? Date.parse(writtenAt) : NaN;
+    this.liveNavRouteFileAtMs = Number.isFinite(at) ? at : null;
+    return this.refreshLiveNavRoute();
+  }
+
+  /**
+   * Whether `NavRoute.json` is the route the game is flying: the system locked by the last FSDTarget sits in it with
+   * as many jumps left as the line says. A re-plot does not always rewrite the file (owner, 2026-11-01: a neutron
+   * route, then the same trip re-plotted without neutron jumps; FSDTarget named a system off the old route with 8
+   * jumps left, the file kept the 7-system neutron route, and the HUD's next jump went back to where he had come
+   * from). Only an FSDTarget newer than the file can say so: a plot to the system already locked writes the file and
+   * no new FSDTarget, and the older line's count belongs to the route before (owner's next re-plot, same day).
+   * Nothing to check against (no FSDTarget, or one without a route count): it agrees.
+   */
+  private navRouteAgrees(r: NavRouteWaypointDTO[]): boolean {
+    const ft = this.fsdTarget;
+    if (!ft || ft.remaining == null || r.length === 0) return true;
+    const targetAt = Date.parse(ft.at);
+    if (this.liveNavRouteFileAtMs != null && Number.isFinite(targetAt) && targetAt <= this.liveNavRouteFileAtMs) return true;
+    const i = r.findIndex((w) => w.systemAddress === ft.systemAddress);
+    return i >= 0 && r.length - i === ft.remaining;
+  }
+
+  /** A route is plotted in the game that NavRoute.json does not hold (the file disagrees with the last FSDTarget). */
+  get navRouteUnsaved(): boolean {
+    return !!this.liveNavRouteFile?.length && this.liveNavRoute === null;
+  }
+
+  /** The route as used, from the file and the last FSDTarget; true when it changed (for snapshot push). */
+  refreshLiveNavRoute(): boolean {
+    const file = this.liveNavRouteFile;
+    // No file read yet (a journal replay's FSDTarget lines): nothing to check, nothing to push.
+    if (file === null && this.lastLiveNavRoutePushKey === null) return false;
+    let waypoints = file;
+    if (file && file.length > 0) {
+      const fileKey = `${this.liveNavRouteFileAtMs ?? ""}|${file.map((w) => w.systemAddress).join(":")}`;
+      if (!this.navRouteAgrees(file)) {
+        this.rejectedNavRouteKey = fileKey;
+        waypoints = null;
+      } else if (this.fsdTarget?.remaining != null) {
+        this.rejectedNavRouteKey = null;
+      } else if (this.rejectedNavRouteKey === fileKey) {
+        // No target to judge it now (spent on arrival): the same file stays wrong.
+        waypoints = null;
+      }
+    }
     this.liveNavRoute = waypoints;
     const key =
       waypoints && waypoints.length > 0

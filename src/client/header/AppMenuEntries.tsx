@@ -18,6 +18,8 @@ import {
 } from "../ui/icons";
 import { MENU_ITEM } from "../ui/Menu";
 import { tabStore } from "../tabs/tabStore";
+import { DUE_CLASS, useGalaxyIndexDue } from "../galaxyIndexDue";
+import { Route } from "lucide-react";
 
 /** An entry on the wide app bar, where the menu is the bar itself: an ordinary button. */
 const NOT_MENU_ITEM = {} as const;
@@ -34,6 +36,7 @@ export type MenuOpeners = Record<
   | "setEncyclopediaOpen"
   | "setAchievementsOpen"
   | "setSessionOpen"
+  | "setScanRouteOpen"
   | "setOptionsOpen",
   (v: boolean) => void
 >;
@@ -55,6 +58,8 @@ export const AppMenuEntries = memo(function AppMenuEntries({
   asMenu: boolean;
 }) {
   const item = asMenu ? MENU_ITEM : NOT_MENU_ITEM;
+  // A newer galaxy index on the release: the map's entry pulses until it is downloaded (galaxyIndexDue.ts).
+  const indexDue = useGalaxyIndexDue();
   return (
     <>
       {/*
@@ -161,10 +166,16 @@ export const AppMenuEntries = memo(function AppMenuEntries({
         </Tooltip>
       ) : null}
       <span className="appbar-menu-sep" aria-hidden="true" />
-      <Tooltip text="Galaxy map — 5.3 million systems with recorded biology, your own travels, search and codex, in 3D. Opens in its own window.">
+      <Tooltip
+        text={
+          indexDue
+            ? "Galaxy map — a newer galaxy index (the codex data) is ready: open the map, View, Galaxy index, Update."
+            : "Galaxy map — 5.4 million systems with recorded biology, your own travels, search and codex, in 3D. Opens in its own window."
+        }
+      >
         <a
           {...item}
-          className="appbar-icon-btn"
+          className={`appbar-icon-btn${indexDue ? ` ${DUE_CLASS}` : ""}`}
           href="?screen=galaxy"
           target="_blank"
           rel="noreferrer"
@@ -211,6 +222,17 @@ export const AppMenuEntries = memo(function AppMenuEntries({
           aria-label="Session log"
         >
           <IconSession />
+        </button>
+      </Tooltip>
+      <Tooltip text="Scan route — the route's systems from above, and the shortest way over the bodies worth mapping and the biology.">
+        <button
+          type="button"
+          {...item}
+          className="appbar-icon-btn"
+          onClick={() => open.setScanRouteOpen(true)}
+          aria-label="Scan route"
+        >
+          <Route size={18} aria-hidden="true" />
         </button>
       </Tooltip>
       <span className="appbar-menu-sep" aria-hidden="true" />

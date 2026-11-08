@@ -243,6 +243,21 @@
   width: 110px;
   accent-color: var(--accent);
 }
+/* The neutron route's fuel reserve: a slider and the per cent typed (plan 1.3.4 S-7). */
+.g3d-reserve {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Narrower than the other sliders, so "Keep in the tank" stays on one line. */
+.g3d-reserve .g3d-row__range {
+  width: 80px;
+}
+.g3d-reserve .g3d-reserve__num {
+  width: 3.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 /* Round 2 (owner, 2026-10-04): Filter, Search and Codex insides as rows too. */
 .g3d-row__num {
   min-width: 4.5rem;
@@ -1024,6 +1039,21 @@
   color: var(--accent-bright);
   font-weight: 700;
 }
+/* The Laboratory's Guardian tab (GuardianLab.tsx, 1.3.7): its stock chips are buttons (a chip picks the sites that
+   give the material), dressed as the Jumponium tab's plain stock line. */
+.jump-stock__el.guardian-chip {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.jump-stock__el.guardian-chip:hover b,
+.jump-stock__el.guardian-chip.is-picked b {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 /* Nearest station on the map (StationsPanel compact): rows fly the map there. */
 .g3d-stations-drawer .fdb-scroll {
   max-height: 55vh;
@@ -1088,6 +1118,33 @@
 }
 .g3d-find__input {
   width: 210px;
+}
+/*
+  Narrow windows (2026-11-03, seen at 820 px): the thirteen tab icons, the Find box and the title need about 1,230 px
+  on one line, and below that the bar pushed the map sideways, so a toolbar click scrolled the screen. Under that the
+  tabs and the title keep the first row and the Find box takes a row of its own; the drawers follow the bar's height
+  (--g3d-top).
+*/
+@media (max-width: 1240px) {
+  .g3d-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .g3d-tabs {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .g3d-bar .g3d-title {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .g3d-find--centre {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+  }
+  .g3d-find--centre .g3d-find__input {
+    width: min(440px, calc(100vw - 48px));
+  }
 }
 
 /* ---- G5: Next target ----------------------------------------------------------------------------- */
@@ -1531,6 +1588,74 @@
 .g3d-neutron-table tr.is-waypoint td {
   color: var(--accent);
 }
+/* The route being flown: the stop on the clipboard (NeutronLiveStops.tsx). */
+.g3d-neutron-table tr.is-next td {
+  background: var(--accent-a06);
+  font-weight: 600;
+}
+/* The Spansh route drawer (SpanshRouteDrawer.tsx): wide enough for both value columns; each stop's species two lines. */
+.g3d-plan.g3d-spansh-drawer {
+  width: min(460px, calc(100vw - 24px));
+}
+.g3d-spansh-drawer .g3d-neutron-table td:nth-child(n + 3) {
+  white-space: nowrap;
+}
+.g3d-neutron-worth.g3d-spansh-species {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+/* The routes kept on disk (Spansh deletes its results within hours). */
+/* Read a link, or import a file saved from Spansh (the file input hides inside its label-button). */
+.g3d-spansh-read {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.g3d-spansh-file {
+  cursor: pointer;
+}
+.g3d-spansh-file input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.g3d-spansh-file:focus-within {
+  border-color: var(--accent-bright, var(--accent));
+}
+.g3d-spansh-file.is-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.g3d-spansh-saved {
+  margin-top: 8px;
+}
+.g3d-spansh-saved summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.g3d-spansh-saved ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.g3d-spansh-saved li {
+  padding: 2px 0;
+  font-size: 0.85rem;
+}
+.g3d-spansh-saved li.is-on > .g3d-linkbtn:first-child {
+  font-weight: 600;
+}
+/* A Spansh route's stop left out of the flight (SpanshRouteDrawer.tsx). */
+.g3d-neutron-table tr.is-dropped td {
+  opacity: 0.45;
+}
 .g3d-neutron-table td.is-warn {
   color: #ff8a6b;
 }
@@ -1602,6 +1727,11 @@
   font-weight: 700;
   fill: var(--text-dim);
 }
+/* A commodity: bought at a market, so neither covered nor short. */
+.lab-craft__line.is-buy path {
+  stroke: var(--text-dim);
+  stroke-dasharray: 1 3;
+}
 .lab-craft__line.is-dim {
   opacity: 0.12;
 }
@@ -1637,6 +1767,37 @@
 .lab-craft__card.is-hot {
   border-color: var(--accent-bright);
   box-shadow: 0 0 0 1px var(--accent-a30);
+}
+.lab-craft__mat.is-buy {
+  border-style: dashed;
+}
+.lab-craft__held--buy {
+  opacity: 0.7;
+  font-weight: 400;
+}
+/* Named materials (the Guardian tab): a short name in place of an element symbol, the count under it, in a column
+   narrow enough to leave the unlock cards room in the drawer. */
+.lab-craft--named {
+  grid-template-columns: minmax(0, 9.5rem) minmax(0, 1fr);
+  column-gap: 2.2rem;
+}
+.lab-craft--named .lab-craft__mat {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.05rem;
+}
+.lab-craft--named .lab-craft__sym {
+  font-size: var(--fs-xs, 0.72rem);
+  text-align: left;
+  line-height: 1.2;
+}
+.lab-craft--named .lab-craft__tier {
+  overflow-wrap: anywhere;
+}
+.lab-craft--named .lab-craft__cards {
+  gap: 0.4rem;
+}
+.lab-craft--named .lab-craft__card {
+  padding: 0.35rem 0.55rem;
 }
 .lab-craft__sym {
   font-family: var(--hud-font, inherit);
@@ -1856,4 +2017,11 @@
 .finder-card__counts b {
   color: var(--accent-bright);
   font-variant-numeric: tabular-nums;
+}
+
+/* A neutron stop's worth from Spansh (plan 1.3.3 R-3), under its name. */
+.g3d-neutron-worth {
+  display: block;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
 }

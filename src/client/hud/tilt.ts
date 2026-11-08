@@ -12,3 +12,16 @@ export const TILT_DEPTH_MIN_PX = 240;
 export function tiltDepthPx(height: number): number {
   return Math.round(Math.max(TILT_DEPTH_MIN_PX, TILT_DEPTH_PER_HEIGHT * Math.max(0, Number.isFinite(height) ? height : 0)));
 }
+
+/*
+  One swing for every panel (owner, 2026-11-01: separate panels "fan out", "it should keep the same angle/swing to all of
+  them"). With the depth from each panel's own height, a short panel had a shallow depth and its top and bottom edges
+  closed in hard toward its middle, so a stack splayed like blinds. Every panel now has one depth, as for a panel half
+  the screen tall (1,440 px on a 1440 px screen; a 130 px panel was 260): the same turn, and edges that close in only a
+  few pixels, so neighbours stay near parallel. Each still turns about its own middle: a shared vanishing point at the
+  screen's middle (tried the same day) moved a panel near the top of the screen ~60 px toward it and out of its own
+  window, which cut it off.
+*/
+export function sharedTiltDepthPx(screenHeight: number): number {
+  return tiltDepthPx((Number.isFinite(screenHeight) ? screenHeight : 0) / 2);
+}

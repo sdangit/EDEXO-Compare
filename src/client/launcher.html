@@ -526,6 +526,15 @@
                 </span>
               </span>
             </button>
+            <button type="button" class="btn secondary" id="ovCarrier" data-overlay-path="/carrier-overlay.html">
+              <span class="overlay-pick-row">
+                <span class="overlay-check" aria-hidden="true"></span>
+                <span class="btn-lines">
+                  <strong>Carrier</strong>
+                  <span class="subline">Your fleet carrier's jump: countdown to lockdown and departure, then the cooldown</span>
+                </span>
+              </span>
+            </button>
           </div>
           <div class="hud-settings">
             <!--
@@ -553,6 +562,39 @@
               <p class="hud-hint"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>H</kbd> shows and hides them in game.</p>
             </details>
 
+            <!-- The radar's own fold (owner, 2026-11-04: the switch was not found inside "What they show"). Open at first. -->
+            <details class="hud-group" data-group="radar" open>
+              <summary title="The Exo-distance tracker's radar and the screen marker over the game">Radar &amp; screen marker</summary>
+              <div class="hud-set-row">
+                <label title="The sample radar on the Exo-distance tracker stays on whenever the game gives your position and heading near a planet (Status.json): flying, gliding, after lift-off, not only once landed, so the composition scanner's marks show as you fly over them. A planet you composition-scanned opens it even with this off. Off by default."><input type="checkbox" id="hudRadarAlways" /> Radar always on near a planet</label>
+              </div>
+              <div class="hud-set-row">
+                <label title="Experimental, off by default. A dot in a circle on the screen for each plant your composition scanner named, where it is from the ship's nose; point at one and it opens into a hexagon with its name, distance and how it was placed. Over the whole game screen, clicks go through. Not yet accurate enough to rely on: the dot can sit a few degrees off the plant."><input type="checkbox" id="hudAim" /> Screen marker over the game (composition scans) <span class="hud-exp">Experimental</span></label>
+              </div>
+              <div class="hud-set-row">
+                <label title="Experimental, off by default. With the screen marker on: reads the ship's pitch and heading off the HUD (the pitch boxes beside its centre, the heading tape at its top) four times a second while you are in the ship near a planet, so the marker follows the nose live. Gear up and landing gear down are both read. Needs the game in borderless (not fullscreen); it learns a recoloured HUD's colour (EDHM's too) from the screen. A frame it cannot read keeps the last good reading; with none, the marker keeps its own estimate."><input type="checkbox" id="hudPitchReader" /> Read the pitch off the HUD (screen marker) <span class="hud-exp">Experimental</span></label>
+              </div>
+              <div class="hud-set-row">
+                <label title="Experimental, off by default. While the Scan route tab shows, in supercruise with a body of this system targeted, reads the distance to it off the HUD (the line under the target's name, &quot;1,957Ls&quot;, &quot;13.1Mm&quot;) four times a second, so the Scan route moves your ship along the line from the last body to the target. At any other time it does not look at the screen. Works without the screen marker. Needs the game in borderless (not fullscreen); a recoloured HUD is set under HUD colours below. A frame it cannot read keeps the ship where it was."><input type="checkbox" id="hudDistanceReader" /> Read the target's distance off the HUD (Scan route) <span class="hud-exp">Experimental</span></label>
+              </div>
+              <div class="hud-set-row">
+                <label for="hudColour" title="Experimental. The HUD colours the pitch reader expects. Elite default: the game's own orange HUD, or one EDHM recolours (the reader finds the pitch boxes by their outline and learns their colours from the screen). Custom GUIColour: you recoloured the HUD in GraphicsConfigurationOverride.xml; the reader undoes that matrix (colours the game cuts off at full brightness, such as purple, cyan or white, cannot be read). The distance reader needs nothing here: it learns your HUD's colour from the screen, EDHM's themes included.">HUD colours (pitch reader) <span class="hud-exp">Experimental</span></label>
+                <select id="hudColour" aria-label="HUD colours the pitch reader expects">
+                  <option value="default">Elite default</option>
+                  <option value="xml">Custom GUIColour (GraphicsConfigurationOverride.xml)</option>
+                </select>
+              </div>
+              <p class="hud-hint">The pitch and distance readers work only on this PC: they look at the game's screen, keep nothing and send nothing anywhere.</p>
+              <p class="hud-hint">The screen marker and the readers are experimental and off by default; they are still being tested.</p>
+              <div class="hud-set-row" id="radarRadiusRow" hidden>
+                <label for="radarRadiusM" title="How far out the sample radar draws, in metres. Anything further becomes an arrow on its rim with the distance beside it.">Radar range</label>
+                <span>
+                  <input type="number" id="radarRadiusM" step="50" /> m
+                </span>
+              </div>
+              <p class="hud-hint">Needs the Exo-distance tracker HUD open (Overlays, above).</p>
+            </details>
+
             <details class="hud-group" data-group="look">
               <summary title="Style, colour, size and how much of the game shows through">Look</summary>
               <div class="hud-set-row">
@@ -572,11 +614,11 @@
                   </select>
                 </div>
                 <div class="hud-set-row" id="hudTurnRow">
-                  <label for="hudTilt" title="Positive: the right edge goes into the screen — for a HUD on the left. Negative: the left edge — for a HUD on the right. 0: flat.">Turn <output id="hudTiltOut">15°</output></label>
+                  <label for="hudTilt" title="The turn of a HUD at the right edge of the screen. Every panel points at the middle: mirrored on the left, shallower toward the middle, none in the middle. Negative: the edge toward the middle goes into the screen. Positive: the outer edge. 0: flat.">Turn <output id="hudTiltOut">15°</output></label>
                   <input type="range" id="hudTilt" min="-35" max="35" step="1" value="15" />
                 </div>
                 <div class="hud-set-row" id="hudSlantRow">
-                  <label for="hudSlant" title="Positive: the lines rise to the right. Negative: they fall. The window grows a little above and below to hold the lift.">Slant <output id="hudSlantOut">6°</output></label>
+                  <label for="hudSlant" title="The slant of a HUD in the top-right corner. Lines point at the middle of the screen: mirrored on the left, the other way below the middle, none level with it. Positive: the lines rise toward the outer edge. Negative: toward the middle. The window grows a little above and below to hold the lift.">Slant <output id="hudSlantOut">6°</output></label>
                   <input type="range" id="hudSlant" min="-15" max="15" step="1" value="6" />
                 </div>
               </div>
@@ -586,7 +628,8 @@
               </div>
               <div class="hud-set-row">
                 <label for="hudThemeAccent" title="Pick your own accent: lines, titles and labels.">Custom accent <input type="color" id="hudThemeAccent" value="#ff8a1f" /></label>
-                <label for="hudThemeText" title="Pick your own text colour: the readings themselves.">Custom text <input type="color" id="hudThemeText" value="#ffe6cf" /></label>
+                <label for="hudThemeText" title="Pick your own text colour: the readings themselves. It stays when you switch the colour above, until Scheme's text.">Custom text <input type="color" id="hudThemeText" value="#ffe6cf" /></label>
+                <button type="button" class="btn secondary" id="hudThemeTextReset" title="Back to the text colour of the scheme picked above.">Scheme's text</button>
               </div>
               <div class="hud-set-row">
                 <input type="text" id="hudSchemeName" maxlength="24" placeholder="Name your colours to keep them" aria-label="Scheme name" title="Give the current colours a name to keep them as a swatch above." />
@@ -614,6 +657,9 @@
               <div class="hud-set-row">
                 <label title="One line under the Next jump HUD: the boxel within 500 ly likely to pay most in first footfalls per jump, from the galaxy map's Expedition planner."><input type="checkbox" id="hudNextBoxel" /> Next boxel line on the jump HUD</label>
               </div>
+              <div class="hud-set-row">
+                <label title="At a refuel stop of a neutron route you fly: a fuel bar with a green area, enough fuel to reach the next refuel stop and light enough for every supercharge before it."><input type="checkbox" id="hudRefuelBar" /> Refuel bar at neutron route refuel stops</label>
+              </div>
             </details>
 
             <details class="hud-group" data-group="position">
@@ -628,21 +674,21 @@
                 </select>
               </div>
               <div class="hud-set-row" id="hudFreeRow">
-                <label title="The HUDs leave the corner and sit wherever you drag them, on any screen. The spot is kept for the next start."><input type="checkbox" id="hudFree" /> Free move: place them anywhere</label>
+                <label title="The HUDs leave the corner and sit wherever you drag them, on any screen: merged, the one panel; separate, each HUD on its own. The spots are kept for the next start."><input type="checkbox" id="hudFree" /> Free move: place them anywhere</label>
                 <span class="btn-mini-wrap" id="hudMoveWrap" title="Tick &quot;Free move&quot; first: the HUD can only be placed by hand in free move.">
                   <button type="button" class="btn-mini" id="hudMove" disabled>Move HUD</button>
                 </span>
               </div>
               <p class="hud-hint" id="hudMoveHint" hidden>
-                Drag a HUD by its frame to where you want it, then press Done (on the HUD or here). Near the bottom of a
-                screen it grows upwards.
+                Drag a HUD by its frame to where you want it, then press Done (on the HUD or here). Separate HUDs move
+                one by one; the ones you leave stay stacked. Near the bottom of a screen a HUD grows upwards.
               </p>
               <p class="hud-hint" title="The first in the list is outermost: the top of a top-corner stack, the bottom of a bottom-corner one.">Order in the stack</p>
               <ul class="hud-order" id="hudOrderList" aria-label="Order of the HUDs in the stack"></ul>
             </details>
 
             <details class="hud-group" data-group="content">
-              <summary title="What the HUDs list and how far the radar reaches">What they show</summary>
+              <summary title="What the Exo candidates HUD lists, and in which order">Candidate settings</summary>
               <div class="hud-set-row">
                 <label for="hudCandOrder" title="The Exo candidates HUD: by how likely each genus is (as in the app), or by value, highest first.">Candidate order</label>
                 <select id="hudCandOrder">
@@ -653,11 +699,20 @@
               <div class="hud-set-row">
                 <label title="A line with the codex region you are in, on the Exo candidates HUD."><input type="checkbox" id="hudRegion" checked /> Show the current region</label>
               </div>
-              <div class="hud-set-row" id="radarRadiusRow" hidden>
-                <label for="radarRadiusM" title="How far out the sample radar draws, in metres. Anything further becomes an arrow on its rim with the distance beside it.">Radar range</label>
-                <span>
-                  <input type="number" id="radarRadiusM" step="50" /> m
-                </span>
+              <div class="hud-set-row">
+                <label for="hudCandScanned" title="Species already scanned on this body (3/3): where the order above puts them, first, or left out of the list.">Scanned species</label>
+                <select id="hudCandScanned">
+                  <option value="place">In the order above</option>
+                  <option value="top">Scanned on top</option>
+                  <option value="hidden">Scanned hidden</option>
+                </select>
+              </div>
+              <div class="hud-set-row">
+                <label for="hudCandMax" title="The most species the HUD lists; the rest are counted in a last line. The phone lists them all.">Candidates shown at most</label>
+                <input type="number" id="hudCandMax" min="1" max="30" step="1" value="9" />
+              </div>
+              <div class="hud-set-row">
+                <label title="The species you are sampling now first in the list, whatever the order above."><input type="checkbox" id="hudCandActiveTop" checked /> Always show the active scan on top</label>
               </div>
             </details>
 

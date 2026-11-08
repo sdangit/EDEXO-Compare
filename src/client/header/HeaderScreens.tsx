@@ -33,6 +33,9 @@ const GalaxyMap3D = memo(lazy(() => import("../GalaxyMap3D").then((m) => ({ defa
 /** A galaxy map left behind other tabs this long gives its memory back (discuss item 23); its tab redraws it. */
 const GALAXY_RELEASE_MS = 10 * 60_000;
 
+/** The scan route (plan 1.3.3 R-4): a WebGL view, freed in the background as the galaxy map is. */
+const ScanRouteScreen = lazy(() => import("../scanRoute/ScanRouteScreen").then((m) => ({ default: m.ScanRouteScreen })));
+
 /** The EDEXO browser's tab (plan 9): its code loads only when the tab opens. */
 const BrowserScreen = lazy(() => import("../BrowserScreen").then((m) => ({ default: m.BrowserScreen })));
 
@@ -42,6 +45,17 @@ const PlanetQuickFactsPopup = lazy(() =>
 
 
 type NotableQuick = { notable: NotableBodyInfo; x: number; y: number };
+
+const sameNotable = (a: NotableBodyInfo, b: NotableBodyInfo) => a.bodyId === b.bodyId && a.systemAddress === b.systemAddress;
+
+/** What the Notable card's tooltip said beyond the name and tag: now at the top of the quick facts. */
+function notableNotes(n: NotableBodyInfo): string[] {
+  return [
+    ...(n.sold ? ["Data sold"] : []),
+    ...(n.green ? [n.green.why] : []),
+    ...(n.features ?? []).map((f) => `${f.label}: ${f.why}`),
+  ];
+}
 
 export interface HeaderScreensProps {
   snap: AppSnapshot;
@@ -72,6 +86,8 @@ export interface HeaderScreensProps {
   closeMyExo: () => void;
   sessionOpen: boolean;
   closeSession: () => void;
+  scanRouteOpen: boolean;
+  closeScanRoute: () => void;
   dataBreakdownOpen: boolean;
   setDataBreakdownOpen: (open: boolean) => void;
   scanDataOn: boolean;
@@ -83,8 +99,10 @@ export interface HeaderScreensProps {
   feederOpen: boolean;
   setFeederOpen: (open: boolean) => void;
   feeder: ReturnType<typeof useFeederStatus>;
+  /** The notable body clicked (kept until a jump) and the one hovered (plan 1.3.4 S-8, HeaderBar.tsx). */
   notableQuick: NotableQuick | null;
   setNotableQuick: (q: NotableQuick | null) => void;
+  notableHover: NotableQuick | null;
 }
 
 export function HeaderScreens({
@@ -116,6 +134,8 @@ export function HeaderScreens({
   closeMyExo,
   sessionOpen,
   closeSession,
+  scanRouteOpen,
+  closeScanRoute,
   dataBreakdownOpen,
   setDataBreakdownOpen,
   scanDataOn,
@@ -129,7 +149,15 @@ export function HeaderScreens({
   feeder,
   notableQuick,
   setNotableQuick,
+  notableHover,
 }: HeaderScreensProps) {
+  // The body hovered (unless it is the one kept), else the one kept: one card at a time.
+  const shownNotable =
+    notableHover && !(notableQuick && sameNotable(notableHover.notable, notableQuick.notable))
+      ? { ...notableHover, mode: "preview" as const }
+      : notableQuick
+        ? { ...notableQuick, mode: "pinned" as const }
+        : null;
   // In Colonize the on-foot scans are not in the live feed: asked for when a screen that shows them opens (item 22).
   const footScanned = useFootScanned(snap, encyclopediaOpen || myExoOpen);
   return (
@@ -257,6 +285,13 @@ export function HeaderScreens({
           />
         </Suspense>
       ) : null}
+      {scanRouteOpen ? (
+        <TabSlot kind="scanRoute" releaseAfterMs={GALAXY_RELEASE_MS}>
+          <Suspense fallback={<ModalLoading />}>
+            <ScanRouteScreen onClose={closeScanRoute} />
+          </Suspense>
+        </TabSlot>
+      ) : null}
       {sessionOpen ? (
         <TabSlot kind="session">
           <Suspense fallback={<ModalLoading />}>
@@ -281,14 +316,17 @@ export function HeaderScreens({
           <FeederModal status={feeder.status} onRefresh={feeder.refresh} onClose={() => setFeederOpen(false)} />
         </Suspense>
       ) : null}
-      {notableQuick ? (
+      {shownNotable ? (
         <Suspense fallback={null}>
           <PlanetQuickFactsPopup
-            detail={snap.systemMap?.detailsByBodyId[String(notableQuick.notable.bodyId)] ?? null}
-            fallbackTitle={notableQuick.notable.bodyName}
-            fallbackSubtitle={`${notableQuick.notable.tag}${notableQuick.notable.dssMapped ? " · DSS mapped" : " · FSS / scan only"}`}
-            bodyId={notableQuick.notable.bodyId}
-            records={snap.notices?.recordMarks.filter((m) => m.bodyId === notableQuick.notable.bodyId)}
+            key={`${shownNotable.mode}:${shownNotable.notable.systemAddress}:${shownNotable.notable.bodyId}`}
+            mode={shownNotable.mode}
+            notes={notableNotes(shownNotable.notable)}
+            detail={snap.systemMap?.detailsByBodyId[String(shownNotable.notable.bodyId)] ?? null}
+            fallbackTitle={shownNotable.notable.bodyName}
+            fallbackSubtitle={`${shownNotable.notable.tag}${shownNotable.notable.dssMapped ? " · DSS mapped" : " · FSS / scan only"}`}
+            bodyId={shownNotable.notable.bodyId}
+            records={snap.notices?.recordMarks.filter((m) => m.bodyId === shownNotable.notable.bodyId)}
             onClose={() => setNotableQuick(null)}
             onGoToBioBody={
               onGoToBioBody
@@ -298,7 +336,7 @@ export function HeaderScreens({
                   }
                 : undefined
             }
-            pos={{ left: notableQuick.x, top: notableQuick.y }}
+            pos={{ left: shownNotable.x, top: shownNotable.y }}
           />
         </Suspense>
       ) : null}

@@ -4,6 +4,7 @@ import type { HudSnapshot } from "../types";
 import { api, esc } from "../core";
 import { pref } from "../theme";
 import { FuelPump, Head, type HudSection } from "../parts";
+import { liveProgressShort } from "@shared/routeProgress";
 
 /* ============================================================== Next jump ==================== */
 /*
@@ -172,13 +173,13 @@ function NeutronLive({ d }: { d: HudSnapshot }) {
   if (n.done)
     return (
       <div className="jump__neutron" data-f="neutron">
-        <span className="jump__neutron-k">Neutron route</span> done · {n.destination}
+        <span className="jump__neutron-k">{n.carrier ? "Carrier route" : "Route"}</span> done · {n.destination}
       </div>
     );
   if (n.replanning)
     return (
       <div className="jump__neutron" data-f="neutron">
-        <span className="jump__neutron-k">Neutron</span> off the route · re-plotting from here…
+        <span className="jump__neutron-k">Neutron</span> {n.replanWhy ?? "off the route"} · re-plotting from here…
       </div>
     );
   const todo: ReactNode[] = [];
@@ -204,7 +205,8 @@ function NeutronLive({ d }: { d: HudSnapshot }) {
   return (
     <div className={"jump__neutron" + (todo.length ? " jump__neutron--act" : "")} data-f="neutron">
       <span className="jump__neutron-k">
-        Neutron {n.at}/{n.total}
+        {/* A Spansh carrier route follows his carrier (plan 1.3.6): the next stop is for the carrier's map. */}
+        {n.carrier ? "Carrier" : n.noNeutrons ? "Route" : "Neutron"} {liveProgressShort(n)}
       </span>{" "}
       {todo.map((t, i) => (
         <Fragment key={i}>
@@ -227,6 +229,54 @@ function NeutronLive({ d }: { d: HudSnapshot }) {
           ) : null}
         </span>
       ) : null}
+    </div>
+  );
+}
+
+/*
+  At a refuel stop of the route being flown (owner, 2026-10-29): the tank as a bar, green where the fuel takes the
+  ship to the next refuel and every supercharge before it still reaches (server/neutronFuelWindow.ts), and the fuel
+  aboard as it fills. On unless switched off in the launcher (edexoHudRefuelBar).
+*/
+const tons = (t: number) => (Math.round(t * 10) / 10).toLocaleString("en-US") + " t";
+
+function RefuelBar({ d }: { d: HudSnapshot }) {
+  const w = d.neutronLive?.refuelWindow;
+  if (!w || pref("edexoHudRefuelBar", "1") !== "1") return <div className="jump__refuel" data-f="refuel" hidden />;
+  const pct = (t: number) => Math.max(0, Math.min(100, (t / w.tankT) * 100));
+  const fullOk = w.maxT >= w.tankT - 0.05;
+  const now = w.nowT;
+  const state = now == null ? "" : now < w.minT - 0.05 ? "low" : now > w.maxT + 0.05 ? "high" : "ok";
+  const status =
+    state === "low"
+      ? tons(w.minT - now!) + " more"
+      : state === "high"
+        ? "over " + tons(w.maxT) + ": too heavy"
+        : state === "ok"
+          ? "enough"
+          : "";
+  const stops = w.toStop === 1 ? "the next stop" : "the next " + w.toStop + " stops";
+  return (
+    <div
+      className="jump__refuel"
+      data-f="refuel"
+      title={
+        "At least " +
+        tons(w.minT) +
+        " to reach " +
+        stops +
+        (fullOk ? "; a full tank is fine" : "; above " + tons(w.maxT) + " the ship is too heavy for a planned supercharge")
+      }
+    >
+      <div className="jump__refuel-txt">
+        {fullOk ? "Scoop to " + tons(w.minT) + " or more" : "Scoop to " + tons(w.minT) + " – " + tons(w.maxT)}
+        {" of " + tons(w.tankT)}
+        {status ? <span className={"jump__refuel-st jump__refuel-st--" + state}>{" · " + status}</span> : null}
+      </div>
+      <div className="jump__refuel-bar" aria-hidden="true">
+        <span className="jump__refuel-zone" style={{ left: pct(w.minT) + "%", width: pct(w.maxT) - pct(w.minT) + "%" }} />
+        {now != null ? <span className={"jump__refuel-fill jump__refuel-fill--" + state} style={{ width: pct(now) + "%" }} /> : null}
+      </div>
     </div>
   );
 }
@@ -383,6 +433,21 @@ export function fitRouteStrip(el: HTMLElement, hops: Hop[]): number {
   return shown;
 }
 
+/*
+  A route the game flies but did not save (owner, 2026-11-01: re-plotted without neutron jumps, NavRoute.json kept the
+  old route): no stars to draw, so the jumps left from the game's FSDTarget, and how to get the strip back.
+*/
+function UnsavedRoute({ d }: { d: HudSnapshot }) {
+  if (!d.navRouteUnsaved) return <div className="jump__unsaved" data-f="unsaved" hidden />;
+  const n = d.remainingJumpsInRoute;
+  return (
+    <div className="jump__unsaved" data-f="unsaved" title="The game re-plotted the route without writing NavRoute.json, so its stars are not known">
+      <span className="jump__neutron-k">Route</span> {n != null ? `${n} jump${n === 1 ? "" : "s"} left · ` : ""}
+      not saved by the game: plot it again in the galaxy map to see its stars
+    </div>
+  );
+}
+
 function RouteStrip({ d }: { d: HudSnapshot }) {
   const el = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -437,7 +502,9 @@ function Jump({ d }: { d: HudSnapshot }) {
         </div>
       </div>
       <RouteStrip d={d} />
+      <UnsavedRoute d={d} />
       <NeutronLive d={d} />
+      <RefuelBar d={d} />
       <FsdHealth d={d} />
       <BoxelCopied d={d} />
       <NextBoxel d={d} />

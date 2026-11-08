@@ -9,13 +9,15 @@ import type { HttpServerOptions, RouteContext } from "./httpServerTypes.js";
 import { dropDeflateOfferFromThisPc } from "./wsCompression.js";
 import { createWsHub } from "./wsHub.js";
 
-import { catchAsyncRejections } from "./routes/asyncErrors.js";
+import { answerErrorsAsJson, catchAsyncRejections } from "./routes/asyncErrors.js";
 import { registerSpeciesFilesRoutes } from "./routes/speciesFilesRoutes.js";
 import { registerGalaxyRoutes } from "./routes/galaxyRoutes.js";
 import { registerBoxelRoutes } from "./routes/boxelRoutes.js";
 import { registerDiscoveriesRoutes } from "./routes/discoveriesRoutes.js";
 import { registerExpeditionRoutes } from "./routes/expeditionRoutes.js";
 import { registerNeutronRoutes } from "./routes/neutronRoutes.js";
+import { registerRouteSystemRoutes } from "./routes/routeSystemRoutes.js";
+import { registerSpanshRouteRoutes } from "./routes/spanshRouteRoutes.js";
 import { registerFinderRoutes } from "./routes/finderRoutes.js";
 import { registerColonizeRoutes } from "./routes/colonizeRoutes.js";
 import { registerSystemInfoRoutes } from "./routes/systemInfoRoutes.js";
@@ -71,6 +73,7 @@ export function createHttpServer(opts: HttpServerOptions): {
   closeConnections: () => void;
 } {
   const app = express();
+  app.disable("x-powered-by");
   catchAsyncRejections(app);
   const root = getProjectRoot();
   const webRoot = getWebRoot(root);
@@ -123,6 +126,8 @@ export function createHttpServer(opts: HttpServerOptions): {
   app.use("/api/ui/mirror", express.json({ limit: "512kb" }));
   // Colonize's checkout plans carry market snapshots (colonizeRoutes.ts).
   app.use("/api/colonize", express.json({ limit: "8mb" }));
+  // A Spansh route saved to a file (spanshRouteImport.ts): an exobiology result runs to megabytes.
+  app.use("/api/spansh-route/import", express.json({ limit: "16mb" }));
   app.use(express.json({ limit: "48kb" }));
 
   // Loaded before launcher initialization, including through Vite's /api proxy.
@@ -149,6 +154,8 @@ export function createHttpServer(opts: HttpServerOptions): {
   registerDiscoveriesRoutes(app, opts, routeCtx);
   registerExpeditionRoutes(app, opts, routeCtx);
   registerNeutronRoutes(app, opts, routeCtx);
+  registerRouteSystemRoutes(app, opts);
+  registerSpanshRouteRoutes(app, opts);
   registerFinderRoutes(app, opts, routeCtx);
   registerColonizeRoutes(app, opts, routeCtx);
 
@@ -199,6 +206,8 @@ export function createHttpServer(opts: HttpServerOptions): {
   registerRecordsRoutes(app, opts, routeCtx);
 
   registerExomasteryRoutes(app, opts, routeCtx);
+  // After every route: errors answer JSON, never Express's page with the stack.
+  answerErrorsAsJson(app);
 
   const server = http.createServer(app);
   // Before the hub's WebSocketServer adds its own upgrade listener: this PC's windows agree no deflate.

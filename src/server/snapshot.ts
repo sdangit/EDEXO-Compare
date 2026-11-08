@@ -36,6 +36,8 @@ import {
   buildNotableBodiesForFocusedSystem,
 } from "./snapshotSystemInfo.js";
 import { bodyKey } from "../shared/bodyKey.js";
+import { hudReadDistance } from "./shipInSystem.js";
+import { ownCarrierJump } from "../shared/ownAssets.js";
 // The unsold exobiology's value moved to organicValue.ts (item 30); the live strip is still importable from here.
 export { organicLiveSummary } from "./organicValue.js";
 import {
@@ -308,6 +310,7 @@ export function buildSnapshot(
     organicDataValueCredits,
     colonizeHud: getColonizeHud(),
     shipDamage: store.shipDamage.loadoutAt ? store.shipDamage : null,
+    carrierJump: ownCarrierJump(store.ownAssets),
     organicPendingSampleCount,
     organicPendingLines,
     fssAllBodiesFoundNoBio,
@@ -363,12 +366,14 @@ export function buildSnapshot(
     exoOverlayFocusBodyKey,
     exoOverlayFocusBody,
     statusDestination: bootLoading ? null : store.statusDestination,
+    hudReadDistance: !bootLoading && hudReadDistance(store),
     jumpTarget: bootLoading ? null : withFirstFootfall(store.nextJumpTarget(), store),
     boxelCopied: store.boxelCopied,
     boxelsRevision: store.boxelsRevision,
     focusedSystemUndiscovered:
       !bootLoading && focusAddr != null && store.commanderDiscoveredSystem(focusAddr) === true,
     remainingJumpsInRoute: bootLoading ? null : store.remainingJumpsInRoute,
+    navRouteUnsaved: !bootLoading && store.navRouteUnsaved,
     liveShipFuelRange: bootLoading ? null : buildLiveShipFuelRangeDTO(store, cachedStarRoles!),
     footTravelOdometerEnabled: store.footTravelOdometerEnabled,
     photoStamp: store.photoStamp,

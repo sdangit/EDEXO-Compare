@@ -26,6 +26,7 @@ export var HUD_SECTION_BY_PATH = {
   "/notices-overlay.html": "notices",
   "/colonize-overlay.html": "colonize",
   "/ship-overlay.html": "ship",
+  "/carrier-overlay.html": "carrier",
 };
 // The HUD's own list and order (shared/hudSections.ts); the launcher kept a copy of it until 1.3.1.
 export var HUD_SECTION_ORDER = HUD_SECTION_KEYS.slice();
@@ -40,6 +41,7 @@ export var HUD_SECTION_LABEL = {
   notices: "Notices",
   colonize: "Colonize",
   ship: "Ship",
+  carrier: "Carrier",
 };
 export var HUD_PATH_BY_SECTION = {};
 var LS_HUD_MERGE = "edexoHudMerge";
@@ -63,17 +65,34 @@ export async function hudPaths() {
   }
   return [];
 }
+/** The sections of one merged page (`?s=`; every section when absent). */
+function sectionsOfMerged(p) {
+  var m = /[?&]s=([^&]*)/.exec(p);
+  if (!m) return HUD_SECTION_ORDER.slice();
+  return decodeURIComponent(m[1]).split(",").filter(function (s) {
+    return HUD_SECTION_ORDER.indexOf(s) >= 0;
+  });
+}
+/*
+  Chained groups (owner, 2026-11-01): the merged page with some sections and an id, /hud-overlay.html?s=jump,fss&g=2,
+  made by the chain buttons while placing (electron/hudWindows.cjs). Several can be open beside separate HUDs.
+*/
+function groupPaths(paths) {
+  return paths.filter(function (p) {
+    return String(p).indexOf(HUD_MERGED) === 0 && /[?&]g=\d+/.test(String(p));
+  });
+}
+/** Sections in every merged window: the whole panel and the chained groups. */
 function mergedSections(paths) {
+  var out = [];
   for (var i = 0; i < paths.length; i++) {
     var p = String(paths[i]);
     if (p.indexOf(HUD_MERGED) !== 0) continue;
-    var m = /[?&]s=([^&]*)/.exec(p);
-    if (!m) return HUD_SECTION_ORDER.slice();
-    return decodeURIComponent(m[1]).split(",").filter(function (s) {
-      return HUD_SECTION_ORDER.indexOf(s) >= 0;
+    sectionsOfMerged(p).forEach(function (s) {
+      if (out.indexOf(s) < 0) out.push(s);
     });
   }
-  return [];
+  return out;
 }
 /** Sections active right now, in either form. */
 export function activeSections(paths) {
@@ -105,7 +124,9 @@ export async function showSections(sections) {
   var paths = await hudPaths();
   if (hudMergeOn()) {
     for (var i = 0; i < paths.length; i++) {
-      if (HUD_SECTION_BY_PATH[paths[i]] && typeof ee.closeHudOverlay === "function") {
+      // The separate HUDs and any chained groups give way to the one panel.
+      var isGroup = groupPaths([paths[i]]).length > 0;
+      if ((HUD_SECTION_BY_PATH[paths[i]] || isGroup) && typeof ee.closeHudOverlay === "function") {
         await ee.closeHudOverlay({ pathname: paths[i] });
       }
     }
@@ -128,9 +149,34 @@ export async function showSections(sections) {
     sections.forEach(function (s) {
       want[s] = true;
     });
+    /*
+      A chained group keeps the sections still wanted: two or more stay a group (the same id, so its spot), one goes
+      back to its own window below, none closes it.
+    */
+    var inGroup = {};
+    var groups = groupPaths(paths);
+    for (var gi = 0; gi < groups.length; gi++) {
+      var gp = String(groups[gi]);
+      var had = sectionsOfMerged(gp);
+      var keep = had.filter(function (x) {
+        return !!want[x];
+      });
+      var gid = /[?&]g=(\d+)/.exec(gp)[1];
+      if (keep.length >= 2) {
+        keep.forEach(function (x) {
+          inGroup[x] = true;
+        });
+        if (keep.length !== had.length && typeof ee.setHudOverlay === "function") {
+          await ee.setHudOverlay({ pathname: HUD_MERGED + "?s=" + keep.join(",") + "&g=" + gid, width: HUD_W, height: 330 });
+        }
+      } else if (typeof ee.closeHudOverlay === "function") {
+        await ee.closeHudOverlay({ pathname: gp });
+      }
+    }
+    paths = await hudPaths();
     for (var p in HUD_SECTION_BY_PATH) {
       var open = paths.indexOf(p) >= 0;
-      var should = !!want[HUD_SECTION_BY_PATH[p]];
+      var should = !!want[HUD_SECTION_BY_PATH[p]] && !inGroup[HUD_SECTION_BY_PATH[p]];
       if (open !== should && typeof ee.toggleHudOverlay === "function") {
         var rt = await ee.toggleHudOverlay({ pathname: p, width: HUD_W, height: 330 });
         if (rt && rt.error) throw new Error(rt.error);

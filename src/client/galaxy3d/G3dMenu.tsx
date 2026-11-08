@@ -6,7 +6,7 @@
  */
 import type { ReactNode } from "react";
 import { CoriolisPaths } from "../ui/icons";
-import { BookOpen, Check, Compass, Crosshair, Eye, Filter, FlaskConical, Layers, Route, ScanSearch, Search, type LucideIcon } from "lucide-react";
+import { BookOpen, Check, Compass, Crosshair, Eye, Filter, FlaskConical, Import, Layers, Route, ScanSearch, Search, type LucideIcon } from "lucide-react";
 import { InfoPopover, Tooltip } from "../ui/Tooltip";
 
 export type G3dTabKey =
@@ -19,6 +19,7 @@ export type G3dTabKey =
   | "targets"
   | "expedition"
   | "neutron"
+  | "spansh"
   | "stations"
   | "jumponium"
   | "finder";
@@ -62,6 +63,11 @@ export const G3D_TABS: { key: G3dTabKey; label: string; hint: string }[] = [
     hint: "Neutron route: through two or more systems by supercharged jumps, with refuel stops and the FSD's wear",
   },
   {
+    key: "spansh",
+    label: "Spansh route",
+    hint: "Spansh route: paste a route planned on Spansh, compare it with EDEXO's own figures and fly it",
+  },
+  {
     key: "stations",
     label: "Carriers & Stations",
     hint: "Carriers & Stations: the nearest fleet carriers, stations with the services you pick, and Find Tritium — from the system you picked, else your ship",
@@ -79,6 +85,12 @@ export const G3D_TABS: { key: G3dTabKey; label: string; hint: string }[] = [
 ];
 
 export const G3D_HELP: Record<G3dTabKey, string[]> = {
+  spansh: [
+    "Paste the address of a route you planned on Spansh's site (exobiology, road to riches and its variants, neutron plotter, galaxy plotter or fleet carrier) and Read from Spansh: the route is asked from Spansh once and drawn on the map.",
+    "Exobiology and road to riches: each stop's value from Spansh beside EDEXO's. Spansh adds up the species recorded on each body at full price; EDEXO's is its expected value from the bodies Spansh holds, the way the NavRoute and neutron lists value a system. A ▼ marks a stop EDEXO expects under half of Spansh's value; Drop them unticks the stops EDEXO values under the floor you give.",
+    "Neutron and galaxy plotter: Plan it with EDEXO too plans the same two ends with EDEXO's neutron planner, your ship and Spansh's range, and puts the jumps side by side.",
+    "Fly this route flies the ticked stops the way the Neutron tab's route is flown: after each jump onto a stop the next goes to the clipboard (F6 copies it again) and the HUD's Next jump shows it. Stop ends it. A fleet carrier route is followed with your carrier instead: when it arrives at a stop (whether you are aboard or not), the next stop goes to the clipboard for the carrier's galaxy map.",
+  ],
   finder: [
     "Systems within the distance you set of a reference: your colonised systems (from your journals), a system you select on the map or type, or every colonised system in the galaxy. The distance runs from 15 to 150 ly in steps of 5; each system is measured from the nearest reference.",
     "Every filter is a floor — at least this many of a body type, ringed, landable or terraformable bodies, bodies with biology or geology signals (any species: the signal is what counts) — and the stars: the main star's class, or a black hole, neutron star, white dwarf or giant anywhere in it. Hide colonised leaves out every system someone colonised or claimed, Frontier's own inhabited systems, and your own colonies.",
@@ -101,13 +113,13 @@ export const G3D_HELP: Record<G3dTabKey, string[]> = {
     "With the mouse: left drag pans, right drag tilts and turns, the wheel zooms. Click a ring to open a group, a dot to open a system.",
   ],
   layers: [
-    "What is drawn over the 5.3 million systems. Your systems: amber where signals still wait for you, green where you mapped or sampled, grey where you only passed through.",
+    "What is drawn over the 5.4 million systems. Your systems: amber where signals still wait for you, green where you mapped or sampled, grey where you only passed through.",
     "Region borders and names, the groups that stand for many systems when zoomed out, and the Milky Way drawn behind them.",
     "Points of interest, notable phenomena, fleet carriers, your bookmarks and green gas giants come from lists already on this PC; a layer that needs a download says so.",
   ],
   filter: [
     "Tick what you are after — a star class, a planet type, a genus or a species — and the systems that have it light up while the rest dim. Several ticks in one group mean any of them; across groups, all of them.",
-    "Star and planet types come from Spansh's galaxy dump; the plants from EDAstro's codex records.",
+    "Star and planet types come from Spansh's galaxy dump; the plants from EDAstro's and EDSM's codex records.",
   ],
   search: [
     "Where has a species been recorded? Pick one, or a minimum value, and the map shows the systems where commanders logged it, nearest first.",
@@ -251,6 +263,7 @@ const LUCIDE_TABS: Partial<Record<G3dTabKey, LucideIcon>> = {
   expedition: Compass,
   jumponium: FlaskConical,
   finder: ScanSearch,
+  spansh: Import,
 };
 
 export function G3dIcon({ name }: { name: G3dTabKey }) {

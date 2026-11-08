@@ -6,11 +6,24 @@ import { btnOverlayMenu, launcherActionMsg } from "./status.js";
 import { apiUrl } from "./network.js";
 import { PRESETS } from "../hud/presets";
 import { HUD_MERGED, HUD_PATH_BY_SECTION, HUD_SECTION_BY_PATH, HUD_SECTION_LABEL, HUD_SECTION_ORDER, HUD_W, activeSections, hudMergeOn, hudPaths, hudPhoneSections, inHudQueue, pickOverlay, refreshPhoneSections, showSections } from "./hudOverlays.js";
+import { MOTION_EVENT, fxOn } from "../motionCore";
 
 /* ------------------------------------------------------------------ HUD settings (theme, order, corner) */
 var LS_HUD_THEME = "edexoHudTheme";
 var LS_HUD_CAND = "edexoHudCandOrder";
 var LS_HUD_REGION = "edexoHudRegion";
+/* Candidate settings (owner, 2026-11-05): scanned species placed / first / hidden, the most rows, the active scan first. */
+var LS_HUD_CAND_SCANNED = "edexoHudCandScanned";
+var LS_HUD_CAND_MAX = "edexoHudCandMax";
+var LS_HUD_CAND_ACTIVE_TOP = "edexoHudCandActiveTop";
+function readCandMax() {
+  try {
+    var n = Math.round(parseFloat(localStorage.getItem(LS_HUD_CAND_MAX) || ""));
+    return isFinite(n) ? Math.min(30, Math.max(1, n)) : 9;
+  } catch (e) {
+    return 9;
+  }
+}
 var LS_HUD_SCALE = "edexoHudScale";
 var LS_HUD_ALPHA = "edexoHudOpacity";
 var LS_HUD_AUDIO = "edexoHudAudio";
@@ -19,6 +32,14 @@ var LS_HUD_RELEVANT = "edexoHudRelevant";
 var LS_HUD_TYPE = "edexoHudType";
 var LS_HUD_CREDIT = "edexoHudCredit";
 var LS_HUD_NEXT_BOXEL = "edexoHudNextBoxel";
+/* The fuel bar at a neutron route's refuel stop (2026-10-29): on unless switched off. */
+var LS_HUD_REFUEL_BAR = "edexoHudRefuelBar";
+var LS_HUD_RADAR_ALWAYS = "edexoHudRadarAlways";
+var LS_HUD_AIM = "edexoHudAim";
+var LS_HUD_PITCH_READER = "edexoHudPitchReader";
+var LS_HUD_DISTANCE_READER = "edexoHudDistanceReader";
+/* The pitch reader's HUD colours (owner 2026-11-06): default or the XML's GUIColour matrix. */
+var LS_HUD_COLOUR = "edexoHudColour";
 /* Colonize HUD (1.3.0): materials and other sites on unless switched off; finished lines off unless switched on. */
 var HUD_CZ_PREFS = [
   { id: "hudCzNeeds", ls: "edexoHudCzNeeds", key: "czNeeds", def: true },
@@ -54,12 +75,20 @@ function hudPrefsNow() {
   try { var op = parseFloat(localStorage.getItem(LS_HUD_ALPHA) || ""); if (isFinite(op)) prefs.opacity = op; } catch (e) {}
   try { prefs.candOrder = localStorage.getItem(LS_HUD_CAND) || "likelihood"; } catch (e) {}
   try { prefs.region = localStorage.getItem(LS_HUD_REGION) !== "0"; } catch (e) {}
+  try { prefs.candScanned = localStorage.getItem(LS_HUD_CAND_SCANNED) || "place"; } catch (e) {}
+  prefs.candMax = readCandMax();
+  try { prefs.candActiveTop = localStorage.getItem(LS_HUD_CAND_ACTIVE_TOP) !== "0"; } catch (e) {}
   try { prefs.audio = localStorage.getItem(LS_HUD_AUDIO) === "1"; } catch (e) {}
   try { prefs.compact = localStorage.getItem(LS_HUD_COMPACT) === "1"; } catch (e) {}
   try { prefs.relevant = localStorage.getItem(LS_HUD_RELEVANT) === "1"; } catch (e) {}
   try { prefs.hudType = localStorage.getItem(LS_HUD_TYPE) || "original"; } catch (e) {}
   try { prefs.credit = localStorage.getItem(LS_HUD_CREDIT) || "off"; } catch (e) {}
   try { prefs.nextBoxel = localStorage.getItem(LS_HUD_NEXT_BOXEL) === "1"; } catch (e) {}
+  try { prefs.refuelBar = localStorage.getItem(LS_HUD_REFUEL_BAR) !== "0"; } catch (e) {}
+  try { prefs.radarAlways = localStorage.getItem(LS_HUD_RADAR_ALWAYS) === "1"; } catch (e) {}
+  try { prefs.pitchReader = localStorage.getItem(LS_HUD_PITCH_READER) === "1"; } catch (e) {}
+  try { prefs.distanceReader = localStorage.getItem(LS_HUD_DISTANCE_READER) === "1"; } catch (e) {}
+  try { prefs.hudColour = localStorage.getItem(LS_HUD_COLOUR) === "xml" ? "xml" : "default"; } catch (e) {}
   HUD_CZ_PREFS.forEach(function (p) { prefs[p.key] = readCzPref(p); });
   try { var tl = parseFloat(localStorage.getItem(LS_HUD_TILT) || ""); prefs.tilt = isFinite(tl) ? tl : 15; } catch (e) {}
   try { prefs.tiltMode = localStorage.getItem(LS_HUD_TILT_MODE) === "slant" ? "slant" : "turn"; } catch (e) {}
@@ -133,7 +162,10 @@ function renderSwatches() {
     b.setAttribute("role", "radio");
     b.setAttribute("aria-pressed", cur === name ? "true" : "false");
     b.addEventListener("click", function () {
-      writeTheme({ preset: name });
+      // A text colour of one's own and the last custom accent stay through a preset (owner, 2026-10-31: the custom
+      // text colour was lost when switching between the HUD colours).
+      var now = readTheme();
+      writeTheme({ preset: name, accent: now.accent, text: now.text });
     });
     hudSwatches.appendChild(b);
   });
@@ -167,11 +199,30 @@ function renderSwatches() {
     wrap.appendChild(x);
     hudSwatches.appendChild(wrap);
   });
-  if (hudThemeAccent && t.preset === "custom" && t.accent) hudThemeAccent.value = t.accent;
-  if (hudThemeText && t.preset === "custom" && t.text) hudThemeText.value = t.text;
+  if (hudThemeAccent && t.accent) hudThemeAccent.value = t.accent;
+  if (hudThemeText) hudThemeText.value = t.text || (PRESETS[cur] && PRESETS[cur].text) || hudThemeText.value;
+  var reset = document.getElementById("hudThemeTextReset");
+  if (reset) {
+    reset.disabled = !t.text;
+    // Off, it says why rather than looking busy (owner, 2026-11-01: "loads forever").
+    reset.title = t.text
+      ? "Back to the text colour of the scheme picked above."
+      : "The text is already the scheme's own colour; pick a custom text colour first.";
+  }
 }
+/* The accent of one's own: the custom scheme, the text colour kept as it is. */
 function customTheme() {
-  writeTheme({ preset: "custom", accent: hudThemeAccent.value, text: hudThemeText.value });
+  var now = readTheme();
+  writeTheme({ preset: "custom", accent: hudThemeAccent.value, text: now.text });
+}
+/* A text colour of one's own: over whichever scheme is on, preset or custom, until "Scheme's text". */
+function customText() {
+  var now = readTheme();
+  writeTheme({ preset: now.preset || "orange", accent: now.accent, text: hudThemeText.value });
+}
+function schemeText() {
+  var now = readTheme();
+  writeTheme({ preset: now.preset || "orange", accent: now.accent });
 }
 var hudSchemeName = document.getElementById("hudSchemeName");
 var hudSchemeSave = document.getElementById("hudSchemeSave");
@@ -215,11 +266,20 @@ function syncHudTypeUi() {
 var hudCredit = document.getElementById("hudCredit");
 /* "Next boxel" under the Next jump HUD (plan 2.7): off unless chosen. */
 var hudNextBoxel = document.getElementById("hudNextBoxel");
+var hudRefuelBar = document.getElementById("hudRefuelBar");
+var hudRadarAlways = document.getElementById("hudRadarAlways");
+var hudAim = document.getElementById("hudAim");
+var hudPitchReader = document.getElementById("hudPitchReader");
+var hudDistanceReader = document.getElementById("hudDistanceReader");
+var hudColourSel = document.getElementById("hudColour");
 var hudCompact = document.getElementById("hudCompact");
 var hudRelevant = document.getElementById("hudRelevant");
 var hudAudio = document.getElementById("hudAudio");
 var hudCandOrder = document.getElementById("hudCandOrder");
 var hudRegion = document.getElementById("hudRegion");
+var hudCandScanned = document.getElementById("hudCandScanned");
+var hudCandMax = document.getElementById("hudCandMax");
+var hudCandActiveTop = document.getElementById("hudCandActiveTop");
 var hudCorner = document.getElementById("hudCorner");
 var hudOrderList = document.getElementById("hudOrderList");
 export var hudOrder;
@@ -283,8 +343,88 @@ function renderOrderList() {
     li.appendChild(up);
     li.appendChild(down);
     li.appendChild(name);
+    if (fxOn("drag")) {
+      var grip = document.createElement("span");
+      grip.className = "hud-order__grip";
+      grip.textContent = "⠿";
+      grip.title = "Drag to move (the arrows move it one place)";
+      grip.setAttribute("aria-hidden", "true");
+      grip.addEventListener("pointerdown", function (ev) {
+        startOrderDrag(ev, li, i);
+      });
+      li.appendChild(grip);
+    }
     hudOrderList.appendChild(li);
   });
+}
+
+/*
+  M4 Drag to reorder (owner 2026-11-05): the row lifts to 105 % and follows the pointer, the rows it passes slide out
+  of its way, and it drops into the gap. The arrows stay for the keyboard. Options › Look › Motion › Drag to reorder
+  (level Full) in the app; off, there is no grip.
+*/
+// The grip comes and goes with the switch, changed here or in the app.
+window.addEventListener(MOTION_EVENT, function () {
+  renderOrderList();
+});
+function startOrderDrag(ev, li, from) {
+  if (ev.button !== 0 || !hudOrderList) return;
+  ev.preventDefault();
+  var rows = Array.prototype.slice.call(hudOrderList.children);
+  var rects = rows.map(function (r) {
+    return r.getBoundingClientRect();
+  });
+  var step = rects.length > 1 ? rects[1].top - rects[0].top : rects[0].height;
+  var startY = ev.clientY;
+  var to = from;
+  li.classList.add("is-lifted");
+  li.style.transform = "scale(1.05)";
+  hudOrderList.classList.add("is-sorting");
+  var grip = ev.currentTarget;
+  try {
+    grip.setPointerCapture(ev.pointerId);
+  } catch (e) {
+    /* no such pointer any more: the moves still reach the grip while over it */
+  }
+  function move(e) {
+    var dy = e.clientY - startY;
+    // Kept inside the list.
+    dy = Math.max(rects[0].top - rects[from].top, Math.min(rects[rects.length - 1].top - rects[from].top, dy));
+    li.style.transform = "translateY(" + dy + "px) scale(1.05)";
+    var mid = rects[from].top + rects[from].height / 2 + dy;
+    to = from;
+    for (var k = 0; k < rects.length; k++) {
+      if (k < from && mid < rects[k].top + rects[k].height / 2) {
+        to = k;
+        break;
+      }
+      if (k > from && mid > rects[k].top + rects[k].height / 2) to = k;
+    }
+    rows.forEach(function (r, k) {
+      if (r === li) return;
+      var shift = k > from && k <= to ? -step : k < from && k >= to ? step : 0;
+      r.style.transform = shift ? "translateY(" + shift + "px)" : "";
+    });
+  }
+  function end(e) {
+    grip.removeEventListener("pointermove", move);
+    grip.removeEventListener("pointerup", end);
+    grip.removeEventListener("pointercancel", end);
+    hudOrderList.classList.remove("is-sorting");
+    if (e.type === "pointerup" && to !== from) {
+      hudOrder.splice(to, 0, hudOrder.splice(from, 1)[0]);
+      renderOrderList();
+      pushLayout();
+      return;
+    }
+    li.classList.remove("is-lifted");
+    rows.forEach(function (r) {
+      r.style.transform = "";
+    });
+  }
+  grip.addEventListener("pointermove", move);
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
 }
 
 /*
@@ -356,11 +496,16 @@ async function loadHudSettingsIntoModal() {
   renderSwatches();
   if (hudCandOrder) hudCandOrder.value = (function () { try { return localStorage.getItem(LS_HUD_CAND) || "likelihood"; } catch (e) { return "likelihood"; } })();
   if (hudRegion) hudRegion.checked = (function () { try { return localStorage.getItem(LS_HUD_REGION) !== "0"; } catch (e) { return true; } })();
+  if (hudCandScanned) hudCandScanned.value = (function () { try { var v = localStorage.getItem(LS_HUD_CAND_SCANNED); return v === "top" || v === "hidden" ? v : "place"; } catch (e) { return "place"; } })();
+  if (hudCandMax) hudCandMax.value = String(readCandMax());
+  if (hudCandActiveTop) hudCandActiveTop.checked = (function () { try { return localStorage.getItem(LS_HUD_CAND_ACTIVE_TOP) !== "0"; } catch (e) { return true; } })();
   if (hudAudio) hudAudio.checked = (function () { try { return localStorage.getItem(LS_HUD_AUDIO) === "1"; } catch (e) { return false; } })();
   if (hudCompact) hudCompact.checked = (function () { try { return localStorage.getItem(LS_HUD_COMPACT) === "1"; } catch (e) { return false; } })();
   if (hudType) hudType.value = (function () { try { return localStorage.getItem(LS_HUD_TYPE) || "original"; } catch (e) { return "original"; } })();
   if (hudCredit) hudCredit.value = (function () { try { var v = localStorage.getItem(LS_HUD_CREDIT); return v === "top" || v === "bottom" ? v : "off"; } catch (e) { return "off"; } })();
   if (hudNextBoxel) hudNextBoxel.checked = (function () { try { return localStorage.getItem(LS_HUD_NEXT_BOXEL) === "1"; } catch (e) { return false; } })();
+  if (hudRefuelBar) hudRefuelBar.checked = (function () { try { return localStorage.getItem(LS_HUD_REFUEL_BAR) !== "0"; } catch (e) { return true; } })();
+  if (hudRadarAlways) hudRadarAlways.checked = (function () { try { return localStorage.getItem(LS_HUD_RADAR_ALWAYS) === "1"; } catch (e) { return false; } })();
   HUD_CZ_PREFS.forEach(function (p) {
     var box = document.getElementById(p.id);
     if (box) box.checked = readCzPref(p);
@@ -394,6 +539,7 @@ var ovNotable = document.getElementById("ovNotable");
 var ovNotices = document.getElementById("ovNotices");
 var ovColonize = document.getElementById("ovColonize");
 var ovShip = document.getElementById("ovShip");
+var ovCarrier = document.getElementById("ovCarrier");
 
 /** What ran when the page loaded, in the order it ran (main.js calls each module's in the file's old order). */
 export function start() {
@@ -405,7 +551,9 @@ export function start() {
       if (ev.key === "Enter") saveScheme();
     });
   }
-  if (hudThemeText) hudThemeText.addEventListener("input", customTheme);
+  if (hudThemeText) hudThemeText.addEventListener("input", customText);
+  var hudThemeTextReset = document.getElementById("hudThemeTextReset");
+  if (hudThemeTextReset) hudThemeTextReset.addEventListener("click", schemeText);
   if (hudScale) {
     hudScale.addEventListener("input", function () {
       showSizeOutputs();
@@ -472,6 +620,55 @@ export function start() {
       syncHudPrefs();
     });
   }
+  /* The screen marker's window (electron/aimWindow.cjs): kept on through restarts, asked for again at each start. */
+  if (hudAim) {
+    var aimOn = (function () { try { return localStorage.getItem(LS_HUD_AIM) === "1"; } catch (e) { return false; } })();
+    hudAim.checked = aimOn;
+    var ee = window.edexoElectron;
+    if (!ee || typeof ee.setAimOverlay !== "function") hudAim.disabled = true;
+    else if (aimOn) ee.setAimOverlay({ on: true }).catch(function () {});
+    hudAim.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_AIM, hudAim.checked ? "1" : "0"); } catch (e) {}
+      if (ee && typeof ee.setAimOverlay === "function") ee.setAimOverlay({ on: hudAim.checked }).catch(function () {});
+    });
+  }
+  /* The pitch reader (the screen marker's page reads it from the HUD prefs mirror; local capture, aim/pitchCapture.ts). */
+  if (hudPitchReader) {
+    hudPitchReader.checked = (function () { try { return localStorage.getItem(LS_HUD_PITCH_READER) === "1"; } catch (e) { return false; } })();
+    hudPitchReader.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_PITCH_READER, hudPitchReader.checked ? "1" : "0"); } catch (e) {}
+      syncHudPrefs();
+    });
+  }
+  /* The Scan route's distance reader: opens the screen marker's window without its marks (electron aimWindow.cjs). */
+  if (hudDistanceReader) {
+    hudDistanceReader.checked = (function () { try { return localStorage.getItem(LS_HUD_DISTANCE_READER) === "1"; } catch (e) { return false; } })();
+    if (!window.edexoElectron) hudDistanceReader.disabled = true;
+    hudDistanceReader.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_DISTANCE_READER, hudDistanceReader.checked ? "1" : "0"); } catch (e) {}
+      syncHudPrefs();
+    });
+  }
+  /* HUD colours for the pitch reader: default or the XML's matrix. */
+  if (hudColourSel) {
+    try { hudColourSel.value = localStorage.getItem(LS_HUD_COLOUR) === "xml" ? "xml" : "default"; } catch (e) {}
+    hudColourSel.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_COLOUR, hudColourSel.value); } catch (e) {}
+      syncHudPrefs();
+    });
+  }
+  if (hudRadarAlways) {
+    hudRadarAlways.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_RADAR_ALWAYS, hudRadarAlways.checked ? "1" : "0"); } catch (e) {}
+      syncHudPrefs();
+    });
+  }
+  if (hudRefuelBar) {
+    hudRefuelBar.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_REFUEL_BAR, hudRefuelBar.checked ? "1" : "0"); } catch (e) {}
+      syncHudPrefs();
+    });
+  }
   HUD_CZ_PREFS.forEach(function (p) {
     var box = document.getElementById(p.id);
     if (!box) return;
@@ -511,6 +708,25 @@ export function start() {
       try {
         localStorage.setItem(LS_HUD_REGION, hudRegion.checked ? "1" : "0");
       } catch (e) {}
+      syncHudPrefs();
+    });
+  }
+  if (hudCandScanned) {
+    hudCandScanned.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_CAND_SCANNED, hudCandScanned.value); } catch (e) {}
+      syncHudPrefs();
+    });
+  }
+  if (hudCandMax) {
+    hudCandMax.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_CAND_MAX, hudCandMax.value); } catch (e) {}
+      hudCandMax.value = String(readCandMax());
+      syncHudPrefs();
+    });
+  }
+  if (hudCandActiveTop) {
+    hudCandActiveTop.addEventListener("change", function () {
+      try { localStorage.setItem(LS_HUD_CAND_ACTIVE_TOP, hudCandActiveTop.checked ? "1" : "0"); } catch (e) {}
       syncHudPrefs();
     });
   }
@@ -560,4 +776,5 @@ export function start() {
   if (ovNotices) ovNotices.addEventListener("click", function () { void pickOverlay("/notices-overlay.html", HUD_W, 140); });
   if (ovColonize) ovColonize.addEventListener("click", function () { void pickOverlay("/colonize-overlay.html", HUD_W, 260); });
   if (ovShip) ovShip.addEventListener("click", function () { void pickOverlay("/ship-overlay.html", HUD_W, 300); });
+  if (ovCarrier) ovCarrier.addEventListener("click", function () { void pickOverlay("/carrier-overlay.html", HUD_W, 140); });
 }

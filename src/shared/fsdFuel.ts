@@ -14,6 +14,8 @@
  * over, and each ship's samples are kept while another ship is flown.
  */
 
+import { driveFuelT, driveRangeLy, fsdDriveFromLoadout, fsdDriveOf, type FsdDrive } from "./fsdDrives.js";
+
 /** Class A drives; used until the commander's own jumps pin `p` down. */
 export const DEFAULT_POWER = 2.45;
 const SAMPLES = 60;
@@ -36,6 +38,12 @@ export interface FsdFuelState {
   unladenT: number | null;
   /** The drive's most fuel per jump (`Loadout` FSD `MaxFuelPerJump` when engineered), when known. */
   maxFuelPerJumpT: number | null;
+  /** The Guardian FSD Booster's bonus in the last `Loadout` (`guardianBoosterLy`); 0 or absent without one. */
+  boosterLy?: number;
+  /** The last `Loadout`'s drive by its module's constants (fsdDrives.ts), when they give back its range; else null. */
+  drive?: FsdDrive | null;
+  /** Engineered modules' mass (t) by slot, as the last `Loadout` or `EngineerCraft` gave it (fsdFuelEngineerCraft). */
+  moduleMassT?: Record<string, number>;
   /**
    * What the ship carries (t), from the journal's last `Cargo` line; null until one is read, and again
    * after a ship change or a death. The journal writes one at every login and after every change to the
@@ -58,6 +66,11 @@ export interface FsdFuelModel {
   fitted: boolean;
   unladenT: number;
   maxFuelPerJumpT: number | null;
+  /** The Guardian booster's bonus (ly), and the mass the law was fitted around (the samples' median, t). */
+  boosterLy: number;
+  refMassT: number;
+  /** The drive's own law, when its module is known (fsdDrives.ts): then `k` and `p` are not used. */
+  drive?: FsdDrive | null;
 }
 
 export function emptyFsdFuel(): FsdFuelState {
@@ -66,6 +79,9 @@ export function emptyFsdFuel(): FsdFuelState {
     loadoutLy: null,
     unladenT: null,
     maxFuelPerJumpT: null,
+    boosterLy: 0,
+    drive: null,
+    moduleMassT: {},
     cargoT: null,
     samples: [],
     fsd: null,
@@ -101,11 +117,50 @@ export function hydrateFsdFuelOthers(raw: unknown): NonNullable<FsdFuelState["ot
   return out;
 }
 
+/** `moduleMassT` from a saved cache: only positive masses. */
+export function hydrateModuleMass(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return out;
+}
+
+/** The Guardian FSD Booster's bonus (ly) by module size 1-5; it cannot be engineered. */
+const GUARDIAN_BOOSTER_LY = [0, 4, 6, 7.75, 9.25, 10.5];
+
+/**
+ * The Guardian FSD Booster's bonus from a `Loadout`'s modules (`int_guardianfsdbooster_size5`), 0 without one or with
+ * it switched off. A flat bonus: the longest jump is the drive's own reach, which goes as 1 / mass, plus the bonus,
+ * which does not grow as the ship gets lighter; a supercharge multiplies both (a tester, 2026-10-29: a Caspian with
+ * the size 5 one reaches 532.75 ly, 6 × 88.79, and a planner that scaled the bonus with the lighter tank too planned
+ * a 534 ly hop it could not make).
+ */
+export function guardianBoosterLy(modules: unknown): number {
+  if (!Array.isArray(modules)) return 0;
+  for (const m of modules as Record<string, unknown>[]) {
+    const size = /^int_guardianfsdbooster_size(\d)/i.exec(typeof m?.Item === "string" ? m.Item : "")?.[1];
+    if (size) return m.On === false ? 0 : (GUARDIAN_BOOSTER_LY[Number(size)] ?? 0);
+  }
+  return 0;
+}
+
+type Modifier = { Label?: string; Value?: number; OriginalValue?: number };
+
+const modifiersOf = (module: Record<string, unknown> | undefined): Modifier[] =>
+  (module?.Engineering as { Modifiers?: Modifier[] } | undefined)?.Modifiers ?? [];
+
 /** The drive as its fuel law sees it: the module, and its engineering's values (optimal mass, fuel per jump, ...). */
-function fsdKey(fsd: Record<string, unknown> | undefined): string | null {
-  if (!fsd || typeof fsd.Item !== "string") return null;
-  const mods = (fsd.Engineering as { Modifiers?: { Label?: string; Value?: number }[] } | undefined)?.Modifiers ?? [];
-  return [fsd.Item.toLowerCase(), ...mods.map((m) => `${m.Label}=${m.Value}`).sort()].join("|");
+function fsdKey(item: unknown, mods: Modifier[]): string | null {
+  if (typeof item !== "string") return null;
+  return [item.toLowerCase(), ...mods.map((m) => `${m.Label}=${m.Value}`).sort()].join("|");
+}
+
+/** A modifier's value when it is a positive number. */
+function modValue(mods: Modifier[], label: string, key: "Value" | "OriginalValue" = "Value"): number | null {
+  const v = mods.find((m) => m.Label === label)?.[key];
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
 }
 
 /**
@@ -118,7 +173,7 @@ export function fsdFuelLoadout(st: FsdFuelState, line: Record<string, unknown>):
   const mjr = typeof line.MaxJumpRange === "number" && line.MaxJumpRange > 0 ? line.MaxJumpRange : null;
   const modules = Array.isArray(line.Modules) ? (line.Modules as Record<string, unknown>[]) : [];
   const fsd = modules.find((m) => m.Slot === "FrameShiftDrive");
-  const key = fsdKey(fsd);
+  const key = fsdKey(fsd?.Item, modifiersOf(fsd));
   if (shipId != null && shipId !== st.shipId) {
     const others = (st.others ??= {});
     if (st.shipId != null && st.samples.length) {
@@ -141,11 +196,42 @@ export function fsdFuelLoadout(st: FsdFuelState, line: Record<string, unknown>):
   st.fsd = key;
   if (mjr != null) st.loadoutLy = mjr;
   if (typeof line.UnladenMass === "number" && line.UnladenMass > 0) st.unladenT = line.UnladenMass;
-  st.maxFuelPerJumpT = null;
-  const mods = (fsd?.Engineering as { Modifiers?: { Label?: string; Value?: number }[] } | undefined)
-    ?.Modifiers;
-  const mf = mods?.find((m) => m.Label === "MaxFuelPerJump")?.Value;
-  if (typeof mf === "number" && mf > 0) st.maxFuelPerJumpT = mf;
+  st.boosterLy = guardianBoosterLy(modules);
+  st.drive = fsdDriveFromLoadout(line, st.boosterLy);
+  st.maxFuelPerJumpT = modValue(modifiersOf(fsd), "MaxFuelPerJump") ?? st.drive?.maxFuelT ?? null;
+  st.moduleMassT = {};
+  for (const m of modules) {
+    const mass = modValue(modifiersOf(m), "Mass");
+    if (typeof m.Slot === "string" && mass != null) st.moduleMassT[m.Slot] = mass;
+  }
+}
+
+/**
+ * An `EngineerCraft`: the module's new values at once. The game writes no `Loadout` after one until the next login or
+ * outfitting, and the drive and the mass of the last one were wrong until then (the owner's journals, 2026-10-30: a
+ * Deep Charge roll took the Mandalay's fuel per jump from 5.2 t to 5.72 t, an increased-range roll the Panther's
+ * optimal mass from 3,000 t to 3,450 t, and each ship's next jumps spent up to 30 % off the law for hours).
+ * The ship's mass moves by the module's: from its last engineered mass (else the craft's base) to the new one. A
+ * drive crafted anew starts its samples over, as another drive would.
+ */
+export function fsdFuelEngineerCraft(st: FsdFuelState, line: Record<string, unknown>): void {
+  const slot = line.Slot;
+  if (typeof slot !== "string") return;
+  const mods = Array.isArray(line.Modifiers) ? (line.Modifiers as Modifier[]) : [];
+  const mass = modValue(mods, "Mass");
+  if (mass != null) {
+    const masses = (st.moduleMassT ??= {});
+    const before = masses[slot] ?? modValue(mods, "Mass", "OriginalValue");
+    if (before != null && st.unladenT != null) st.unladenT += mass - before;
+    masses[slot] = mass;
+  }
+  if (slot !== "FrameShiftDrive") return;
+  // Only a drive the last Loadout proved (its range given back) is trusted with the table's values for the rest.
+  if (st.drive) st.drive = fsdDriveOf(line.Module, mods, st.drive.boosterLy);
+  st.maxFuelPerJumpT = modValue(mods, "MaxFuelPerJump") ?? st.drive?.maxFuelT ?? null;
+  const key = fsdKey(line.Module, mods);
+  if (key !== st.fsd) st.samples = [];
+  st.fsd = key;
 }
 
 /** A `Cargo` line: the ship's hold in tonnes (the SRV's has its own lines, and is not the ship's mass). */
@@ -170,9 +256,18 @@ export function fsdFuelJump(st: FsdFuelState, line: Record<string, unknown>, car
   if (st.samples.length > SAMPLES) st.samples.splice(0, st.samples.length - SAMPLES);
 }
 
-/** `k` and `p` from the samples; null without a ship mass or a single usable jump. */
+/**
+ * The drive's law: its module's own when known (no jump needed), else `k` and `p` from the samples; null without a ship
+ * mass, or without either.
+ */
 export function fsdFuelModel(st: FsdFuelState): FsdFuelModel | null {
-  if (st.unladenT == null || !st.samples.length) return null;
+  if (st.unladenT == null) return null;
+  const d = st.drive;
+  if (d) {
+    const k = d.mul / d.optMassT ** d.pow;
+    return { k, p: d.pow, fitted: true, unladenT: st.unladenT, maxFuelPerJumpT: d.maxFuelT, boosterLy: d.boosterLy, refMassT: st.unladenT, drive: d };
+  }
+  if (!st.samples.length) return null;
   let p = DEFAULT_POWER;
   let fitted = false;
   const ds = st.samples.map((s) => s.ly);
@@ -197,19 +292,35 @@ export function fsdFuelModel(st: FsdFuelState): FsdFuelModel | null {
   }
   const ks = st.samples.map((s) => s.fuelT / (s.ly * s.massT) ** p).sort((a, b) => a - b);
   const k = ks[Math.floor(ks.length / 2)]!;
+  const masses = st.samples.map((s) => s.massT).sort((a, b) => a - b);
+  const refMassT = masses[Math.floor(masses.length / 2)]!;
+  const boosterLy = st.boosterLy ?? 0;
   let maxFuel = st.maxFuelPerJumpT;
   if (maxFuel == null && st.loadoutLy != null) {
     // The loadout's range is the jump that spends the most fuel per jump with only that much aboard.
     maxFuel = 1;
-    for (let i = 0; i < 20; i++) maxFuel = k * (st.loadoutLy * (st.unladenT + maxFuel)) ** p;
+    for (let i = 0; i < 20; i++) {
+      const mass: number = st.unladenT + maxFuel;
+      maxFuel = k * ((st.loadoutLy - boosterShift(boosterLy, refMassT, mass)) * mass) ** p;
+    }
     if (!Number.isFinite(maxFuel) || maxFuel <= 0) maxFuel = null;
   }
-  return { k, p, fitted, unladenT: st.unladenT, maxFuelPerJumpT: maxFuel };
+  return { k, p, fitted, unladenT: st.unladenT, maxFuelPerJumpT: maxFuel, boosterLy, refMassT };
+}
+
+/**
+ * What the law's 1 / mass gets wrong with a Guardian booster: the law holds around the mass it was fitted at, but
+ * the booster's part of the range does not scale, so at another mass the true longest jump is the law's plus this.
+ */
+function boosterShift(boosterLy: number, refMassT: number, massT: number): number {
+  return boosterLy * (1 - refMassT / massT);
 }
 
 /** Fuel (t) for a jump of `ly` with `fuelT` in the tank and `cargoT` aboard. */
 export function fuelForJump(m: FsdFuelModel, ly: number, fuelT: number, cargoT = 0): number {
-  return m.k * (ly * (m.unladenT + fuelT + cargoT)) ** m.p;
+  const mass = m.unladenT + fuelT + cargoT;
+  if (m.drive) return driveFuelT(m.drive, ly, mass);
+  return m.k * (ly * mass) ** m.p;
 }
 
 /** The longest jump (ly) on this tank: the drive's most fuel per jump, or what is left. */
@@ -217,5 +328,7 @@ export function maxJumpLy(m: FsdFuelModel, fuelT: number, cargoT = 0): number | 
   if (m.maxFuelPerJumpT == null) return null;
   const f = Math.min(m.maxFuelPerJumpT, fuelT);
   if (!(f > 0)) return 0;
-  return (f / m.k) ** (1 / m.p) / (m.unladenT + fuelT + cargoT);
+  const mass = m.unladenT + fuelT + cargoT;
+  if (m.drive) return driveRangeLy(m.drive, f, mass);
+  return (f / m.k) ** (1 / m.p) / mass + boosterShift(m.boosterLy, m.refMassT, mass);
 }

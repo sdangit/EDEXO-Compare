@@ -1,6 +1,7 @@
-import { join } from "node:path";
 import type { FootTravelFix } from "./footTravelStatus.js";
-import type { SurfaceMark } from "./surfaceMarksFile.js";
+import { keepClearedMarks, withCodexScan, withoutCodexMarks, type SurfaceMark } from "./surfaceMarksFile.js";
+import { logScanLocate } from "./scanLocateLog.js";
+import { eyeAboveM, learnEyeHeight, noteShipLine } from "./eyeHeight.js";
 import { elevationFromGravity } from "../shared/journalPhysics.js";
 import { RADAR_RADIUS_DEFAULT_M, clampRadarRadiusM } from "../shared/radarRadius.js";
 import { greatCircleDistanceMeters, resolveFootFixForOrganicLine } from "./footTravelStatus.js";
@@ -23,9 +24,8 @@ import {
   wipeOrganicSampleSession,
   type OrganicSampleSessionHost,
 } from "./organicSampleSessionFile.js";
-import { getProjectRoot, getSpeciesDataDir } from "./paths.js";
-import { readGenusMinSampleDistanceM } from "./speciesTreeLoader.js";
-import { gameOrderSpeciesName } from "../shared/codexLog.js";
+import { getProjectRoot } from "./paths.js";
+import { sampleDistanceM, speciesGenusSampleDistanceM } from "./speciesTreeLoader.js";
 import { bodyKey } from "../shared/bodyKey.js";
 
 export type ExoOrganicAnchors = { latDeg: number; lonDeg: number; planetRadiusM: number };
@@ -71,7 +71,13 @@ export type ExoOrganicOverlayHost = {
   /** Where each plant was sampled — the radar's dots, kept across bodies and across restarts. */
   surfaceSampleMarks: SurfaceMark[];
   /** Body records, for the reference gravity and radius an elevation is measured against. */
-  readonly explorationScans: ReadonlyMap<string, { surfaceGravity?: number; radius?: number }>;
+  readonly explorationScans: ReadonlyMap<string, { surfaceGravity?: number; radius?: number; bodyName?: string }>;
+  /** Composition-scan waypoints (`CodexEntry` positions). Optional so the test hosts keep working unchanged. */
+  surfaceCodexMarks?: SurfaceMark[];
+  /** Where the commander left the SRV (live lines only). Optional so the test hosts keep working unchanged. */
+  surfaceSrvMark?: SurfaceMark | null;
+  /** Writes the marks file (samples, ship, waypoints, SRV). */
+  persistSurfaceMarks?(): void;
   addSurfaceSampleMark(
     bodyKey: string,
     bodyNameNorm: string,
@@ -95,12 +101,6 @@ export type ExoOrganicOverlayHost = {
  */
 const minimapRadiusFor = (store: ExoOrganicOverlayHost): number =>
   clampRadarRadiusM(store.minimapRadiusM ?? RADAR_RADIUS_DEFAULT_M);
-
-const genusMinDistCache = new Map<string, number>();
-
-export function clearExoOrganicGenusMinDistCache(): void {
-  genusMinDistCache.clear();
-}
 
 type ExoOrganicJournalStore = ExoOrganicOverlayHost &
   OrganicSampleSessionHost & {
@@ -175,28 +175,6 @@ function persistSoon(store: ExoOrganicJournalStore, projectRoot: string): void {
   schedulePersistOrganicSampleSession(store, projectRoot);
 }
 
-function resolveMinSampleDistanceM(projectRoot: string, db: SpeciesDatabase, genusLocalised: string): number {
-  const g = genusLocalised.trim().toLowerCase();
-  if (!g) return 0;
-  const cached = genusMinDistCache.get(g);
-  if (cached !== undefined) return cached;
-  for (const e of db.species) {
-    if (e.genus.trim().toLowerCase() !== g) continue;
-    const rel = e.dataSourceRelPath;
-    if (!rel) {
-      genusMinDistCache.set(g, 0);
-      return 0;
-    }
-    const jsonPath = join(getSpeciesDataDir(projectRoot), rel);
-    const m = readGenusMinSampleDistanceM(jsonPath);
-    const v = m != null && m > 0 ? m : 0;
-    genusMinDistCache.set(g, v);
-    return v;
-  }
-  genusMinDistCache.set(g, 0);
-  return 0;
-}
-
 /**
  * The sample distance of the species a radar mark is labelled with ("Stratum Tectonicas"), from its
  * genus file; 0 when no species of the database carries that name.
@@ -208,20 +186,13 @@ export function setExoOrganicSpeciesDb(db: SpeciesDatabase): void {
   ringSpeciesDb = db;
   ringByLabel.clear();
 }
-export function sampleDistanceForSpeciesLabel(label: string): number {
+export function sampleDistanceForSpeciesLabel(label: string, db: SpeciesDatabase | null = ringSpeciesDb): number {
   const key = label.trim().toLowerCase();
   if (!key) return 0;
   const hit = ringByLabel.get(key);
   if (hit !== undefined) return hit;
-  const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
-  const want = fold(label);
-  let m = 0;
-  for (const e of ringSpeciesDb?.species ?? []) {
-    if (fold(gameOrderSpeciesName(e.displayName)) === want || fold(e.displayName) === want) {
-      m = e.genusMinSampleDistanceM ?? 0;
-      break;
-    }
-  }
+  if (!db) return 0;
+  const m = speciesGenusSampleDistanceM(db.species, label);
   ringByLabel.set(key, m);
   return m;
 }
@@ -393,7 +364,7 @@ export function restoreOrganicSessionFromJournal(
     bodyNameNorm: normOrganicToken(
       typeof last.BodyName === "string" && last.BodyName.trim() ? last.BodyName.trim() : `Body ${bodyId}`,
     ),
-    minSampleDistanceM: resolveMinSampleDistanceM(projectRoot, db, genusLoc),
+    minSampleDistanceM: sampleDistanceM(db.species, genusLoc, speciesDisplay),
     anchors,
     anchorSlots,
     recoveredSamples: counted.length - anchors.length,
@@ -416,6 +387,12 @@ export function ingestExoOrganicJournalLine(
   db: SpeciesDatabase,
 ): void {
   expireCelebrationIfNeeded(store, projectRoot);
+  noteShipLine(line);
+  if (line.event === "CodexEntry") {
+    addCodexScanMark(store, line, statusFix);
+    return;
+  }
+  if (srvMarkLine(store, line, statusFix)) return;
   if (line.event !== "ScanOrganic") return;
 
   /** The line's own timestamp, so a mark is dated by when it happened rather than when it was read. */
@@ -431,6 +408,32 @@ export function ingestExoOrganicJournalLine(
   if (typeof sa !== "number" || typeof bodyId !== "number") return;
 
   const bk = bodyKey(sa, bodyId);
+  /*
+    Sampled on foot: the composition-scan mark of the plant underfoot has done its job. The other marks of this species
+    on the body stay, as the next plants to sample (owner, 2026-11-04: comp scan from the ship, then go round them),
+    until the species is finished (Analyse). Without a position for the sample none can be told apart: they wait.
+  */
+  const retireHere = resolveFootFixForOrganicLine(statusFix, line);
+  if (scanKind === "analyse" || retireHere) {
+    const genusForRange = typeof line.Genus_Localised === "string" ? line.Genus_Localised.trim() : "";
+    const marksBefore = store.surfaceCodexMarks ?? [];
+    const marksAfter = withoutCodexMarks(
+        marksBefore,
+        bk,
+        [line.Variant, line.Species].filter((x): x is string => typeof x === "string" && x.trim() !== ""),
+        scanKind === "analyse" || !retireHere
+          ? undefined
+          : {
+              latDeg: retireHere.latDeg,
+              lonDeg: retireHere.lonDeg,
+              radiusM: retireHere.planetRadiusM,
+              withinM: Math.max(50, sampleDistanceM(db.species, genusForRange, speciesDisplayFromLine(line))),
+            },
+    );
+    // The plant's real spot against where its scans put it, to tune the placing (scanLocateLog.ts).
+    if (scanKind !== "analyse" && retireHere) logScanLocate(marksBefore.filter((m) => !marksAfter.includes(m)), retireHere, line.timestamp);
+    setCodexMarks(store, marksAfter);
+  }
   /*
     What to call the body this scan happened on.
 
@@ -497,18 +500,28 @@ export function ingestExoOrganicJournalLine(
       t = store.exoOrganicTracker;
     }
 
-    const fix = resolveFootFixForOrganicLine(statusFix, line);
-    if (!fix) return;
+    /*
+      Where the scan was taken: Status.json read as the line landed, else the last good read (the poll's own, 10 a second).
+      A read caught mid-write gives nothing, and this used to drop the line outright, species switch and all: CMDR
+      Nimblor's "sample bacterium then stratum and then bacterium again, it then thinks im still sampling stratum until
+      i sample bacterium the third time and then it thinks its the first sample not the second" (2026-11-06). A scan
+      with no position at all still switches the species and counts; it only cannot be placed.
+    */
+    const lastGood = store.exoOrganicLastFix;
+    const fix =
+      resolveFootFixForOrganicLine(statusFix, line) ??
+      (lastGood && lastGood.planetRadiusM > 0 && Number.isFinite(lastGood.latDeg) && Number.isFinite(lastGood.lonDeg) ? lastGood : null);
 
+    // Sampling another species destroys the sample in progress (owner, 2026-11-06): its run ends here.
     if (t && t.bundleKey !== bundleKey) {
       wipeOrganicSampleSession(store, projectRoot);
       t = store.exoOrganicTracker;
     }
 
     const speciesDisplay = speciesDisplayFromLine(line);
-    const minM = resolveMinSampleDistanceM(projectRoot, db, genusLoc);
+    const minM = sampleDistanceM(db.species, genusLoc, speciesDisplay);
 
-    /** The first plant of a run: a fresh tracker anchored here, the map's mark, the foot session. */
+    /** The first plant of a run: a fresh tracker anchored here (counted, unplaced, without a position), the map's mark, the foot session. */
     const startRun = (): void => {
       store.exoOrganicTracker = {
         bundleKey,
@@ -518,21 +531,23 @@ export function ingestExoOrganicJournalLine(
         genusLocalised: genusLoc,
         bodyNameNorm: bodyNameNormEarly,
         minSampleDistanceM: minM,
-        anchors: [{ latDeg: fix.latDeg, lonDeg: fix.lonDeg, planetRadiusM: fix.planetRadiusM }],
+        anchors: fix ? [{ latDeg: fix.latDeg, lonDeg: fix.lonDeg, planetRadiusM: fix.planetRadiusM }] : [],
+        ...(fix ? {} : { recoveredSamples: 1 }),
         phase: "tracking",
         celebrationUntil: 0,
       };
       // The anchors are this species' own and are wiped when the next one starts; the map wants
       // every plant taken on this body, so it keeps its own list.
-      store.addSurfaceSampleMark(
-        bk,
-        bodyNameNormEarly,
-        fix.latDeg,
-        fix.lonDeg,
-        speciesDisplay,
-        lineIso,
-        conditionsAtPlant,
-      );
+      if (fix)
+        store.addSurfaceSampleMark(
+          bk,
+          bodyNameNormEarly,
+          fix.latDeg,
+          fix.lonDeg,
+          speciesDisplay,
+          lineIso,
+          conditionsAtPlant,
+        );
       store.footSessionBodyKey = bk;
       store.footSessionBodyNameNorm = bodyNameNormEarly;
       if (store.footTravelOdometerEnabled) {
@@ -574,6 +589,12 @@ export function ingestExoOrganicJournalLine(
     */
     if (effectiveSampleCount(t) < 3) {
       if (scanKind === "log") return;
+      if (!fix) {
+        // Known to have happened, not where: counted like a scan the journal reported while the app was closed.
+        t.recoveredSamples = (t.recoveredSamples ?? 0) + 1;
+        persistSoon(store, projectRoot);
+        return;
+      }
       pushAnchor(
         t,
         { latDeg: fix.latDeg, lonDeg: fix.lonDeg, planetRadiusM: fix.planetRadiusM },
@@ -645,6 +666,94 @@ export function ingestExoOrganicJournalLine(
 }
 
 /**
+ * A biological `CodexEntry` with a position (the ship's composition scanner, or one on foot): a radar waypoint for
+ * that plant until the species is logged on the body. `CodexEntry` carries Latitude, Longitude and BodyID (97 of 97
+ * biological ones in the owner's October journals), so `Status.json` is needed only for the body's name.
+ */
+function addCodexScanMark(store: ExoOrganicJournalStore, line: JournalLine, statusFix: FootTravelFix | null): void {
+  if (line.Category !== "$Codex_Category_Biology;") return;
+  const { SystemAddress: sa, BodyID: bodyId, Latitude: lat, Longitude: lon, Name: name } = line;
+  if (typeof sa !== "number" || typeof bodyId !== "number" || typeof lat !== "number" || typeof lon !== "number") return;
+  if (typeof name !== "string" || !name.trim()) return;
+  const bk = bodyKey(sa, bodyId);
+  const label =
+    typeof line.Name_Localised === "string" && line.Name_Localised.trim() ? line.Name_Localised.trim() : name;
+  const bodyName = store.explorationScans.get(bk)?.bodyName ?? statusFix?.bodyName ?? null;
+  const atIso = typeof line.timestamp === "string" ? line.timestamp : new Date().toISOString();
+  /*
+    How the scanner was pointed, from Status.json at that moment (the line has no heading): only in the ship, where
+    Status.json reports an altitude. On foot the line's position is the plant itself, and a heading there would draw a
+    line through it that crosses nothing real.
+  */
+  const inShip = statusFix?.altitudeM != null;
+  const radiusM = statusFix?.planetRadiusM ?? store.explorationScans.get(bk)?.radius ?? 0;
+  setCodexMarks(
+    store,
+    withCodexScan(
+      store.surfaceCodexMarks ?? [],
+      { bodyKey: bk, bodyNameNorm: normStatusBodyName(bodyName) ?? "", label, atIso, codexName: name },
+      {
+        latDeg: lat,
+        lonDeg: lon,
+        headingDeg: inShip ? (statusFix?.headingDeg ?? null) : null,
+        altitudeM: inShip ? (statusFix?.altitudeM ?? null) : null,
+        pitchDeg: inShip ? (statusFix?.pitchDeg ?? null) : null,
+        atIso,
+        ...(inShip && statusFix?.pitchFromHud ? { pitchFromHud: true } : {}),
+        ...(inShip ? { eyeAboveM: eyeAboveM() } : {}),
+      },
+      radiusM,
+    ),
+  );
+  // A plant two scans placed teaches the ship's eye height (eyeHeight.ts).
+  for (const m of store.surfaceCodexMarks ?? [])
+    if (m.bodyKey === bk && m.codexName === name && m.located === "crossing" && m.scans) learnEyeHeight(m, m.scans, radiusM);
+}
+
+/**
+ * The SRV left on the surface (plan 1.3.6 S-2, owner 2026-11-02): stepping out of it (`Disembark`, `SRV: true`) marks
+ * where it stands, from `Status.json` at that moment (the line has no position); boarding it again, docking it in the
+ * ship, launching another or losing it clears the mark. True when the line was one of these.
+ */
+function srvMarkLine(store: ExoOrganicJournalStore, line: JournalLine, statusFix: FootTravelFix | null): boolean {
+  const e = line.event;
+  if (e === "Disembark" && line.SRV === true) {
+    const sa = line.SystemAddress;
+    const bodyId = line.BodyID;
+    if (!statusFix || typeof sa !== "number" || typeof bodyId !== "number") return true;
+    const bk = bodyKey(sa, bodyId);
+    const bodyName = (typeof line.Body === "string" && line.Body.trim()) || store.explorationScans.get(bk)?.bodyName || statusFix.bodyName;
+    store.surfaceSrvMark = {
+      bodyKey: bk,
+      bodyNameNorm: normStatusBodyName(bodyName ?? null) ?? "",
+      latDeg: statusFix.latDeg,
+      lonDeg: statusFix.lonDeg,
+      label: "Your SRV",
+      atIso: typeof line.timestamp === "string" ? line.timestamp : new Date().toISOString(),
+    };
+    store.persistSurfaceMarks?.();
+    return true;
+  }
+  // Flying the ship off (not a dismissed ship lifting off on its own) leaves no SRV behind: the game recalls it.
+  const flownOff = (e === "Liftoff" && line.PlayerControlled === true) || e === "SupercruiseEntry" || e === "FSDJump";
+  if ((e === "Embark" && line.SRV === true) || e === "DockSRV" || e === "LaunchSRV" || e === "SRVDestroyed" || flownOff) {
+    if (store.surfaceSrvMark) {
+      store.surfaceSrvMark = null;
+      store.persistSurfaceMarks?.();
+    }
+    return true;
+  }
+  return false;
+}
+
+/** The waypoints changed (the helpers hand back the same list when nothing did): keep and write them. */
+function setCodexMarks(store: ExoOrganicOverlayHost, next: SurfaceMark[]): void {
+  if (next === store.surfaceCodexMarks || (!next.length && !store.surfaceCodexMarks?.length)) return;
+  store.surfaceCodexMarks = next;
+  store.persistSurfaceMarks?.();
+}
+
+/**
  * Where things are around you on this body, in metres.
  *
  * **Not tied to a sample session.** It was, and that was wrong: the overlay only built a payload
@@ -668,9 +777,14 @@ export function buildExoMinimapDto(
 ): ExoMinimapDTO | null {
   const fix = store.exoOrganicLastFix;
   if (!fix) return null;
-  // No body underfoot (no touchdown, no sample run) means no radar. `Status.json` keeps reporting a
-  // latitude from orbit, so the fix alone would draw an empty radar all the way out to supercruise.
-  if (!bodyKeyOnFoot) return null;
+  // No body underfoot (no touchdown, no sample run): a radar of the planet flown over (`near`), which the HUD shows with
+  // "Radar always on" or when the planet has composition scans. Owner, 2026-11-04: "always on while near a planet, as
+  // long as we have the coordinates and heading in the status.json" — so whatever the flight mode, while Status.json
+  // gives a position, a heading and the body's name; it closes when they go.
+  const near = !bodyKeyOnFoot;
+  if (near && (fix.headingDeg == null || !normStatusBodyName(fix.bodyName))) return null;
+  // Matches no mark's key: flying over, a mark is placed by the body's name alone.
+  const footKey = bodyKeyOnFoot ?? "\u0000near";
   const R = fix.planetRadiusM;
   if (!(R > 0)) return null;
 
@@ -682,10 +796,11 @@ export function buildExoMinimapDto(
   const push = (
     latDeg: number,
     lonDeg: number,
-    kind: "sample" | "ship",
+    kind: "sample" | "ship" | "codex" | "srv",
     markLabel: string,
     active = false,
     ringM = 0,
+    extra: Partial<ExoMinimapMarkDTO> = {},
   ) => {
     // Longitude wraps; without this a plant just across the antimeridian reads as half a planet away.
     let dLon = lonDeg - fix.lonDeg;
@@ -699,6 +814,7 @@ export function buildExoMinimapDto(
       label: markLabel,
       active,
       ...(ringM > 0 ? { ringM } : {}),
+      ...extra,
     });
   };
 
@@ -714,13 +830,7 @@ export function buildExoMinimapDto(
     The body key is the fallback for the case where the live fix has no name, which happens on some
     surfaces; a key from the session or the last landing is better than refusing to draw.
   */
-  const onBodyNorm = normStatusBodyName(fix.bodyName);
-  const belongsHere = (m: { bodyKey: string; bodyNameNorm?: string }): boolean => {
-    // A mark from an older store may have no name; its key is then the only thing to go on, and
-    // refusing to draw it would lose a ship that is genuinely parked here.
-    if (onBodyNorm && m.bodyNameNorm) return m.bodyNameNorm === onBodyNorm;
-    return bodyKeyOnFoot == null || m.bodyKey === bodyKeyOnFoot;
-  };
+  const belongsHere = belongsHereFor(fix, footKey);
 
   /*
     The species the commander is sampling right now, if the run is on this body.
@@ -730,22 +840,150 @@ export function buildExoMinimapDto(
     mistaking for the thing being collected.
   */
   const tracker = store.exoOrganicTracker;
+  const { activeSpecies, isRunSample } = runOn(store, belongsHere);
+  for (const m of store.surfaceSampleMarks) {
+    if (!belongsHere(m)) continue;
+    const isActive = isRunSample(m);
+    // The run's own distance for its marks; a leftover species' from its genus. An abandoned sample of the species
+    // being sampled has none: sampling another genus destroyed it and the game no longer measures from it (owner,
+    // 2026-11-06: Stratum, Bacterium, Stratum, Stratum read as Stratum scanned three times).
+    const abandoned = !isActive && activeSpecies != null && m.label.trim().toLowerCase() === activeSpecies;
+    const ringM = isActive ? minSampleDistanceM : abandoned ? 0 : sampleDistanceForSpeciesLabel(m.label);
+    // Which of the run's scans it is (review P15): the slot of the anchor standing where the mark is.
+    const k = isActive && tracker ? tracker.anchors.findIndex((a) => samePlace(a, m)) : -1;
+    const scanNo = k >= 0 ? (tracker!.anchorSlots?.[k] ?? k) + 1 : undefined;
+    push(m.latDeg, m.lonDeg, "sample", m.label, isActive, ringM, { name: m.label, ...(scanNo ? { scanNo } : {}) });
+  }
+  /*
+    The next plant to sample (owner, 2026-11-04: comp scan from the ship, then drive round them): a composition scan of
+    the species being sampled whose spot is outside the clonal range of every sample of this run, nearest first.
+  */
+  const run = tracker && activeSpecies != null && tracker.phase === "tracking" ? tracker : null;
+  const outsideRange = (m: { latDeg: number; lonDeg: number }) =>
+    !!run && run.anchors.every((a) => greatCircleDistanceMeters(a.latDeg, a.lonDeg, m.latDeg, m.lonDeg, R) >= minSampleDistanceM);
+  const isRunPlant = (m: SurfaceMark) => !!run && !!m.codexName && run.speciesKey.toLowerCase().includes(m.codexName.toLowerCase());
+  let target: SurfaceMark | null = null;
+  let targetM = Infinity;
+  for (const m of store.surfaceCodexMarks ?? []) {
+    if (!belongsHere(m) || !isRunPlant(m) || !outsideRange(m)) continue;
+    const d = greatCircleDistanceMeters(fix.latDeg, fix.lonDeg, m.latDeg, m.lonDeg, R);
+    if (d < targetM) {
+      target = m;
+      targetM = d;
+    }
+  }
+  const NOTE: Record<NonNullable<SurfaceMark["located"]>, string> = {
+    crossing: "located from 2 scans",
+    ahead: "ahead of where it was scanned",
+    "scanned-from": "scanned from here",
+  };
+  for (const m of store.surfaceCodexMarks ?? []) {
+    if (!belongsHere(m)) continue;
+    const how = m.located ?? "scanned-from";
+    // Active: a plant of the species being sampled (green on the radar); the others are drawn yellow (review P14).
+    push(m.latDeg, m.lonDeg, "codex", `${m.label} (${m === target ? "next to sample, " : ""}${NOTE[how]})`, isRunPlant(m), 0, {
+      name: m.label,
+      located: how,
+      ...(how === "scanned-from" && m.headingDeg != null ? { scanHeadingDeg: m.headingDeg } : {}),
+      ...(m === target ? { target: true } : {}),
+    });
+  }
+  const ship = store.surfaceShipMark;
+  if (ship && belongsHere(ship)) push(ship.latDeg, ship.lonDeg, "ship", "Your ship");
+  const srv = store.surfaceSrvMark;
+  if (srv && belongsHere(srv)) push(srv.latDeg, srv.lonDeg, "srv", "Your SRV");
+
+  return {
+    radiusM: minimapRadiusFor(store),
+    headingDeg: fix.headingDeg,
+    minSampleDistanceM,
+    marks,
+    ...(near ? { near: true } : {}),
+    altitudeM: fix.altitudeM ?? null,
+    pitchDeg: fix.pitchDeg ?? null,
+    eyeAboveM: eyeAboveM(),
+    ...(fix.pitchFromHud ? { pitchFromHud: true, rollDeg: fix.rollDeg ?? null } : {}),
+    ...(clearArm && clearArm.untilMs > Date.now() ? { clearArmed: clearArm.count } : {}),
+  };
+}
+
+/** Whether a mark is on the body `Status.json` names (see buildExoMinimapDto), else the one with key `footKey`. */
+function belongsHereFor(fix: FootTravelFix, footKey: string): (m: { bodyKey: string; bodyNameNorm?: string }) => boolean {
+  const onBodyNorm = normStatusBodyName(fix.bodyName);
+  // A mark from an older store may have no name; its key is then the only thing to go on, and
+  // refusing to draw it would lose a ship that is genuinely parked here.
+  return (m) => (onBodyNorm && m.bodyNameNorm ? m.bodyNameNorm === onBodyNorm : m.bodyKey === footKey);
+}
+
+/** A mark standing where a scan was taken (sessions keep exact coordinates). */
+const samePlace = (a: { latDeg: number; lonDeg: number }, m: { latDeg: number; lonDeg: number }) =>
+  Math.abs(a.latDeg - m.latDeg) < 1e-5 && Math.abs(a.lonDeg - m.lonDeg) < 1e-5;
+
+/**
+ * The species being sampled on this body (lower case; null: no run here), and whether a sample mark is one of its own:
+ * where its own scans stand, so an earlier, abandoned run of the same species here is a leftover (review 2026-11-05:
+ * its marks were green and ringed, and the walk-away arc pointed from them).
+ */
+function runOn(
+  store: ExoOrganicOverlayHost,
+  belongsHere: (m: { bodyKey: string; bodyNameNorm?: string }) => boolean,
+): { activeSpecies: string | null; isRunSample: (m: SurfaceMark) => boolean } {
+  const tracker = store.exoOrganicTracker;
   const activeSpecies =
     tracker && belongsHere({ bodyKey: tracker.bodyKey, bodyNameNorm: tracker.bodyNameNorm })
       ? tracker.speciesDisplay.trim().toLowerCase()
       : null;
+  const ofThisRun = (m: { latDeg: number; lonDeg: number }) => !tracker?.anchors.length || tracker.anchors.some((a) => samePlace(a, m));
+  return {
+    activeSpecies,
+    isRunSample: (m) => activeSpecies != null && m.label.trim().toLowerCase() === activeSpecies && ofThisRun(m),
+  };
+}
 
-  for (const m of store.surfaceSampleMarks) {
-    if (!belongsHere(m)) continue;
-    const isActive = activeSpecies != null && m.label.trim().toLowerCase() === activeSpecies;
-    // The run's own distance for its marks; a leftover species' from its genus.
-    const ringM = isActive ? minSampleDistanceM : sampleDistanceForSpeciesLabel(m.label);
-    push(m.latDeg, m.lonDeg, "sample", m.label, isActive, ringM);
+/** How long the clear key waits for its second press. */
+export const CLEAR_ARM_MS = 3000;
+/** The clear key's first press: on which body, until when, and how many marks would go. */
+let clearArm: { untilMs: number; count: number; body: string } | null = null;
+
+/**
+ * The clear key (owner, 2026-11-04: "a key bind to do the delete of current planet scans"): the first press arms it
+ * and the radar asks for a second; a second press on the same body within {@link CLEAR_ARM_MS} moves this planet's
+ * sample and composition-scan marks to the file's `cleared` list (surfaceMarksFile.ts keepClearedMarks), off the radar, the screen marker and everything that
+ * reads the marks ("keep in memory file but just remove them from the screen and the calculations"). The ship and the
+ * SRV stay, and so do the samples of the run in progress (owner, 2026-11-05: "do not end the current sample run, just
+ * remove the comp scan things from the screen"): the game still measures from them. Null when there is nothing to clear.
+ */
+export function pressClearMarksHere(
+  store: ExoOrganicOverlayHost,
+  bodyKeyOnFoot: string | null,
+  nowMs: number,
+  /** Sends the radar again: now, and when the wait for the second press runs out (its "press again" goes). */
+  changed?: () => void,
+): { armed: number } | { cleared: number } | null {
+  const fix = store.exoOrganicLastFix;
+  if (!fix) return null;
+  const onBody = belongsHereFor(fix, bodyKeyOnFoot ?? "\u0000near");
+  const { isRunSample } = runOn(store, onBody);
+  const here = (m: SurfaceMark) => onBody(m) && !isRunSample(m);
+  const body = normStatusBodyName(fix.bodyName) ?? bodyKeyOnFoot ?? "";
+  const gone = [...store.surfaceSampleMarks.filter(here), ...(store.surfaceCodexMarks ?? []).filter(onBody)];
+  if (!clearArm || clearArm.untilMs <= nowMs || clearArm.body !== body) {
+    clearArm = gone.length ? { untilMs: nowMs + CLEAR_ARM_MS, count: gone.length, body } : null;
+    if (!gone.length) return null;
+    if (changed) {
+      changed();
+      setTimeout(changed, CLEAR_ARM_MS + 50).unref?.();
+    }
+    return { armed: gone.length };
   }
-  const ship = store.surfaceShipMark;
-  if (ship && belongsHere(ship)) push(ship.latDeg, ship.lonDeg, "ship", "Your ship");
-
-  return { radiusM: minimapRadiusFor(store), headingDeg: fix.headingDeg, minSampleDistanceM, marks };
+  clearArm = null;
+  if (!gone.length) return null;
+  keepClearedMarks(gone, new Date(nowMs).toISOString());
+  store.surfaceSampleMarks = store.surfaceSampleMarks.filter((m) => !here(m));
+  if (store.surfaceCodexMarks) store.surfaceCodexMarks = store.surfaceCodexMarks.filter((m) => !onBody(m));
+  store.persistSurfaceMarks?.();
+  changed?.();
+  return { cleared: gone.length };
 }
 
 export function buildExoOrganicOverlayDto(
@@ -810,21 +1048,22 @@ export function buildExoOrganicOverlayDto(
   const nearestSampleMeetsMin =
     distToNearestSampleM != null && minG > 0 ? distToNearestSampleM >= minG : null;
 
-  const minimap = buildExoMinimapDto(store, t.bodyKey, minG);
-
   const label = t.speciesDisplay;
   const baseCredits = lookupPrice(prices, label, label);
   const ff: 1 | 5 = store.firstFootfallBodies.has(t.bodyKey) ? 5 : 1;
 
-  /** New codex (WasLogged false): 5× list — do not stack footfall again (matches main UI / pending organic valuation). */
-  const payNewCodex = baseCredits != null ? Math.round(baseCredits * 5) : null;
-  const payLoggedCodex = baseCredits != null ? Math.round(baseCredits * ff) : null;
+  /*
+    The list price × 5 on a first-footfall body, else × 1: the bonus is the first footfall's, never a new codex entry's
+    (owner 2026-11-06: a commander's HUD said "5,000,000 CR (new codex 5×)" where the app, rightly, said 1.00 M with the
+    footfall "other CMDR"). The same as the unsold value (organicValue.ts).
+  */
+  const payEstimate = baseCredits != null ? Math.round(baseCredits * ff) : null;
 
   let finalCredits: number | null = null;
   let analyseWasLogged: boolean | null = null;
   if (t.phase === "celebrate") {
     analyseWasLogged = t.analyseWasLogged === true;
-    finalCredits = baseCredits != null ? Math.round(baseCredits * (analyseWasLogged ? ff : 5)) : null;
+    finalCredits = payEstimate;
   }
 
   const celebrationRemainSec =
@@ -852,15 +1091,13 @@ export function buildExoOrganicOverlayDto(
       separationForSecondSampleM != null ? Math.round(separationForSecondSampleM) : null,
     separationMeetsMin,
     baseCredits,
-    payNewCodex,
-    payLoggedCodex,
+    payEstimate,
     finalCredits,
     analyseWasLogged,
     footfallMult: ff,
     sampleCount: effectiveSampleCount(t),
     trackingBodyKey: t.bodyKey,
     distToNearestSampleM,
-    minimap,
     nearestSampleMeetsMin,
   };
 }

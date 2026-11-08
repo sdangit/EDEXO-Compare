@@ -1,6 +1,7 @@
 /** Organic scan distance + payout overlay (Electron); built from live journal + Status.json. */
 import type { GreenGiantVerdict } from "../greenGasGiant.js";
 import type { BodyFeatureHit } from "../bodyFeatures.js";
+import type { RuleHit } from "../customBodyRules.js";
 export interface ExoOrganicOverlayDTO {
   visible: boolean;
   phase: "tracking" | "celebrate";
@@ -23,8 +24,8 @@ export interface ExoOrganicOverlayDTO {
   separationForSecondSampleM: number | null;
   separationMeetsMin: boolean | null;
   baseCredits: number | null;
-  payNewCodex: number | null;
-  payLoggedCodex: number | null;
+  /** The list price × the first-footfall bonus (5 or 1): what the species pays here. */
+  payEstimate: number | null;
   finalCredits: number | null;
   analyseWasLogged: boolean | null;
   footfallMult: 1 | 5;
@@ -40,8 +41,6 @@ export interface ExoOrganicOverlayDTO {
   distToNearestSampleM: number | null;
   /** True when {@link distToNearestSampleM} ≥ {@link minSampleDistanceM} (both known). */
   nearestSampleMeetsMin: boolean | null;
-  /** Where things are around you on this body. Null until the game reports a surface position. */
-  minimap: ExoMinimapDTO | null;
 }
 
 /**
@@ -67,10 +66,31 @@ export interface ExoMinimapDTO {
   /** The minimum separation this genus needs, so the map can draw the ring you have to clear. */
   minSampleDistanceM: number;
   marks: ExoMinimapMarkDTO[];
+  /**
+   * Near the planet rather than on it (Status.json gives a position and a heading, no touchdown): the HUD opens the
+   * radar for this with the launcher's "Radar always on", or when the planet has composition scans (owner, 2026-11-04).
+   */
+  near?: boolean;
+  /** Metres above the ground (Status.json Altitude), in the ship; null on foot. For the screen marker's look-down. */
+  altitudeM?: number | null;
+  /** The nose's angle, degrees, negative down (read off the HUD, else a flight-path estimate); null when not known. */
+  pitchDeg?: number | null;
+  /** True when `pitchDeg` was read off the game's HUD (the launcher's pitch reader). */
+  pitchFromHud?: boolean;
+  /** The ship's eye above `altitudeM`, metres, learned per ship (server/eyeHeight.ts); angles are taken from the eye. */
+  eyeAboveM?: number;
+  /** The HUD's roll, degrees (the pitch boxes' tilt, positive with the right one lower); null unless read. */
+  rollDeg?: number | null;
+  /** The clear key was pressed once (server/exoOrganicTracker.ts pressClearMarksHere): this many marks go on a second. */
+  clearArmed?: number;
 }
 
 export interface ExoMinimapMarkDTO {
-  kind: "sample" | "ship";
+  /**
+   * `codex`: where the composition scanner named a plant (a waypoint until the species is logged on the body).
+   * `srv`: where the commander stepped out of the SRV (plan 1.3.6 S-2), until he boards it again or it is gone.
+   */
+  kind: "sample" | "ship" | "codex" | "srv";
   /**
    * Whether this mark belongs to the sampling run in progress on this body.
    *
@@ -96,6 +116,22 @@ export interface ExoMinimapMarkDTO {
    * and for a species whose distance is not known.
    */
   ringM?: number;
+  /** The plant's own name without the radar's note ("Stratum Tectonicas - Green"): the pointed-at label. */
+  name?: string;
+  /**
+   * A composition scan: how its position was found (shared/scanLocate.ts, owner 2026-11-04). "crossing": two heading
+   * lines met there; "ahead": along the heading at altitude / tan(nose-down angle); "scanned-from": the ship's spot.
+   */
+  located?: "crossing" | "ahead" | "scanned-from";
+  /** "scanned-from": the heading of that scan, so the radar can draw which way from there. */
+  scanHeadingDeg?: number;
+  /**
+   * The next plant to sample (owner, 2026-11-04): a composition scan of the species being sampled, outside the clonal
+   * range of every sample taken, nearest first. One at most.
+   */
+  target?: boolean;
+  /** A sample of the run in progress: which of its three scans (1-3), shown beside the mark (review P15, 2026-11-05). */
+  scanNo?: number;
 }
 
 /** One system seen in merged journals (for browse / search). */
@@ -254,7 +290,7 @@ export interface NotableBodyInfo {
   /** A green gas giant verdict (shared/greenGasGiant.ts), when it is a candidate. */
   green?: GreenGiantVerdict;
   /** The body features the commander switched on that this body has (shared/bodyFeatures.ts). */
-  features?: BodyFeatureHit[];
+  features?: (BodyFeatureHit | RuleHit)[];
   /** Its scan data was sold: still notable, marked so on the card. */
   sold?: boolean;
 }

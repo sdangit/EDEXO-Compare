@@ -17,6 +17,7 @@ const {
   shell,
   clipboard,
   utilityProcess,
+  desktopCapturer,
 } = require("electron");
 const { startServerChild } = require("./serverChild.cjs");
 const { installStaticShell } = require("./staticShell.cjs");
@@ -33,11 +34,12 @@ const {
   hudHeightFrom,
 } = require("./hudWindows.cjs");
 const { createTrayControl } = require("./tray.cjs");
+const { createAimWindow } = require("./aimWindow.cjs");
 const { createKeybinds } = require("./keybinds.cjs");
 const { createTabWindows } = require("./tabWindows.cjs");
 const updater = require("./updater.cjs");
 const { watchForegroundOffMain, isGameOrOwn, isGame, nativeWatcherPath } = require("./foregroundWatch.cjs");
-const { guardWindowNavigation, restrictPermissions, isOwnUrl } = require("./windowGuards.cjs");
+const { guardWindowNavigation, restrictPermissions, isOwnUrl, ALLOWED_PERMISSIONS } = require("./windowGuards.cjs");
 const { APP_WINDOW_PARTITION, createAppWindows } = require("./appWindows.cjs");
 const { createQuitFlow } = require("./quitFlow.cjs");
 const { registerLauncherIpc } = require("./launcherIpc.cjs");
@@ -118,6 +120,9 @@ let runtime = null;
 let hudBridge = {};
 let footOverlayIpcRegistered = false;
 
+/** The screen marker (aimWindow.cjs), created below the HUDs it follows; null until then. */
+let aim = null;
+
 /** The HUD overlay windows: hudWindows.cjs owns the stack, its layout file and its visibility. */
 const huds = createHudWindows({
   electron: { app, BrowserWindow, screen },
@@ -127,8 +132,12 @@ const huds = createHudWindows({
   // One renderer process for all the HUD panel windows (hudHost.cjs).
   shareRenderer: true,
   guardWindow: (win) => guardWindowNavigation(win, ownBase, shell),
+  // The screen marker's window follows the game's monitor (resolution change, game moved).
+  onDisplayChange: () => aim?.sync(),
   onChange: () => {
     trayControl.refresh();
+    // The screen marker shows and hides with the HUDs (hotkey, game running, in front).
+    aim?.sync();
     // The launcher's Shown / Hidden buttons follow the hotkey and the tray as well as their own clicks.
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
@@ -145,6 +154,19 @@ const huds = createHudWindows({
       }
     }
   },
+});
+
+aim = createAimWindow({
+  BrowserWindow,
+  getBaseUrl: () => (runtime ? runtime.getLocalBaseUrl() : null),
+  preloadPath: path.join(__dirname, "preload.cjs"),
+  getDisplay: () => huds.gameDisplay(),
+  isAllowed: () => {
+    const l = huds.layout();
+    return !l.hidden && !l.gameAway && !(l.focusAway && l.hideUnfocused);
+  },
+  guardWindow: (win) => guardWindowNavigation(win, ownBase, shell),
+  desktopCapturer,
 });
 
 function showLauncher() {
@@ -204,6 +226,7 @@ const keybinds = createKeybinds({
       if (browserTabs?.reloadShown?.()) return;
       void runtime?.clearNotices?.()?.catch?.(() => {});
     },
+    planetMarksClear: () => void runtime?.clearPlanetMarks?.()?.catch?.(() => {}),
     // Boxel scanning (server/boxelRun.ts): the server picks the system, the clipboard writer below copies it.
     boxelCopyNext: () => void runtime?.boxelCopyNext?.()?.catch?.(() => {}),
     boxelRun: () => {
@@ -319,6 +342,7 @@ function registerFootOverlayIpc(iconForChild) {
     {
       electron: { app, dialog, ipcMain, BrowserWindow },
       huds,
+      aim,
       appWindows,
       keybinds,
       trayControl,
@@ -755,6 +779,7 @@ async function start() {
     // A backup being written would be thrown away (owner, 2026-09-29): ask first.
     if (quitFlow.holdExitForBackup(e)) return;
     huds.dispose();
+    aim?.dispose();
     trayControl.destroy();
     // The launcher is still the app: closing it closes the app window too, as it always quit — and every other
     // window (galaxy map, privacy page, torn-off tabs): one left open kept the app alive with no launcher and no tray,
@@ -955,6 +980,16 @@ app.whenReady().then(() => {
     for (const ses of [session.defaultSession, session.fromPartition(APP_WINDOW_PARTITION), session.fromPartition("persist:hud")]) {
       restrictPermissions(ses);
     }
+    // The screen marker's pitch reader: the game's monitor, to its own page only (aimWindow.cjs); every other ask, nothing.
+    const hudSession = session.fromPartition("persist:hud");
+    hudSession.setDisplayMediaRequestHandler((req, cb) => (aim ? aim.displayMedia(req, cb) : cb({})));
+    // The same allow-list as every session, plus video (no audio) for the marker's page alone: its screen capture.
+    hudSession.setPermissionRequestHandler((wc, permission, cb, details) =>
+      cb(
+        ALLOWED_PERMISSIONS.has(permission) ||
+          (permission === "media" && !!aim && aim.isAimContents(wc) && !((details && details.mediaTypes) || []).includes("audio")),
+      ),
+    );
   } catch (e) {
     console.warn("[edexo-compare] could not restrict permissions:", e);
   }
@@ -1029,6 +1064,7 @@ function closeForQuit() {
     /* ignore */
   }
   huds.dispose();
+  aim?.dispose();
   if (foregroundStartTimer) clearTimeout(foregroundStartTimer);
   foreground?.stop();
   trayControl.destroy();

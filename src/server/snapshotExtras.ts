@@ -15,6 +15,32 @@ import { nspOutlook } from "./nspOutlook.js";
 import { regionForSystem } from "./regionMapData.js";
 import { fsdWearEstimate, FSD_WARN } from "../shared/fsdWear.js";
 import { jumponiumView } from "../shared/jumponium.js";
+import { driveLaw, neutronShip } from "./neutronShip.js";
+import { refuelWindow } from "./neutronFuelWindow.js";
+
+/** How much to scoop at the refuel stop the ship is at, with the ship as it is now (cargo, refit). */
+function refuelWindowHere(store: GameStateStore, live: ReturnType<typeof createNeutronLive>, at: number) {
+  const hops = live.hops();
+  const ship = neutronShip(store);
+  const tankT = store.loadoutFuelMainCapacityT;
+  if (!hops || ship.rangeLy == null || !ship.fuelPerJumpT || !tankT) return null;
+  // The drive's own law when its module is known (fsdDrives.ts): each supercharge's fuel at the mass aboard.
+  const law = driveLaw(store);
+  return refuelWindow(
+    hops,
+    at,
+    {
+      rangeLy: ship.rangeLy,
+      rangeByFuel: ship.rangeByFuel,
+      boost: live.remaining()?.boost ?? ship.boostFactor,
+      fuelPerJumpT: ship.fuelPerJumpT,
+      tankT,
+      law,
+      reserveT: (live.remaining()?.reserve ?? 0) * tankT,
+    },
+    store.liveStatusFuelMainT,
+  );
+}
 
 export interface SnapshotExtrasDeps {
   store: GameStateStore;
@@ -56,6 +82,7 @@ export function addSnapshotExtras(
           );
   }
   snap.neutronLive = snap.journalBoot ? null : neutronLive.view(shipHere());
+  if (snap.neutronLive?.refuelHere) snap.neutronLive.refuelWindow = refuelWindowHere(store, neutronLive, snap.neutronLive.at);
   {
     const w = fsdWearEstimate(store.fsdWear);
     snap.fsdHealth =

@@ -110,6 +110,42 @@ function mapMaterialsToJournal(materials: unknown): ExplorationScanRecord["mater
  * plants were coloured for the M where the game, and the EDDN ScanOrganic set, coloured them for the
  * F arrival star; 2026-10-03).
  */
+/**
+ * A time as EDSM and Spansh write it, in ms: Spansh "2026-09-04 22:55:03+00" (an hour-only offset `Date.parse`
+ * refuses), EDSM "2026-09-04 22:55:03" (UTC, without saying so: read as local time it was hours off). NaN when not a
+ * time.
+ */
+export function parseSourceTime(v: unknown): number {
+  if (typeof v !== "string") return NaN;
+  let t = v.trim().replace(" ", "T");
+  if (t.includes("T") && /[+-]\d{2}$/.test(t)) t += ":00";
+  else if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(t)) t += "Z";
+  return Date.parse(t);
+}
+
+/**
+ * The rest of an orbit EDSM and Spansh give (the scan view places bodies by it, scanRoute.ts): the plane, and where
+ * the body was at a time (Spansh's `timestamps.meanAnomaly`; EDSM's `updateTime` else).
+ */
+function orbitFromBody(rec: ExplorationScanRecord, body: Record<string, unknown>): void {
+  const e = pickNum(body.orbitalEccentricity);
+  if (e !== undefined) rec.eccentricity = e;
+  const i = pickNum(body.orbitalInclination);
+  if (i !== undefined) rec.orbitalInclination = i;
+  const w = pickNum(body.argOfPeriapsis);
+  if (w !== undefined) rec.periapsis = w;
+  const p = edsmPeriodToJournalSeconds(pickNum(body.orbitalPeriod));
+  if (p !== undefined) rec.orbitalPeriod = p;
+  const node = pickNum(body.ascendingNode);
+  if (node !== undefined) rec.ascendingNode = node;
+  const m = pickNum(body.meanAnomaly);
+  if (m === undefined) return;
+  rec.meanAnomaly = m;
+  const stamps = body.timestamps && typeof body.timestamps === "object" ? (body.timestamps as Record<string, unknown>) : {};
+  const at = parseSourceTime(stamps.meanAnomaly ?? body.updateTime);
+  if (Number.isFinite(at)) rec.orbitEpochMs = at;
+}
+
 export function mapBarycentreBodyToExplorationRecord(
   body: Record<string, unknown>,
   systemAddress: number,
@@ -135,6 +171,10 @@ export function mapBarycentreBodyToExplorationRecord(
     orbitalPeriod: edsmPeriodToJournalSeconds(pickNum(body.orbitalPeriod)),
     ascendingNode: pickNum(body.ascendingNode),
     meanAnomaly: pickNum(body.meanAnomaly),
+    ...(() => {
+      const at = parseSourceTime((body.timestamps as Record<string, unknown> | undefined)?.meanAnomaly ?? body.updateTime);
+      return Number.isFinite(at) ? { orbitEpochMs: at } : {};
+    })(),
   };
 }
 
@@ -191,6 +231,7 @@ export function mapEdsmBodyToExplorationRecord(
     if (mag !== undefined) rec.absoluteMagnitude = mag;
     const stSemi = edsmSemiMajorAxisToM(pickNum(body.semiMajorAxis));
     if (stSemi !== undefined) rec.semiMajorAxis = stSemi;
+    orbitFromBody(rec, body);
     rec.rotationPeriod = edsmPeriodToJournalSeconds(pickNum(body.rotationalPeriod));
     const tilt = pickNum(body.axialTilt);
     if (tilt !== undefined) rec.axialTilt = tilt;
@@ -236,6 +277,7 @@ export function mapEdsmBodyToExplorationRecord(
   rec.orbitalInclination = pickNum(body.orbitalInclination);
   rec.periapsis = pickNum(body.argOfPeriapsis);
   rec.orbitalPeriod = edsmPeriodToJournalSeconds(pickNum(body.orbitalPeriod));
+  orbitFromBody(rec, body);
   rec.rotationPeriod = edsmPeriodToJournalSeconds(pickNum(body.rotationalPeriod));
   const tilt = pickNum(body.axialTilt);
   if (tilt !== undefined) rec.axialTilt = tilt;
@@ -321,10 +363,12 @@ export async function fetchEdsmBodiesAsExplorationRecords(
 }
 
 export type SearchEdsmSystemsResult =
-  { ok: true; systems: { systemAddress: number; starSystem: string }[] } | { ok: false; error: string };
+  | { ok: true; systems: { systemAddress: number; starSystem: string; x?: number; y?: number; z?: number }[] }
+  | { ok: false; error: string };
 
 /**
- * Prefix search against EDSM’s public systems API (`id64` matches in-game `SystemAddress`).
+ * Prefix search against EDSM’s public systems API (`id64` matches in-game `SystemAddress`), with the place when EDSM
+ * has one (the neutron drawer's stops, plan 1.3.4 S-4).
  */
 export async function searchEdsmSystemsByName(
   query: string,
@@ -332,7 +376,7 @@ export async function searchEdsmSystemsByName(
 ): Promise<SearchEdsmSystemsResult> {
   const q = query.trim();
   if (q.length < 2) return { ok: false, error: "Enter at least 2 characters." };
-  const url = `${EDSM_SYSTEMS_URL}?systemName=${encodeURIComponent(q)}&showId=1&showCoordinates=0`;
+  const url = `${EDSM_SYSTEMS_URL}?systemName=${encodeURIComponent(q)}&showId=1&showCoordinates=1`;
   let res: Response;
   try {
     res = await fetch(url, {
@@ -357,14 +401,22 @@ export async function searchEdsmSystemsByName(
   if (!Array.isArray(data)) {
     return { ok: false, error: "Unexpected EDSM system search shape." };
   }
-  const out: { systemAddress: number; starSystem: string }[] = [];
+  const out: { systemAddress: number; starSystem: string; x?: number; y?: number; z?: number }[] = [];
   for (const row of data) {
     if (!row || typeof row !== "object") continue;
     const rec = row as Record<string, unknown>;
     const id64 = pickNum(rec.id64);
     const name = pickStr(rec.name);
     if (id64 === undefined || !Number.isFinite(id64) || !name) continue;
-    out.push({ systemAddress: Math.trunc(id64), starSystem: name });
+    const c = rec.coords && typeof rec.coords === "object" ? (rec.coords as Record<string, unknown>) : null;
+    const x = pickNum(c?.x);
+    const y = pickNum(c?.y);
+    const z = pickNum(c?.z);
+    out.push({
+      systemAddress: Math.trunc(id64),
+      starSystem: name,
+      ...(x !== undefined && y !== undefined && z !== undefined ? { x, y, z } : {}),
+    });
     if (out.length >= maxResults) break;
   }
   return { ok: true, systems: out };

@@ -18,11 +18,19 @@ const {
   HUD_STACK_GAP,
   HUD_MIN_HEIGHT,
   HUD_MAX_HEIGHT,
+  HUD_DEFAULT_HEIGHT,
   hudPathFrom,
   hudWidthFrom,
   hudHeightFrom,
   hudSlotKey,
   freePointFrom,
+  freeEachFrom,
+  HUD_PATH_BY_SECTION,
+  hudSectionsOf,
+  hudGroupOf,
+  hudGroupPath,
+  hudChainOffers,
+  HUD_MERGED_PAGE,
   splitIntoColumns,
   columnX,
 } = require("./hudGeometry.cjs");
@@ -46,12 +54,14 @@ const HUD_KEEP_ON_TOP_MS = 15_000;
  *   getDiag?: () => ({ watchWindow: (win: any, kind: string) => void } | null),
  *   preloadPath: string,
  *   onChange?: () => void,
+ *   onDisplayChange?: () => void,
  * }} deps
  */
 function createHudWindows(deps) {
   const { app, BrowserWindow, screen } = deps.electron;
   if (!deps.getDiag) deps.getDiag = () => null;
   if (!deps.onChange) deps.onChange = () => {};
+  if (!deps.onDisplayChange) deps.onDisplayChange = () => {};
 
   /** @type {{ win: Electron.BrowserWindow, pathname: string }[]} */
   let hudOverlayStack = [];
@@ -67,20 +77,22 @@ function createHudWindows(deps) {
     aside), first = outermost (top of a top-anchored stack, bottom of a bottom-anchored one). Pages not
     in the list follow in the order they were opened.
   */
-  let hudLayout = { corner: "tr", order: [], freeOn: false, free: null };
+  let hudLayout = { corner: "tr", order: [], freeOn: false, free: null, freeEach: {} };
   let hudHidden = false;
   /*
     Free move (owner, 2026-10-02: "place the HUD anywhere on any screen"). With `freeOn` the stack
     hangs from `free` instead of a corner: `{ x, y, bottom }` in screen coordinates (DIP), the
     stack's left edge and its top edge, or its bottom edge when `bottom` (dropped in the lower half
     of a screen, so it grows upwards there). `free` is kept while `freeOn` is off, so switching back
-    finds the old spot. `moving` is the placing mode: the windows take the mouse, show a frame and
+    finds the old spot. Unmerged (more than one window), each HUD dragged gets a spot of its own in `freeEach`,
+    by page key (owner, 2026-11-01: "every module is moved separately"); the ones never dragged stay stacked
+    from `free`. Merged, the one window keeps `free`. `moving` is the placing mode: the windows take the mouse, show a frame and
     follow a drag; never saved, and it shows the HUDs whatever hides them.
   */
   let moving = false;
   /** The app icon the HUD windows were opened with, for the ones placing makes again. */
   let lastIcon = null;
-  /** The drag in progress: the cursor and the stack's top-left when it started. */
+  /** The drag in progress: the cursor and the stack's (or, unmerged, the one window's) top-left when it started. */
   let drag = null;
   /*
     The game is not running (journal Shutdown, or no EliteDangerous64 process): the overlays step
@@ -352,7 +364,8 @@ function createHudWindows(deps) {
       : hudLayout.order;
     const freeOn = typeof next.freeOn === "boolean" ? next.freeOn : hudLayout.freeOn;
     const free = next.free === null ? null : (freePointFrom(next.free) ?? hudLayout.free);
-    hudLayout = { corner, order, freeOn, free };
+    const freeEach = next.freeEach === null ? {} : (freeEachFrom(next.freeEach) ?? hudLayout.freeEach);
+    hudLayout = { corner, order, freeOn, free, freeEach };
     // Switched on with no spot saved yet: it stays where it is now instead of jumping.
     /*
       Only from windows on the screen. Read from the file at start there are none yet, and the fallback spot (the top
@@ -638,7 +651,7 @@ function createHudWindows(deps) {
   function placedStackPoint() {
     const { ordered } = orderedStack();
     let top = null;
-    for (const s of ordered) {
+    for (const s of stackedOf(ordered)) {
       try {
         const b = s.win.getBounds();
         if (!top || b.y < top.y) top = { x: b.x, y: b.y };
@@ -649,13 +662,49 @@ function createHudWindows(deps) {
     return top ? { x: top.x, y: top.y, bottom: false } : null;
   }
 
+  /*
+    Unmerged, the windows placed on spots of their own (dragged one by one); merged, none. Told by the window's page,
+    not by how many are showing (code review 2026-11-02): with the others idle a lone separate HUD went back to the
+    shared spot and returned when they came back, and two HUDs combined into one group lost the group's spot.
+  */
+  const separate = (s) => s.key !== HUD_MERGED_PAGE;
+  const ownSpot = (s) => (separate(s) ? hudLayout.freeEach[s.key] : undefined);
+  /** The windows that stack from the shared spot. */
+  const stackedOf = (ordered) => ordered.filter((s) => !ownSpot(s));
+
+  /** One window on its own spot, on the screen nearest it and clamped into it. */
+  function placeOwn(s, f, w) {
+    let area;
+    try {
+      area = screen.getDisplayNearestPoint({ x: Math.round(f.x + w / 2), y: f.bottom ? f.y - 1 : f.y }).bounds;
+    } catch {
+      area = screen.getPrimaryDisplay().workArea;
+    }
+    const h = Math.min(slotHeight(s) ?? HUD_DEFAULT_HEIGHT, area.height);
+    const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const x = fit(f.x, area.x, Math.max(area.x, area.x + area.width - w));
+    const y = fit(f.bottom ? f.y - h : f.y, area.y, Math.max(area.y, area.y + area.height - h));
+    try {
+      placeWindow(s.win, { x, y, width: w, height: h });
+    } catch {
+      /* ignore */
+    }
+  }
+
   /**
    * The free-move stack: hung from its saved spot, top to bottom in the chosen order, on the screen
    * nearest that spot and clamped into it. A monitor unplugged or a resolution changed brings it
-   * back onto a screen that exists rather than leaving it somewhere nobody can reach.
+   * back onto a screen that exists rather than leaving it somewhere nobody can reach. Unmerged, a window
+   * with a spot of its own goes there instead, and the others close up.
    */
   function relayoutFreeStack() {
-    const { ordered, w } = orderedStack();
+    const all = orderedStack();
+    const w = all.w;
+    for (const s of all.ordered) {
+      const own = ownSpot(s);
+      if (own) placeOwn(s, own, w);
+    }
+    const ordered = stackedOf(all.ordered);
     const f = hudLayout.free || currentStackPoint();
     const probe = { x: Math.round(f.x + w / 2), y: f.bottom ? f.y - 1 : f.y };
     let area;
@@ -688,6 +737,7 @@ function createHudWindows(deps) {
       }
     });
     if (!drag) logPlacement(area, ordered);
+    if (moving && !drag) sendChainOffers();
   }
 
   /**
@@ -712,8 +762,127 @@ function createHudWindows(deps) {
         /* a window closing mid-send */
       }
     }
+    sendChainOffers();
     applyAway();
     return moving;
+  }
+
+  /*
+    Chain buttons (owner, 2026-11-01: "if two panels of HUD are close to each other, a 'chain' button appears there,
+    allowing you to click it and merge only those panels"). While placing, each separate window is told which HUD
+    touches it below and to the right (hudGeometry.cjs `hudChainOffers`), and whether it is a group (its Unchain).
+    Sent only when that changes, per window.
+  */
+  const chainSent = new WeakMap();
+  function sendChainOffers() {
+    const { ordered } = orderedStack();
+    const rects = [];
+    if (moving && ordered.length > 1) {
+      for (const s of ordered) {
+        try {
+          const b = s.win.getBounds();
+          rects.push({ key: s.key, x: b.x, y: b.y, width: b.width, height: slotHeight(s) ?? b.height });
+        } catch {
+          /* a window going away */
+        }
+      }
+    }
+    const offers = hudChainOffers(rects);
+    for (const s of hudOverlayStack) {
+      if (!s.win || s.win.isDestroyed()) continue;
+      const o = offers[s.key] || { below: null, right: null };
+      const msg = { on: moving, below: o.below != null, right: o.right != null, group: hudGroupOf(s.pathname) != null };
+      const text = JSON.stringify(msg);
+      if (chainSent.get(s.win) === text) continue;
+      chainSent.set(s.win, text);
+      try {
+        s.win.webContents.send("edexo:hud-chain-offers", msg);
+      } catch {
+        /* closing */
+      }
+    }
+  }
+
+  /** The sections of two windows as one list, in the stack's order (the launcher's order list), else the HUD's. */
+  function chainOrder(sections) {
+    const rank = (sec) => {
+      const i = hudLayout.order.indexOf(HUD_PATH_BY_SECTION[sec]);
+      return i < 0 ? 1000 : i;
+    };
+    const base = Object.keys(HUD_PATH_BY_SECTION).map((p) => HUD_PATH_BY_SECTION[p]);
+    return [...new Set(sections)].sort((a, b) => rank(a) - rank(b) || base.indexOf(a) - base.indexOf(b));
+  }
+
+  /**
+   * Chain the window clicked with the one touching it (`dir`: below / right): both close, one group opens where the
+   * upper (left) one was, its sections in the stack's order. A group chained again keeps its id.
+   */
+  async function chainFromPage(win, dir) {
+    if (!moving || (dir !== "below" && dir !== "right")) return { ok: false };
+    const { ordered } = orderedStack();
+    const a = ordered.find((x) => x.win === win);
+    if (!a || ordered.length < 2) return { ok: false };
+    const rects = ordered.map((x) => {
+      const b = x.win.getBounds();
+      return { key: x.key, x: b.x, y: b.y, width: b.width, height: slotHeight(x) ?? b.height };
+    });
+    const otherKey = hudChainOffers(rects)[a.key]?.[dir];
+    const b = otherKey ? ordered.find((x) => x.key === otherKey) : null;
+    if (!b) return { ok: false };
+    const sections = chainOrder([...hudSectionsOf(a.pathname), ...hudSectionsOf(b.pathname)]);
+    if (sections.length < 2) return { ok: false };
+    const used = new Set(hudOverlayStack.map((x) => hudGroupOf(x.pathname)).filter((g) => g != null));
+    let g = hudGroupOf(a.pathname) ?? hudGroupOf(b.pathname);
+    if (g == null) for (g = 1; used.has(g); g++);
+    const path = hudGroupPath(sections, g);
+    const at = a.win.getBounds();
+    const width = Math.max(a.width || 404, b.width || 404);
+    const height = (slotHeight(a) ?? 330) + (slotHeight(b) ?? 330);
+    hudLog(`chain ${a.pathname} + ${b.pathname} -> ${path}`);
+    // Where the upper one was; the old windows' own spots go with them.
+    const each = { ...hudLayout.freeEach };
+    delete each[a.key];
+    delete each[b.key];
+    each[hudSlotKey(path)] = { x: at.x, y: at.y, bottom: false };
+    hudLayout.freeEach = each;
+    closeHudOverlayByPath(a.pathname);
+    closeHudOverlayByPath(b.pathname);
+    const r = await requestHudOverlaySlot(path, width, height, hudChildIcon || lastIcon, "open");
+    persistHudFile();
+    deps.onChange();
+    return { ok: !!r.opened, path };
+  }
+
+  /** A group back into its separate HUDs: the first where the group was, the rest under it. */
+  async function unchainFromPage(win) {
+    if (!moving) return { ok: false };
+    const slot = hudOverlayStack.find((x) => x.win === win);
+    if (!slot || hudGroupOf(slot.pathname) == null) return { ok: false };
+    const sections = hudSectionsOf(slot.pathname);
+    let at;
+    try {
+      at = win.getBounds();
+    } catch {
+      return { ok: false };
+    }
+    hudLog(`unchain ${slot.pathname}`);
+    const each = { ...hudLayout.freeEach };
+    delete each[slot.key];
+    hudLayout.freeEach = each;
+    closeHudOverlayByPath(slot.pathname);
+    let y = at.y;
+    for (const sec of sections) {
+      const path = HUD_PATH_BY_SECTION[sec];
+      if (!path) continue;
+      hudLayout.freeEach = { ...hudLayout.freeEach, [hudSlotKey(path)]: { x: at.x, y, bottom: false } };
+      await requestHudOverlaySlot(path, slot.width || 404, 330, hudChildIcon || lastIcon, "open");
+      const opened = hudOverlayStack.find((x) => x.key === hudSlotKey(path));
+      y += (opened ? (slotHeight(opened) ?? 330) : 330) + HUD_STACK_GAP;
+    }
+    relayoutHudStack();
+    persistHudFile();
+    deps.onChange();
+    return { ok: true };
   }
 
   /**
@@ -764,6 +933,7 @@ function createHudWindows(deps) {
         }),
       );
       relayoutHudStack();
+      sendChainOffers();
       applyAway();
     } finally {
       renewing = false;
@@ -794,6 +964,21 @@ function createHudWindows(deps) {
       return { ok: false };
     }
     if (phase === "start") {
+      const { ordered } = orderedStack();
+      // Unmerged: the window grabbed moves alone, from where it is now (owner, 2026-11-01).
+      const slot = ordered.find((s) => s.win === win && separate(s));
+      if (slot) {
+        let b = null;
+        try {
+          b = win.getBounds();
+        } catch {
+          return { ok: false };
+        }
+        drag = { key: slot.key, cx: cur.x, cy: cur.y, x: b.x, y: b.y };
+        dragMoves = 0;
+        hudLog(`drag ${slot.key} alone from cursor ${cur.x},${cur.y}, window at ${b.x},${b.y}`);
+        return { ok: true };
+      }
       const p = currentStackPoint();
       drag = { cx: cur.x, cy: cur.y, x: p.x, y: p.y };
       dragMoves = 0;
@@ -801,6 +986,34 @@ function createHudWindows(deps) {
       return { ok: true };
     }
     if (!drag) return { ok: false };
+    if (drag.key) {
+      const spot = { x: drag.x + cur.x - drag.cx, y: drag.y + cur.y - drag.cy, bottom: false };
+      hudLayout.freeEach = { ...hudLayout.freeEach, [drag.key]: spot };
+      relayoutFreeStack();
+      if (phase === "move") dragMoves += 1;
+      if (phase === "end") {
+        const key = drag.key;
+        drag = null;
+        // Dropped in the lower half of a screen: kept by its bottom edge, as the stack is.
+        const slot = hudOverlayStack.find((s) => s.key === key);
+        try {
+          const b = slot.win.getBounds();
+          const area = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).bounds;
+          const h = slotHeight(slot) ?? b.height;
+          const lower = b.y + h / 2 > area.y + area.height / 2;
+          hudLayout.freeEach = { ...hudLayout.freeEach, [key]: lower ? { x: b.x, y: b.y + h, bottom: true } : { x: b.x, y: b.y, bottom: false } };
+        } catch {
+          /* keep the spot as dragged */
+        }
+        hudLog(`drag ${key} end after ${dragMoves} moves`);
+        // The drop is where the buttons are worked out: during the drag they are not (owner, 2026-11-01: sometimes no
+        // button by a HUD dropped next to another, or one that did nothing — the offers were from before the drag).
+        relayoutFreeStack();
+        persistHudFile();
+        deps.onChange();
+      }
+      return { ok: true };
+    }
     hudLayout.free = { x: drag.x + cur.x - drag.cx, y: drag.y + cur.y - drag.cy, bottom: false };
     relayoutFreeStack();
     if (phase === "move") dragMoves += 1;
@@ -825,6 +1038,7 @@ function createHudWindows(deps) {
       }
       const lower = area ? (top.y + bottomEdge) / 2 > area.y + area.height / 2 : false;
       hudLayout.free = lower ? { x: top.x, y: bottomEdge, bottom: true } : top;
+      sendChainOffers();
       persistHudFile();
       deps.onChange();
     }
@@ -941,6 +1155,9 @@ function createHudWindows(deps) {
     relayoutTimer = setTimeout(() => {
       relayoutTimer = null;
       relayoutHudStack();
+      // The screen marker's window covers the game's monitor: it follows the same changes (review 2026-11-07: a
+      // resolution change or the game moving monitors left it, and the readers' crop, at the old bounds).
+      deps.onDisplayChange();
     }, 250);
   }
 
@@ -1131,6 +1348,10 @@ function createHudWindows(deps) {
           /* ignore */
         }
       }
+      // A new page starts with no Combine / Split buttons: what the old one was sent counts for nothing
+      // (code review 2026-11-02: a `set` reloading a group while placing lost them).
+      chainSent.delete(win);
+      if (moving) sendChainOffers();
     });
 
     return win;
@@ -1424,6 +1645,8 @@ function createHudWindows(deps) {
     },
     isMoving: () => moving,
     dragFromPage,
+    chainFromPage,
+    unchainFromPage,
     setLayout: (next) => ({
       ...setHudLayout(next || {}, true),
       hidden: hudHidden,
@@ -1445,6 +1668,8 @@ function createHudWindows(deps) {
     resizeFromPage,
     /** Where the game's window is (screen pixels), so the corner stack goes to its monitor. */
     setGamePoint,
+    /** The game's monitor (the corner stack's): the screen marker covers it (aimWindow.cjs). */
+    gameDisplay: stackDisplay,
     raiseVisible,
     /** One line in hud-events.log (main.cjs adds the foreground window's changes). */
     log: hudLog,

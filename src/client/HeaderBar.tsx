@@ -28,12 +28,18 @@ import { useScreenOpen } from "./tabs/TabHost";
 import { useTabSelector } from "./tabs/tabStore";
 import { LiveSnapshotFreshness } from "./header/LiveSnapshotFreshness";
 import { AppMenuEntries, type MenuOpeners } from "./header/AppMenuEntries";
+import { DUE_CLASS, useGalaxyIndexDue } from "./galaxyIndexDue";
 import { CompareTray } from "./header/CompareTray";
 import { HeaderScreens } from "./header/HeaderScreens";
 import { CommanderSwitch } from "./header/CommanderSwitch";
+import { closingAttr, usePresence } from "./ui/usePresence";
 
 /** A notable body's quick facts, asked for from outside the header (the body strip's notable tabs). */
 export const NOTABLE_QUICK_EVENT = "edexo-notable-quick";
+/** A notable body hovered outside the header (`detail`: `{ notable, x, y }`, or null when the pointer left it). */
+export const NOTABLE_HOVER_EVENT = "edexo-notable-hover";
+/** How long the pointer rests on a notable body before its quick facts show (ms): crossing the list flashes none. */
+const NOTABLE_HOVER_MS = 150;
 
 /**
  * The app bar, its tray and every screen tab — shared by the two apps on this shell (1.3.0, owner 2026-10-22):
@@ -77,6 +83,7 @@ export const HeaderBar = memo(function HeaderBar({
   const [dataBreakdownOpen, setDataBreakdownOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useScreenOpen("session");
+  const [scanRouteOpen, setScanRouteOpen] = useScreenOpen("scanRoute");
   const [feederOpen, setFeederOpen] = useState(false);
   /**
    * §11.3. The button appears only when this machine actually has a corpus — otherwise it would
@@ -109,6 +116,7 @@ export const HeaderBar = memo(function HeaderBar({
       setEncyclopediaOpen,
       setAchievementsOpen,
       setSessionOpen,
+      setScanRouteOpen,
       setOptionsOpen,
     }),
     [
@@ -122,6 +130,7 @@ export const HeaderBar = memo(function HeaderBar({
       setEncyclopediaOpen,
       setAchievementsOpen,
       setSessionOpen,
+      setScanRouteOpen,
     ],
   );
   const [notableQuick, setNotableQuick] = useState<{
@@ -141,21 +150,66 @@ export const HeaderBar = memo(function HeaderBar({
   const closeAchievements = useCallback(() => setAchievementsOpen(false), [setAchievementsOpen]);
   const closeEncyclopedia = useCallback(() => setEncyclopediaOpen(false), [setEncyclopediaOpen]);
   const closeSession = useCallback(() => setSessionOpen(false), [setSessionOpen]);
-  // One function for the header's life, so the system card's memo holds (snapSlice.ts).
-  const openNotableQuick = useCallback((n: NotableBodyInfo, ev: ReactMouseEvent) => {
-    ev.stopPropagation();
-    setNotableQuick({ notable: n, x: ev.clientX, y: ev.clientY });
+  const closeScanRoute = useCallback(() => setScanRouteOpen(false), [setScanRouteOpen]);
+  /*
+    A notable body's quick facts (owner, 2026-10-31, plan 1.3.4 S-8): shown while it is hovered and gone when the
+    pointer leaves it; a click keeps them (a second click on the same body puts them away) until a jump to another
+    system. Hovering another body while one is kept shows that one, and the kept one again on leaving.
+  */
+  const [notableHover, setNotableHover] = useState<{ notable: NotableBodyInfo; x: number; y: number } | null>(null);
+  const hoverTimer = useRef<number | null>(null);
+  const hoverNotable = useCallback((n: NotableBodyInfo | null, at?: { x: number; y: number }) => {
+    if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    if (!n || !at) return setNotableHover(null);
+    hoverTimer.current = window.setTimeout(() => {
+      hoverTimer.current = null;
+      setNotableHover({ notable: n, x: at.x, y: at.y });
+    }, NOTABLE_HOVER_MS);
   }, []);
+  const pinNotable = useCallback(
+    (n: NotableBodyInfo, x: number, y: number) => {
+      hoverNotable(null);
+      setNotableQuick((q) =>
+        q && q.notable.bodyId === n.bodyId && q.notable.systemAddress === n.systemAddress ? null : { notable: n, x, y },
+      );
+    },
+    [hoverNotable],
+  );
+  // One function for the header's life, so the system card's memo holds (snapSlice.ts).
+  const openNotableQuick = useCallback(
+    (n: NotableBodyInfo, ev: ReactMouseEvent) => {
+      ev.stopPropagation();
+      pinNotable(n, ev.clientX, ev.clientY);
+    },
+    [pinNotable],
+  );
   // Notable tabs in the body strip open the same quick facts (App.tsx, BodyTabStrip.tsx).
   useEffect(() => {
-    const on = (ev: Event) => {
-      const d = (ev as CustomEvent<{ notable: NotableBodyInfo; x: number; y: number }>).detail;
-      if (d?.notable) setNotableQuick(d);
+    type At = { notable: NotableBodyInfo; x: number; y: number } | null;
+    const onPin = (ev: Event) => {
+      const d = (ev as CustomEvent<At>).detail;
+      if (d?.notable) pinNotable(d.notable, d.x, d.y);
     };
-    window.addEventListener(NOTABLE_QUICK_EVENT, on);
-    return () => window.removeEventListener(NOTABLE_QUICK_EVENT, on);
-  }, []);
+    const onHover = (ev: Event) => {
+      const d = (ev as CustomEvent<At>).detail;
+      hoverNotable(d?.notable ?? null, d ?? undefined);
+    };
+    window.addEventListener(NOTABLE_QUICK_EVENT, onPin);
+    window.addEventListener(NOTABLE_HOVER_EVENT, onHover);
+    return () => {
+      window.removeEventListener(NOTABLE_QUICK_EVENT, onPin);
+      window.removeEventListener(NOTABLE_HOVER_EVENT, onHover);
+    };
+  }, [pinNotable, hoverNotable]);
+  // A jump to another system puts them away.
+  useEffect(() => {
+    hoverNotable(null);
+    setNotableQuick(null);
+  }, [snap.currentSystemAddress, hoverNotable]);
+  useEffect(() => () => hoverNotable(null), [hoverNotable]);
   const [trayOpen, setTrayOpen] = useState(() => readLsBool(EDEXO_HEADER_TRAY_LS, true));
+  const tray = usePresence(trayOpen);
   /*
     The cockpit menu (WEBUI-REDESIGN 2.3): the six secondary destinations behind one button, so the
     app bar is search, status, alerts, menu, tray. Closes on outside click and Escape.
@@ -164,6 +218,8 @@ export const HeaderBar = memo(function HeaderBar({
   const menuRef = useRef<HTMLDivElement | null>(null);
   // From 1,700 px the entries sit in the bar (cockpit.css); below, they are the dropdown.
   const menuInBar = useMediaQuery("(min-width: 1700px)");
+  // The Galaxy map entry pulses for a newer galaxy index; folded into the menu, the menu button pulses with it.
+  const indexDue = useGalaxyIndexDue();
   const menu = useMenuButton<HTMLButtonElement, HTMLDivElement>(menuOpen, setMenuOpen);
   useEffect(() => prefetchMenuModals(), []);
   /** Which way the menu opens; the rule is shared with the alerts popover. */
@@ -359,7 +415,7 @@ export const HeaderBar = memo(function HeaderBar({
             <div className="appbar-menu-wrap" ref={menuRef}>
               <button
                 type="button"
-                className={`appbar-icon-btn appbar-menu-btn${menuOpen ? " appbar-menu-btn--open" : ""}`}
+                className={`appbar-icon-btn appbar-menu-btn${menuOpen ? " appbar-menu-btn--open" : ""}${indexDue && !menuInBar && !menuOpen ? ` ${DUE_CLASS}` : ""}`}
                 {...menu.buttonProps}
                 onClick={menu.toggle}
                 aria-label="Menu"
@@ -394,7 +450,11 @@ export const HeaderBar = memo(function HeaderBar({
         </div>
       </div>
 
-      {!compare ? (trayOpen ? <div className="header-tray header-tray--app" id="header-tray">{trayContent}</div> : null) : null}
+      {!compare && tray.mounted ? (
+        <div className="header-tray header-tray--app" id="header-tray" {...closingAttr(tray.closing)}>
+          {trayContent}
+        </div>
+      ) : null}
 
       {compare && snap.edsmMapSupplementForViewingSystem ? (
         <p className="header-edsm-map-note dim">
@@ -409,11 +469,13 @@ export const HeaderBar = memo(function HeaderBar({
           snap={snap}
           onOpenSystemMap={onOpenSystemMap}
           onNotableClick={openNotableQuick}
+          onNotableHover={hoverNotable}
         />
       ) : null}
 
-      {compare && trayOpen ? (
+      {compare && tray.mounted ? (
         <CompareTray
+          closing={tray.closing}
           snap={snap}
           scanDataOn={scanDataOn}
           totalDataCr={totalDataCr}
@@ -463,6 +525,8 @@ export const HeaderBar = memo(function HeaderBar({
         closeMyExo={closeMyExo}
         sessionOpen={sessionOpen}
         closeSession={closeSession}
+        scanRouteOpen={scanRouteOpen}
+        closeScanRoute={closeScanRoute}
         dataBreakdownOpen={dataBreakdownOpen}
         setDataBreakdownOpen={setDataBreakdownOpen}
         scanDataOn={scanDataOn}
@@ -476,6 +540,7 @@ export const HeaderBar = memo(function HeaderBar({
         feeder={feeder}
         notableQuick={notableQuick}
         setNotableQuick={setNotableQuick}
+        notableHover={notableHover}
       />
     </header>
   );

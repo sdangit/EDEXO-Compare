@@ -17,7 +17,7 @@
   overflow: hidden;
   border: 1px solid rgba(var(--accent-rgb), 0.32);
   background-color: #0a0908;
-  background-image: url("../../../fss-required.webp");
+  background-image: url("../assets/fss-required.webp");
   background-position: center;
   background-size: cover;
   background-repeat: no-repeat;
@@ -625,6 +625,13 @@ button.body-detail-kv-value.body-detail-kv-interactive:hover {
 .planet-quick-fallback-sub {
   margin-top: 0.15rem;
   margin-bottom: 0.35rem;
+}
+
+/* What makes a notable body notable (the Notable card's old tooltip), above the facts (plan 1.3.4 S-8). */
+.planet-quick-notes {
+  margin: 0 1.6rem 0.4rem 0;
+  padding-left: 1rem;
+  line-height: 1.35;
 }
 
 .system-map-popup-close {

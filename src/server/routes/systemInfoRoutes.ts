@@ -3,10 +3,11 @@
  * httpServer.ts, audit 2026-10-22).
  */
 import type express from "express";
-import { eliteDisplaySettingsPath, eliteDisplayWarning, readEliteDisplayMode } from "../eliteDisplayMode.js";
+import { eliteDisplaySettingsPath, eliteDisplayWarning, readEliteDisplayMode, readEliteView } from "../eliteDisplayMode.js";
 import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
 import { linuxCheckForThisMachine } from "../linuxProbes.js";
 import { perfCount } from "../perf.js";
+import { readEdhmColours } from "../edhmColours.js";
 
 export function registerSystemInfoRoutes(
   app: express.Express,
@@ -52,6 +53,16 @@ export function registerSystemInfoRoutes(
    * running, and a cached "borderless" would keep telling him everything is fine while he stares at
    * a screen with no overlay on it.
    */
+  // The game's field of view and resolution, for the screen marker (aim-overlay.html).
+  app.get("/api/elite-view", (_req, res) => {
+    res.json(readEliteView(eliteDisplaySettingsPath(opts.getSnapshot().journalDir)));
+  });
+
+  // EDHM's HUD colours from its own ini (edhmColours.ts), hints for the screen marker's pitch and distance readers; null without EDHM.
+  app.get("/api/hud-colours/edhm", (_req, res) => {
+    res.json({ edhm: readEdhmColours() });
+  });
+
   app.get("/api/elite-display-mode", (_req, res) => {
     const status = readEliteDisplayMode(eliteDisplaySettingsPath(opts.getSnapshot().journalDir));
     res.json({ ...status, warning: eliteDisplayWarning(status) });

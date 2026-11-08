@@ -19,6 +19,7 @@ import { ownFootEntriesWithBackups } from "./footScannedCatalog.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { AppSnapshot, ExoLiveDTO, JournalLine, UiCommand } from "../shared/types.js";
 import { journalHistoryCutoffUtcMs } from "../shared/journalHistoryPreset.js";
+import { applyLiveFix, journalLineFix } from "./liveFix.js";
 import { mergeCollectionFocus } from "../shared/collectionFocus.js";
 import {
   clearCollectionFocusCache,
@@ -42,7 +43,7 @@ import { createHttpServer, getLanIPv4s } from "./httpServer.js";
 import { appViewUrl } from "./appViews.js";
 import { describeUserDataMigration, migrateLegacyUserData } from "./userDataMigration.js";
 import { resolveLanAccess } from "./launcherPrefs.js";
-import { isLoopbackHostName } from "./lanAuth.js";
+import { isLoopbackHostName, lanUrlWithKey, loadOrCreateLanKey } from "./lanAuth.js";
 import { applyPendingRestore } from "./backup.js";
 import { createBackupService } from "./backupService.js";
 import { APP_USER_AGENT, APP_VERSION } from "./appVersion.js";
@@ -53,7 +54,6 @@ import {
   readEdsmCredentials,
   saveEdsmCredentials,
 } from "./edsmCredentials.js";
-import { lanUrlWithKey, loadOrCreateLanKey } from "./lanAuth.js";
 import { buildEncyclopediaExomasteryPlanetsPayload } from "./exomasteryEdsmEncyclopedia.js";
 import {
   buildEncyclopediaPayload,
@@ -73,7 +73,6 @@ import { buildDiscoveries } from "./discoveries.js";
 import { flushFootScannedCatalog } from "./footScannedCatalog.js";
 import {
   parseStatusJsonDestination,
-  parseStatusJsonFootFix,
   parseStatusJsonFuel,
   readStatusJsonFootFixText,
 } from "./footTravelStatus.js";
@@ -95,6 +94,7 @@ import {
   buildExoMinimapDto,
   buildExoOrganicOverlayDto,
   ingestExoOrganicJournalLine,
+  pressClearMarksHere,
   restoreOrganicSessionFromJournal,
 } from "./exoOrganicTracker.js";
 import { perfTime, startPerfReporter } from "./perf.js";
@@ -135,6 +135,7 @@ import { createBoxelRun } from "./boxelRun.js";
 import { createSavedBoxels } from "./savedBoxels.js";
 import { createNeutronLive } from "./neutronLive.js";
 import { createNeutronReplanner } from "./neutronReplan.js";
+import { createNeutronFuelWatch, storeFuel } from "./neutronFuelWatch.js";
 import { createGreenGiantMarks, greenGiantForRecord } from "./greenGiants.js";
 import { createNoticesWiring } from "./noticesWiring.js";
 import { addSnapshotExtras } from "./snapshotExtras.js";
@@ -161,6 +162,7 @@ import { reloadSpeciesDerivedCaches } from "./speciesCacheReload.js";
 import { pickCommanderForRun } from "./commanderMigration.js";
 import { activeCommander } from "./activeCommander.js";
 import { createCommanderWatch } from "./commanderWatch.js";
+import { carrierHereOf, createCarrierRouteFollow } from "./carrierRouteFollow.js";
 import { isOtherCommandersJournal } from "./journalCommanders.js";
 export { backfillCommanderPosition } from "./commanderPositionBackfill.js";
 export { logFatal, assertResourceLayout } from "./startupChecks.js";
@@ -192,6 +194,8 @@ export type EdexoRuntime = {
   uiCommand: (cmd: UiCommand) => void;
   /** The Clear notices key (owner, 2026-10-05): every notice marked read, then the read ones cleared. */
   clearNotices: () => number;
+  /** The clear key (exoOrganicTracker.ts pressClearMarksHere): press twice to clear this planet's marks. */
+  clearPlanetMarks: () => { armed: number } | { cleared: number } | null;
   /**
    * Boxel scanning keys (server/boxelRun.ts): copy the next system to fly, step to the previous / next
    * one still to fly, start or finish a run. Each returns the name copied (or the run's state).
@@ -348,6 +352,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   });
   const savedBoxels = createSavedBoxels({
     filePath: path.join(resolveCommanderDataDir(), "edexo-boxels.json"),
+    visitedAt: (addr) => store.systemVisitedAt.get(addr) ?? null,
     // A boxel run takes the clipboard over from a neutron route being flown (plan 8.5).
     onRun: (id) => {
       if (id && neutronLive.active()) {
@@ -391,6 +396,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
     sightings: () => [...navRouteLog().systems, ...store.targetedSystems.values()],
     currentSystem: () => store.currentSystem,
     deliver: deliverToClipboard,
+    here: () => (store.commanderPos ? [store.commanderPos.x, store.commanderPos.y, store.commanderPos.z] : null),
   });
   /*
     A neutron route being flown (plan 8.5, server/neutronLive.ts): its next stop goes to the clipboard after each
@@ -399,10 +405,9 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   const neutronLive = createNeutronLive({
     filePath: path.join(resolveCommanderDataDir(), "edexo-neutron-live.json"),
     deliver: (name) => deliverToClipboard(name, "neutron"),
-    onStart: () => {
-      if (savedBoxels.runId()) savedBoxels.setRun(null);
-    },
+    onStart: () => void (savedBoxels.runId() && savedBoxels.setRun(null)),
     onDone: () => neutronStopped(),
+    carrierHere: () => carrierHereOf(store),
   });
   const shipHere = () => ({ name: store.currentSystem ?? null, pos: store.commanderPos ?? null });
   /** Stopped: the HUD's "Copied … · neutron route" line goes with it (owner, 2026-10-13: it stayed). */
@@ -413,9 +418,12 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   };
   /* Off the route: planned again from where the ship is (server/neutronReplan.ts). */
   const neutronReplanner = createNeutronReplanner({ store, neutronLive, push: () => push(), shipHere });
-  const bookmarks = createBookmarksService({
-    filePath: path.join(resolveCommanderDataDir(), "edexo-bookmarks.json"),
-  });
+  /* More or less fuel than the plan had: planned again from here too (plan 1.3.4 S-9, server/neutronFuelWatch.ts). */
+  const fuelReplan = (why: string, fuelT: number) => void neutronReplanner.replan({ why, fuelT });
+  // A Spansh carrier route follows his carrier's arrivals instead of the ship's jumps (plan 1.3.6).
+  const carrierFollow = createCarrierRouteFollow({ store, neutronLive, push: () => push() });
+  const neutronFuelWatch = createNeutronFuelWatch({ neutronLive, shipHere, fuel: () => storeFuel(store) }, fuelReplan);
+  const bookmarks = createBookmarksService({ filePath: path.join(resolveCommanderDataDir(), "edexo-bookmarks.json") });
   /* Green gas giants (owner, 2026-09-30): the commander's own calls, and what the verdict reads. */
   const greenMarks = createGreenGiantMarks({
     filePath: path.join(path.dirname(resolveUserSettingsJsonPath()), "edexo-ggg-marks.json"),
@@ -651,7 +659,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         eddnUploader.offer(line);
         const side = liveSideFiles();
         applyNavRoute(side.route);
-        if (line.event === "FSDJump") {
+        carrierFollow.tick();
+        if (line.event === "FSDJump" && neutronLive.follows() !== "carrier") {
           // A neutron route being flown owns the clipboard; else the boxel run or the saved boxel's next.
           const flying = neutronLive.active();
           const onStop = neutronLive.onJump(shipHere()) != null;
@@ -660,7 +669,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
           // A run can end on a jump (its last system flown): the HUD line says so.
           if (store.boxelCopied) store.boxelCopied.run = savedBoxels.runId() != null;
         }
-        const footFix = side.status ? parseStatusJsonFootFix(side.status) : null;
+        neutronFuelWatch.onLine(line);
+        const footFix = journalLineFix(store, side.status);
         ingestExoOrganicJournalLine(store, ownLine, footFix, projectRoot, getCachedSpeciesDatabase());
         sessionLog.record(line, store, getCachedPrices());
         unknownExobio.offer(line);
@@ -775,6 +785,10 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
 
   // The process check only matters to the desktop app's overlays; a plain server does not poll.
   const gamePresence = createGamePresence({ autoStart: process.platform !== "darwin" && process.env.EDEXO_ELECTRON === "1" });
+  // The fuel's "live" only while the game runs: a closed game leaves its last Status.json behind (neutronShip.ts).
+  gamePresence.onChange((running) => {
+    store.gameRunning = running;
+  });
 
   const backupService = createBackupService({
     appDataDir: path.dirname(userSettingsPath),
@@ -1313,12 +1327,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
         const read = readStatusJsonFootFixText(raw);
         if (read.kind === "unreadable") return;
         const fix = read.kind === "fix" ? read.fix : null;
-        if (fix) {
-          store.applyFootTravelSample(fix.latDeg, fix.lonDeg, fix.planetRadiusM, fix.bodyName);
-          store.exoOrganicLastFix = fix;
-        } else {
-          store.exoOrganicLastFix = null;
-        }
+        // The odometer's sample, the nose's pitch from the flight path, and the radar's fix (null: off the surface).
+        applyLiveFix(store, fix);
         // The targeted body: the HUD's candidate list, and a one-shot jump to its Body tab. Pushed
         // only when it actually changes — see `applyStatusDestination`.
         const destChanged = store.applyStatusDestination(parseStatusJsonDestination(raw));
@@ -1441,6 +1451,8 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
       if (n) push();
       return n;
     },
+    clearPlanetMarks: () =>
+      pressClearMarksHere(store, store.exoOrganicTracker?.bodyKey ?? store.overlayTouchdownBodyKey, Date.now(), push),
     // F6: the neutron route's next stop while one is flown, else the boxel's next system.
     boxelCopyNext: () => (neutronLive.active() ? neutronLive.copyNext() : boxelRun.copyNext()),
     boxelStep: (dir) => boxelRun.step(dir),

@@ -4,7 +4,7 @@
  * where no neutron star helps, waypoints in order or optimised, and the FSD's wear from the journal.
  */
 import { describe, expect, it } from "vitest";
-import { optimiseOrder, planLeg, planNeutronRoute, rangeAt } from "../src/server/neutronRoute.js";
+import { optimiseOrder, planLeg, planNeutronRoute, rangeAt, replayOnLaw } from "../src/server/neutronRoute.js";
 import type { NeutronStar } from "../src/server/neutronIndex.js";
 import {
   DEFAULT_WEAR,
@@ -35,10 +35,11 @@ const A = { name: "A", x: 0, y: 0, z: 0 };
 
 describe("neutron route", () => {
   it("supercharges from neutron star to neutron star, four times the range a jump", async () => {
-    // Range 50: a supercharge reaches 200 ly; neutron stars every 200 ly from 50 to 1,850, the end at 2,050.
+    // Range 51.1: a supercharge is planned to 200.3 ly (4 × 51.1 less the 2 % margin); neutron stars every 200 ly
+    // from 50 to 1,850, the end at 2,050.
     const idx = line(50, 1850, 200);
     const r = await planNeutronRoute(idx, [A, { name: "B", x: 2050, y: 0, z: 0 }], {
-      rangeLy: 50,
+      rangeLy: 51.1,
       jumpsPerTank: 100,
       jumpsNow: 100,
     });
@@ -51,7 +52,7 @@ describe("neutron route", () => {
   });
 
   it("keeps the neutron stars in a supercharge's reach when it looks further out (a 905 ly hop, 2026-10-28)", async () => {
-    // A Caspian: 93 ly, ×6 = 558 ly a supercharge. One neutron star in reach every 550 ly, and a crowd further out
+    // A Caspian: 95 ly, ×6 less 2 % = 558.6 ly a supercharge. One neutron star in reach every 550 ly, and a crowd further out
     // (gain ~900 ly each) that filled the 32 neighbours once the search widened: hops of 1 supercharge + 4 jumps.
     const chain = line(0, 5500, 550).stars;
     const crowd: NeutronStar[] = [];
@@ -66,7 +67,7 @@ describe("neutron route", () => {
       nameOf: (i: number) => `N${i}`,
     };
     const r = await planNeutronRoute(idx, [A, { name: "B", x: 5600, y: 0, z: 0 }], {
-      rangeLy: 93,
+      rangeLy: 95,
       boost: 6,
       jumpsPerTank: 100,
       jumpsNow: 100,
@@ -74,6 +75,16 @@ describe("neutron route", () => {
     const overReach = r.hops.filter((h) => h.kind === "neutron" && h.boosted && h.jumps > 1);
     expect(overReach).toEqual([]);
     expect(r.jumps).toBeLessThanOrEqual(11); // a supercharge a neutron star along the chain, then the end
+  });
+
+  it("gives the destination its address when the stop came with one (its worth in the drawer, 2026-10-31)", async () => {
+    const idx = line(50, 1850, 200);
+    const r = await planNeutronRoute(idx, [A, { name: "B", x: 2050, y: 0, z: 0, address: 123456789 }], {
+      rangeLy: 51.1,
+      jumpsPerTank: 100,
+      jumpsNow: 100,
+    });
+    expect(r.hops.at(-1)).toMatchObject({ name: "B", address: 123456789 });
   });
 
   it("reads the range by the fuel aboard between its entries", () => {
@@ -147,16 +158,74 @@ describe("neutron route", () => {
   });
 
   it("supercharges at the start when the ship sits at a neutron star (review 1.2.16)", async () => {
-    // The start is the first neutron star itself: its first jump reaches 200 ly, not 50.
+    // The start is the first neutron star itself: its first jump reaches 200 ly (51.1 × 4 less 2 %), not 51.
     const idx = line(0, 1800, 200);
     const r = await planNeutronRoute(idx, [A, { name: "B", x: 2000, y: 0, z: 0 }], {
-      rangeLy: 50,
+      rangeLy: 51.1,
       jumpsPerTank: 100,
       jumpsNow: 100,
     });
     expect(r.hops[1]!.boosted).toBe(1);
     expect(r.boosted).toBe(10);
     expect(r.jumps).toBe(10);
+  });
+
+  it("says the fuel it plans aboard at each stop, on arrival and on leaving (plan 1.3.4 S-9)", async () => {
+    // Tank: 3 jumps, counted in whole jumps (no drive law): each hop burns its jumps, a refuel fills the tank.
+    const idx = line(50, 1850, 200, 3);
+    const r = await planNeutronRoute(idx, [A, { name: "B", x: 2050, y: 0, z: 0 }], {
+      rangeLy: 50,
+      jumpsPerTank: 3,
+      jumpsNow: 2,
+    });
+    expect(r.hops[0]).toMatchObject({ fuelArrive: 2, fuelLeave: 2 });
+    for (let i = 1; i < r.hops.length; i++) {
+      const h = r.hops[i]!;
+      if (!h.scoopOnWay) expect(h.fuelArrive).toBe(r.hops[i - 1]!.fuelLeave! - h.jumps);
+      expect(h.fuelLeave).toBe(h.refuel ? 3 : h.fuelArrive);
+    }
+  });
+
+  it("scoops at the start when it is a neutron star with its own scoopable star and the tank is low (plan 1.3.4 S-9)", async () => {
+    // The ship sits at the first neutron star, scoopable, with no jump of fuel: a re-plot made on a refuel stop.
+    const idx = line(0, 1850, 200, 3);
+    const r = await planNeutronRoute(idx, [A, { name: "B", x: 2050, y: 0, z: 0 }], {
+      rangeLy: 50,
+      jumpsPerTank: 3,
+      jumpsNow: 0,
+    });
+    expect(r.unsafeLegs).toEqual([]);
+    expect(r.hops[0]).toMatchObject({ refuel: true, scoopLs: 500, fuelArrive: 0, fuelLeave: 3, jumpsLeft: 3 });
+    expect(r.hops[1]!.boosted).toBe(1);
+  });
+
+  it("keeps the reserve asked for: no hop arrives under it, and it scoops sooner for it (plan 1.3.4 S-7)", async () => {
+    // Every neutron star scoopable, hops of a supercharge and a jump (2 jumps of fuel), a 6-jump tank: the fast plan
+    // arrives at its refuels with nothing left, a 30 % reserve (1.8 jumps) every second hop with 2.
+    const idx = line(50, 1850, 200, 1);
+    const ship = { rangeLy: 50, jumpsPerTank: 6, jumpsNow: 6 };
+    const fast = await planNeutronRoute(idx, [A, { name: "B", x: 2050, y: 0, z: 0 }], ship);
+    const calm = await planNeutronRoute(idx, [A, { name: "B", x: 2050, y: 0, z: 0 }], { ...ship, reserve: 0.3 });
+    expect(Math.min(...fast.hops.slice(1).map((h) => h.fuelArrive!))).toBe(0);
+    for (const h of calm.hops.slice(1)) expect(h.fuelArrive).toBeGreaterThanOrEqual(1.8);
+    expect(calm.refuels).toBeGreaterThan(fast.refuels);
+    expect(calm.reserveDropped).toBeUndefined();
+    // No reserve is the plan as before, hop for hop.
+    expect(await planNeutronRoute(idx, [A, { name: "B", x: 2050, y: 0, z: 0 }], { ...ship, reserve: 0 })).toEqual(fast);
+  });
+
+  it("plans without the reserve where no way keeps it, and says on which leg (plan 1.3.4 S-7)", async () => {
+    // One jump of fuel aboard, the end one jump away, half a tank asked for: that jump arrives empty, and nothing on
+    // the way can be scooped. The plan without the reserve, and the leg named.
+    const idx = line(100_000, 100_000, 1);
+    const r = await planNeutronRoute(idx, [A, { name: "B", x: 40, y: 0, z: 0 }], {
+      rangeLy: 50,
+      jumpsPerTank: 3,
+      jumpsNow: 1,
+      reserve: 0.5,
+    });
+    expect(r.reserveDropped).toEqual([1]);
+    expect(r.unsafeLegs).toEqual([]);
   });
 
   it("never plans to scoop on the way with an empty tank (review 1.2.16)", async () => {
@@ -236,8 +305,8 @@ describe("neutron route", () => {
       const refined = jumps(await planLeg(field(seed), from, to, ship, 6, 5000));
       expect(refined).toBeLessThan(first);
     }
-    // Seed 5: 27 jumps from the first pass, 25 refined.
-    expect(jumps(await planLeg(field(5), from, to, ship, 6, 5000))).toBe(25);
+    // Seed 5: 26 refined (25 before the supercharge margin, 2026-10-30).
+    expect(jumps(await planLeg(field(5), from, to, ship, 6, 5000))).toBe(26);
   });
 });
 
@@ -361,5 +430,24 @@ describe("FSD wear from the journal", () => {
     boost(st, 1);
     expect(hydrateFsdWear(structuredClone(st))).toEqual(st);
     expect(hydrateFsdWear({ shipId: 7, health: 0.9, boostsSince: 1 })).toEqual(newFsdWear());
+  });
+});
+
+describe("a leg found on the pessimistic model, replayed on the drive's law", () => {
+  // 128 t in 16 units of 8 t; a plain jump costs its most (6.8 t), a supercharge by the law only 2 t.
+  const law = { tankT: 128, perJumpT: 6.8, fuelT: () => 2, rangeLy: () => 60 };
+  const ship = { rangeLy: 60, jumpsPerTank: 16, jumpsNow: 16, boost: 4, law } as Parameters<typeof replayOnLaw>[1];
+  const node = (x: number, jumps: number, boosted: number, fuel: number) =>
+    ({ key: String(x), star: null, pos: { x, y: 0, z: 0 }, g: 0, f: 0, fuel, arrive: fuel, prev: null, jumps, boosted, refuel: false, onWay: false });
+
+  it("recounts each supercharge's fuel and hands the next leg the replayed tank (code review 2026-11-02)", () => {
+    const perU = 6.8 / 8;
+    // Pessimistic: every hop at the most per jump.
+    const nodes = [node(0, 0, 0, 16), node(200, 1, 1, 16 - perU), node(400, 1, 1, 16 - 2 * perU)] as Parameters<typeof replayOnLaw>[0];
+    const fuel = replayOnLaw(nodes, ship);
+    // Two supercharges at 2 t (0.25 units) each, not 0.85.
+    expect(fuel).toBeCloseTo(16 - 0.5, 6);
+    expect(fuel).toBe(nodes[2]!.fuel);
+    expect(fuel).toBeGreaterThan(16 - 2 * perU);
   });
 });

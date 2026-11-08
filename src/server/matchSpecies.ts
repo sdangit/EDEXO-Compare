@@ -63,6 +63,7 @@ import {
   observedAtTemperature,
 } from "./speciesTemperatureObservations.js";
 import { observedEnvelopeFactor } from "./observedEnvelope.js";
+import { firmTemperatureEdge, pastFirmEdge } from "./firmTemperatureEdges.js";
 import { observedWithVolcanism } from "./speciesVolcanismObservations.js";
 import { hostStarVerdict, type HostStarVerdict } from "./speciesHostStarObservations.js";
 import { colourStarNever } from "./colourStarNever.js";
@@ -703,7 +704,7 @@ export function speciesMatchesExcludingTempPressure(
         field: "StarType",
         soft: true,
         measured: true,
-        detail: `Colour star ${ctx.colourStarType} (the brightest in this body's sky): none of the ${never.speciesBodies.toLocaleString("en-US")} bodies in a year of EDDN finds grew under a ${never.cls} colour star, where about ${Math.round(never.expected)} would be expected. ${DEMOTED_NOTE}`,
+        detail: `Colour star ${ctx.colourStarType} (the brightest in this body's sky): ${never.seen ? `only ${never.seen}` : "none"} of the ${never.speciesBodies.toLocaleString("en-US")} bodies in a year of EDDN finds grew under a ${never.cls} colour star, where about ${Math.round(never.expected)} would be expected. ${DEMOTED_NOTE}`,
       });
     }
   }
@@ -738,9 +739,14 @@ export function speciesMatchesExcludingTempPressure(
       soft: true,
       measured: true,
       detail:
-        `${describeExclusion(excluded)}: none of its ${excluded.speciesBodies.toLocaleString("en-US")} bodies in a ` +
-        `year of EDDN finds, nor any other confirmed find, grew here, where about ${Math.round(excluded.expected)} ` +
-        `would be expected. ${DEMOTED_NOTE}`,
+        // `seen`: a few finds the 2026-10-29 cut let stand (fewer than 2 systems, or under 5 % of expected).
+        excluded.seen
+          ? `${describeExclusion(excluded)}: only ${excluded.seen} of its ${excluded.speciesBodies.toLocaleString("en-US")} ` +
+            `bodies in a year of EDDN finds grew here, where about ${Math.round(excluded.expected)} would be expected. ` +
+            DEMOTED_NOTE
+          : `${describeExclusion(excluded)}: none of its ${excluded.speciesBodies.toLocaleString("en-US")} bodies in a ` +
+            `year of EDDN finds, nor any other confirmed find, grew here, where about ${Math.round(excluded.expected)} ` +
+            `would be expected. ${DEMOTED_NOTE}`,
     });
   }
 
@@ -1375,6 +1381,22 @@ export function speciesMatchesCriteria(
   let envelopeFactor: number | undefined;
   const envelope = entry.observedTemperatureK;
   const tHere = scan.SurfaceTemperature;
+  /*
+    Past a firm edge (firmTemperatureEdges.ts): a wall the EDDN year never saw the species cross, so no tolerance,
+    and its own field so the signal-count rescue does not take it back first as it does envelope rows. Still a
+    demotion: a DSS that names the genus can bring it back.
+  */
+  const firm = typeof tHere === "number" && Number.isFinite(tHere) && failures.length === 0 ? firmTemperatureEdge(entry.id) : undefined;
+  const past = firm ? pastFirmEdge(firm, tHere!) : null;
+  if (firm && past) {
+    failures.push({
+      field: "FirmTemperature",
+      soft: true,
+      detail:
+        `${tHere!.toFixed(2)} K is ${past.side === "below" ? "under" : "over"} the ${past.edgeK.toFixed(1)} K edge none of its ` +
+        `${firm.bodies.toLocaleString("en-US")} bodies in a year of EDDN finds crossed. ${DEMOTED_NOTE}`,
+    });
+  }
   // See OBSERVED_TEMP_TOLERANCE_K: an envelope edge is a recorded body, not a wall.
   if (envelope && typeof tHere === "number" && Number.isFinite(tHere) && failures.length === 0) {
     const outside =

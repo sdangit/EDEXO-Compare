@@ -57,6 +57,11 @@ export interface SpeciesMatchContext {
    */
   systemMainStarType?: string;
   systemMainStarLuminosity?: string;
+  /**
+   * The main star above is the arrival star itself (scanned, 0 ls from arrival), not the lowest-numbered star known
+   * standing in for it (shared/mainStar.ts). A `firm` host-star gate holds only then (demotionPasses.ts).
+   */
+  systemMainStarIsArrival?: true;
   /** Every star in the system as the journal writes it, for gates with `anyStar` (the Anemone colours). */
   systemStars?: { type: string; luminosity?: string }[];
   /**
@@ -313,7 +318,8 @@ export interface SpeciesCriterion {
   offListAtmosphereNeedsVolcanism?: boolean;
   /**
    * A **measured** absence: the species is recorded almost only on bodies with no volcanism, so a
-   * volcanic body demotes it. Never hides. Osseus spiralis: 1,763 of 1,765 bodies have none.
+   * volcanic body demotes it. Never hides. (Osseus spiralis had it until 2026-10-29: 1,763 of 1,765
+   * bodies have none, but the whole EDDN year has it on 14 volcanic bodies in 14 systems.)
    */
   softNoVolcanism?: boolean;
   /**
@@ -613,6 +619,8 @@ export interface SpeciesMatch {
    * this body it can measure. Null is "unmeasured", never "unlikely".
    */
   presenceProbabilityPercent?: number | null;
+  /** The FSS chance before the per-genus correction to how often such rows came true (chanceRecalibration.ts). */
+  chanceBeforeRecal?: number;
   /**
    * Share of its own genus this species holds, 0-100 — P(this species | this genus is here).
    *

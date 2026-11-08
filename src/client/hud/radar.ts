@@ -9,8 +9,12 @@ import { esc } from "./core";
 */
 
 type Minimap = ExoMinimapDTO;
-type Mark = Minimap["marks"][number];
-type RadarSvg = SVGSVGElement & { __staticBuilt?: boolean; __mmPredict?: PredictState };
+type RadarSvg = SVGSVGElement & { __staticBuilt?: boolean; __clipId?: string };
+/**
+ * Each radar's own clip id: two radars in one page sharing "hudRadarClip" both clip to the first one's, and when that
+ * one is hidden its rings can go with it (owner, 2026-11-04: the sample rings not shown).
+ */
+let clipSeq = 0;
 
 /* ============================================================== Exo-distance tracker ======== */
 /*
@@ -29,6 +33,14 @@ export function leftoverColour(label: string): string {
   return LEFTOVER_COLOURS[h % LEFTOVER_COLOURS.length]!;
 }
 
+/** A distance on the radar (review P15, owner 2026-11-05): metres under 1 km ("640 m"), else km ("1.2 km", "12 km"). */
+export function fmtRadarDistance(m: number): string {
+  const r = Math.round(m);
+  if (r < 1000) return r + " m";
+  const km = m / 1000;
+  return (km < 10 ? km.toFixed(1) : String(Math.round(km))) + " km";
+}
+
 export const MAP_R = 100;
 /*
   The radar has two layers. The rim, rings, crosshair and the rotating sweep never change and are
@@ -38,12 +50,15 @@ export const MAP_R = 100;
 function radarStatic(svg: RadarSvg): void {
   if (svg.__staticBuilt) return;
   svg.__staticBuilt = true;
+  svg.__clipId = "hudRadarClip" + ++clipSeq;
   svg.innerHTML =
     '<defs><linearGradient id="hudSweepGrad" x1="0" y1="0" x2="1" y2="0">' +
     '<stop offset="0" stop-color="currentColor" stop-opacity="0"/>' +
     '<stop offset="1" stop-color="currentColor" stop-opacity="0.28"/></linearGradient>' +
     // The sample rings stop at the rim: a ring round a plant out of range still shows its near edge.
-    '<clipPath id="hudRadarClip"><circle cx="0" cy="0" r="' +
+    '<clipPath id="' +
+    svg.__clipId +
+    '"><circle cx="0" cy="0" r="' +
     MAP_R +
     '"/></clipPath></defs>' +
     '<circle class="minimap-rim-outer" cx="0" cy="0" r="' +
@@ -146,7 +161,7 @@ function drawMinimapAt(svg: RadarSvg, mm: Minimap, hint: boolean): boolean {
         " />",
     );
   }
-  if (rings.length) parts.push('<g clip-path="url(#hudRadarClip)">' + rings.join("") + "</g>");
+  if (rings.length) parts.push('<g clip-path="url(#' + svg.__clipId + ')">' + rings.join("") + "</g>");
   for (let t = 0; t < 360; t += 30) {
     const major = t % 90 === 0;
     parts.push(
@@ -166,10 +181,12 @@ function drawMinimapAt(svg: RadarSvg, mm: Minimap, hint: boolean): boolean {
     const x = m.eastM * scale;
     const y = -m.northM * scale; // SVG y grows downward and north is up
     const r = Math.sqrt(x * x + y * y);
-    const cls = m.kind === "ship" ? "ship" : "sample";
+    // A composition scan of another species than the one being sampled: yellow (review P14; green is the run's).
+    const other = m.kind === "codex" && !m.active;
+    const cls = m.kind === "ship" ? "ship" : m.kind === "codex" ? (other ? "codex-other" : "codex") : m.kind === "srv" ? "srv" : "sample";
     if (m.kind === "sample" && m.active && !firstActive) firstActive = { x, y };
     const tint = m.kind === "sample" && !m.active ? ' style="fill:' + leftoverColour(m.label) + '"' : "";
-    const title = "<title>" + esc(m.label) + " — " + Math.round(m.distanceM) + " m</title>";
+    const title = "<title>" + esc(m.label) + " — " + fmtRadarDistance(m.distanceM) + "</title>";
     if (r <= MAP_R - 6) {
       if (m.kind === "ship") {
         parts.push(
@@ -183,6 +200,34 @@ function drawMinimapAt(svg: RadarSvg, mm: Minimap, hint: boolean): boolean {
             title +
             "</g>",
         );
+      } else if (m.kind === "srv") {
+        // The SRV left standing (plan 1.3.6 S-2): a small square with its wheels, upright like the ship.
+        parts.push(
+          '<g transform="translate(' +
+            x.toFixed(1) +
+            "," +
+            y.toFixed(1) +
+            ") rotate(" +
+            (-rot).toFixed(2) +
+            ')"><rect class="minimap-srv" x="-4" y="-3" width="8" height="6" rx="1" /><circle class="minimap-srv-wheel" cx="-3" cy="3.6" r="1.3" /><circle class="minimap-srv-wheel" cx="3" cy="3.6" r="1.3" />' +
+            title +
+            "</g>",
+        );
+      } else if (m.kind === "codex") {
+        // A composition-scan waypoint: a hollow circle, never mistaken for a sample taken. Placed by two crossing scans
+        // it gets a second ring; from one scan without a range, a short line the way the ship was pointed.
+        if (m.located === "scanned-from" && m.scanHeadingDeg != null) {
+          const t = (m.scanHeadingDeg * Math.PI) / 180;
+          parts.push(
+            '<line class="minimap-codex-heading' + (other ? " minimap-codex-heading--other" : "") + '" x1="' + x.toFixed(1) + '" y1="' + y.toFixed(1) + '" x2="' +
+              (x + Math.sin(t) * 16).toFixed(1) + '" y2="' + (y - Math.cos(t) * 16).toFixed(1) + '" />',
+          );
+        }
+        if (m.located === "crossing")
+          parts.push('<circle class="minimap-codex minimap-codex--outer' + (other ? " minimap-codex--other" : "") + '" r="7" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" />');
+        parts.push(
+          '<circle class="minimap-codex' + (m.target ? " minimap-codex--target" : "") + (other ? " minimap-codex--other" : "") + '" r="4" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '">' + title + "</circle>",
+        );
       } else {
         parts.push(
           '<rect class="minimap-sample"' +
@@ -195,6 +240,11 @@ function drawMinimapAt(svg: RadarSvg, mm: Minimap, hint: boolean): boolean {
             title +
             "</rect>",
         );
+        // Which of the run's three scans (review P15), beside the mark and upright.
+        if (m.scanNo)
+          parts.push(
+            '<text class="minimap-scan-no" x="' + (x + 5).toFixed(1) + '" y="' + (y - 4).toFixed(1) + '" transform="rotate(' + (-rot).toFixed(2) + "," + x.toFixed(1) + "," + y.toFixed(1) + ')">' + m.scanNo + "</text>",
+          );
       }
     } else {
       const ang = (Math.atan2(y, x) * 180) / Math.PI;
@@ -227,10 +277,18 @@ function drawMinimapAt(svg: RadarSvg, mm: Minimap, hint: boolean): boolean {
           "," +
           (ay * 0.8).toFixed(1) +
           ')">' +
-          Math.round(m.distanceM) +
+          fmtRadarDistance(m.distanceM) +
           "</text>",
       );
     }
+  }
+  // The next plant to sample (owner, 2026-11-04): a line from you to it, to the rim when it is off the map.
+  const next = mm.marks.find((m) => m.target);
+  if (next) {
+    const nx = next.eastM * scale;
+    const ny = -next.northM * scale;
+    const k = Math.min(1, (MAP_R - 8) / Math.max(1e-6, Math.hypot(nx, ny)));
+    parts.push('<line class="minimap-target-line" x1="0" y1="0" x2="' + (nx * k).toFixed(1) + '" y2="' + (ny * k).toFixed(1) + '" />');
   }
   // The way to walk: the min-gap ring, on the side away from the first sample.
   if (hint && firstActive && minR > 0) {
@@ -255,6 +313,13 @@ function drawMinimapAt(svg: RadarSvg, mm: Minimap, hint: boolean): boolean {
       ')">NORTH</text>',
   );
   parts.push("</g>");
+  // The clear key's first press (owner, 2026-11-04): the second one, within 3 s, clears this planet's marks.
+  if (mm.clearArmed) {
+    const n = mm.clearArmed;
+    parts.push(
+      '<text class="minimap-clear" x="0" y="' + (MAP_R - 22) + '" text-anchor="middle">Press again: clear ' + n + " mark" + (n === 1 ? "" : "s") + "</text>",
+    );
+  }
   svg.querySelector(".mm-world")!.innerHTML = parts.join("");
   svg.querySelector(".mm-you")!.innerHTML =
     heading == null
@@ -264,164 +329,16 @@ function drawMinimapAt(svg: RadarSvg, mm: Minimap, hint: boolean): boolean {
 }
 
 /*
-  ============================ the radar predicts forward ============================
-
-  `Status.json` is the only place a position exists, and it changes about 0.33 times a second.
-  Prediction (continuing the commander's motion between fixes) was built and is OFF on the owner's
-  report after flying it (2026-09-21): "the radar dots keep drifting away when I move — make them
-  fixed in place and updated dynamically without drifting." Position was predicted and heading
-  deliberately was not, so turning while walking pushed the dots along the old bearing and every fix
-  snapped them back. The machinery stays for the straight-line case; see public/hud/radar.js's history.
-  With it off, each fix is drawn exactly as it arrives, which is also what prefers-reduced-motion does.
+  Each fix is drawn exactly as it arrives and stays until the next one. Prediction (continuing the commander's motion
+  between Status.json fixes, about one every three seconds) was built and switched off on the owner's report after
+  flying it (2026-09-21): "the radar dots keep drifting away when I move — make them fixed in place and updated
+  dynamically without drifting." Its leftover machinery (a copy of the map, a fingerprint to skip repeats) was taken
+  out on 2026-11-05: a field missing from the copy or the fingerprint froze on screen, the line to the next plant
+  among them (95c56ac). Its history is in public/hud/radar.js's and in git.
 */
-export const PREDICT_ENABLED = false;
-export const PREDICT_MAX_GAPS = 1.5;
-export const PREDICT_MIN_GAP_MS = 200;
-export const PREDICT_MAX_GAP_MS = 8000;
-/** Below this the commander is standing still; predicting it only adds jitter. */
-export const PREDICT_MIN_SPEED_M = 0.05;
 
-interface PredictState {
-  last: Minimap | null;
-  at: number;
-  gap: number;
-  motion: { north: number; east: number } | null;
-  raf: number;
-  sig: string | null;
-  hint: boolean;
-}
-
-const markKey = (m: Mark) => m.kind + "|" + m.label;
-
-function median(xs: number[]): number {
-  if (!xs.length) return 0;
-  const s = xs.slice().sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)]!;
-}
-
-function cloneMinimap(mm: Minimap): Minimap {
-  return {
-    radiusM: mm.radiusM,
-    headingDeg: mm.headingDeg,
-    minSampleDistanceM: mm.minSampleDistanceM,
-    marks: mm.marks.map((m) => ({
-      kind: m.kind,
-      label: m.label,
-      active: m.active,
-      northM: m.northM,
-      eastM: m.eastM,
-      distanceM: m.distanceM,
-      ringM: m.ringM,
-    })),
-  };
-}
-
-/** How far every mark moved between two fixes — the commander's movement, negated. */
-function motionBetween(prev: Minimap, next: Minimap): { north: number; east: number } | null {
-  const by: Record<string, Mark> = {};
-  for (const m of prev.marks) by[markKey(m)] = m;
-  const dN: number[] = [];
-  const dE: number[] = [];
-  for (const m of next.marks) {
-    const p = by[markKey(m)];
-    if (!p) continue;
-    dN.push(m.northM - p.northM);
-    dE.push(m.eastM - p.eastM);
-  }
-  if (!dN.length) return null;
-  return { north: median(dN), east: median(dE) };
-}
-
-/** The radar as it should look `t` ms after the newest fix (heading is never predicted). */
-function predictMinimap(st: PredictState, t: number): Minimap {
-  const out = cloneMinimap(st.last!);
-  const f = st.gap > 0 ? t / st.gap : 0;
-  if (st.motion) {
-    for (const m of out.marks) {
-      m.northM += st.motion.north * f;
-      m.eastM += st.motion.east * f;
-      m.distanceM = Math.sqrt(m.northM * m.northM + m.eastM * m.eastM);
-    }
-  }
-  return out;
-}
-
-let reduceMotion = false;
-try {
-  reduceMotion = !!window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-} catch {
-  /* no matchMedia: predict, which is the better default */
-}
-
-/**
- * A fingerprint of the fix, so a re-render can be told from a new position: the tracker re-renders on every
- * snapshot push and hands over the same minimap each time, and only a change of position is a fix.
- */
-function minimapSignature(mm: Minimap): string {
-  let s = String(mm.headingDeg) + "|" + mm.radiusM + "|" + mm.minSampleDistanceM;
-  for (const m of mm.marks) s += "|" + m.kind + ":" + m.label + ":" + m.northM + "," + m.eastM;
-  return s;
-}
-
-const now = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
-
-/**
- * Draw the radar (and, were prediction on, continue the commander's motion between fixes). State lives on the
- * SVG element so two radars cannot share a loop. False when there is no map to draw (off a surface).
- */
+/** Draw the radar. False when there is no map to draw (off a surface). */
 export function drawMinimap(svg: SVGSVGElement, mm: Minimap | null | undefined, hint: boolean): boolean {
   if (!mm || !mm.marks) return false;
-  const el = svg as RadarSvg;
-  let st = el.__mmPredict;
-  if (!st) st = el.__mmPredict = { last: null, at: 0, gap: 0, motion: null, raf: 0, sig: null, hint };
-
-  const t0 = now();
-  const next = cloneMinimap(mm);
-  const sig = minimapSignature(next);
-
-  // A repeat of the fix already showing: keep it, but honour the newest `hint`, which changes on its own schedule.
-  if (st.sig === sig && st.last) {
-    st.hint = hint;
-    if (!st.raf) {
-      const held = st.gap > 0 ? Math.min(t0 - st.at, st.gap * PREDICT_MAX_GAPS) : 0;
-      drawMinimapAt(el, st.motion ? predictMinimap(st, held) : st.last, hint);
-    }
-    return true;
-  }
-
-  const gap = st.last ? t0 - st.at : 0;
-  if (!PREDICT_ENABLED || reduceMotion || !st.last || gap < PREDICT_MIN_GAP_MS || gap > PREDICT_MAX_GAP_MS) {
-    st.motion = null;
-  } else {
-    const motion = motionBetween(st.last, next);
-    const moved = motion ? Math.sqrt(motion.north * motion.north + motion.east * motion.east) : 0;
-    st.motion = motion && moved >= PREDICT_MIN_SPEED_M ? motion : null;
-    st.gap = gap;
-  }
-
-  st.last = next;
-  st.at = t0;
-  st.sig = sig;
-  st.hint = hint;
-
-  if (st.raf) {
-    cancelAnimationFrame(st.raf);
-    st.raf = 0;
-  }
-  // The newest fix is the truth: draw it, then start estimating forward from it.
-  drawMinimapAt(el, next, hint);
-  if (!st.motion) return true;
-
-  const state = st;
-  const limit = state.gap * PREDICT_MAX_GAPS;
-  const step = () => {
-    state.raf = 0;
-    if (!el.isConnected) return;
-    let t = now() - state.at;
-    if (t > limit) t = limit;
-    drawMinimapAt(el, predictMinimap(state, t), state.hint);
-    if (t < limit) state.raf = requestAnimationFrame(step);
-  };
-  state.raf = requestAnimationFrame(step);
-  return true;
+  return drawMinimapAt(svg as RadarSvg, mm, hint);
 }

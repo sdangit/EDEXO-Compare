@@ -1,13 +1,15 @@
 /**
- * Compare's tray under the app bar: the data value, D-Scan, the neutron route, FSD wear, first discovery,
- * the route and fuel, and the next boxel. Moved out of HeaderBar.tsx (audit 2026-10-22), with the route
+ * Compare's tray under the app bar: the data value, D-Scan, the neutron route, FSD wear, his carrier's jump, first
+ * discovery, the route and fuel, and the next boxel. Moved out of HeaderBar.tsx (audit 2026-10-22), with the route
  * card's distance/refuel switch, which only the tray shows.
  */
 import { Tooltip } from "../ui/Tooltip";
 import { NextBoxelCard } from "../NextBoxelCard";
+import { CarrierTile } from "./CarrierTile";
 import { fmtCrExact, fmtCrShort, fmtLy } from "@shared/format";
+import { liveProgressShort, liveProgressText } from "@shared/routeProgress";
 import { useEffect, useState, type ReactNode } from "react";
-import { Fuel, TriangleAlert, Zap } from "lucide-react";
+import { Anchor, Fuel, TriangleAlert, Zap } from "lucide-react";
 import { DScanBodiesBadge } from "../DScanBodiesBadge";
 import type { AppSnapshot } from "@shared/types";
 import {
@@ -19,6 +21,8 @@ import {
   writeRouteHeaderMetricMode,
 } from "../routeHeader";
 import type { RouteHeaderMetricMode } from "../routeHeader";
+import { RollingNumber } from "../ui/RollingNumber";
+import { closingAttr } from "../ui/usePresence";
 
 /*
   An AFMU repairs the FSD in flight (owner, 2026-10-13, the Laboratory): when one is fitted, the FSD warning says so and
@@ -38,7 +42,10 @@ export function CompareTray({
   pendingSamplesFlash,
   onToggleScanData,
   onOpenBreakdown,
+  closing = false,
 }: {
+  /** Folding away (HeaderBar's usePresence): the tray plays its exit. */
+  closing?: boolean;
   snap: AppSnapshot;
   scanDataOn: boolean;
   totalDataCr: number;
@@ -68,7 +75,7 @@ export function CompareTray({
   })();
 
   return (
-    <div className="header-data-value-row header-tray" id="header-tray">
+    <div className="header-data-value-row header-tray" id="header-tray" {...closingAttr(closing)}>
       <button
         type="button"
         className={`header-scan-data-plus${scanDataOn ? " header-scan-data-plus--on" : ""}`}
@@ -92,14 +99,14 @@ export function CompareTray({
         <span className="data-value-label tray-tile__label">Data value</span>
         <span className="tray-tile__value">
           <span className={`data-value-amount ${dataValueFlash}`.trim()} title={fmtCrExact(totalDataCr)}>
-            {fmtCrShort(totalDataCr)} CR
+            <RollingNumber text={`${fmtCrShort(totalDataCr)} CR`} />
           </span>
           {snap.organicPendingSampleCount > 0 ? (
             <span
               className={`data-value-meta tray-tile__meta ${pendingSamplesFlash}`.trim()}
               title="Completed samples not yet sold"
             >
-              ({snap.organicPendingSampleCount})
+              <RollingNumber text={`(${snap.organicPendingSampleCount})`} />
             </span>
           ) : null}
         </span>
@@ -127,12 +134,16 @@ export function CompareTray({
             className="d-scan-card d-scan-card--header-row header-route-mini header-neutron tray-tile"
             title={
               snap.neutronLive.done
-                ? `Neutron route done: ${snap.neutronLive.destination}`
-                : `Neutron route to ${snap.neutronLive.destination}: stop ${snap.neutronLive.at} of ${snap.neutronLive.total}. The next stop is on the clipboard after each jump onto a stop: target it in the game's galaxy map, don't plot a route to it: the game can refuse to plot a full-range jump on a part tank (F6 copies it again).`
+                ? `${snap.neutronLive.carrier ? "Carrier route" : "Route"} done: ${snap.neutronLive.destination}`
+                : snap.neutronLive.carrier
+                ? `Carrier route to ${snap.neutronLive.destination}: ${liveProgressText(snap.neutronLive)}. The next stop goes to the clipboard when your carrier arrives at one: paste it in the carrier's galaxy map (F6 copies it again).`
+                : `${snap.neutronLive.noNeutrons ? "Route" : "Neutron route"} to ${snap.neutronLive.destination}: ${liveProgressText(snap.neutronLive)}. The next stop is on the clipboard after each jump onto a stop: target it in the game's galaxy map, don't plot a route to it: the game can refuse to plot a full-range jump on a part tank (F6 copies it again).`
             }
           >
             <span className="tray-tile__label">
-              {snap.neutronLive.refuelHere && !snap.neutronLive.done ? (
+              {snap.neutronLive.carrier ? (
+                <Anchor className="tray-tile__ico" aria-hidden="true" />
+              ) : snap.neutronLive.refuelHere && !snap.neutronLive.done ? (
                 <Fuel className="tray-tile__ico" aria-hidden="true" />
               ) : (
                 <Zap className="tray-tile__ico" aria-hidden="true" />
@@ -145,7 +156,7 @@ export function CompareTray({
                     : "Scoop here"
                   : snap.neutronLive.superchargeHere
                     ? "Supercharge here"
-                    : `${snap.neutronLive.at}/${snap.neutronLive.total}`}
+                    : liveProgressShort(snap.neutronLive)}
             </span>
             <span className="tray-tile__value">{snap.neutronLive.next ?? snap.neutronLive.destination}</span>
           </div>
@@ -163,6 +174,7 @@ export function CompareTray({
             </span>
           </div>
         ) : null}
+        <CarrierTile jump={snap.carrierJump} />
         {snap.focusedSystemUndiscovered ? (
           <div
             className="d-scan-card d-scan-card--complete d-scan-card--header-row header-route-mini tray-tile"

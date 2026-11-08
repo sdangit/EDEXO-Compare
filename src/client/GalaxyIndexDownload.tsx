@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fmtPct } from "@shared/format";
 import { MenuRow } from "./galaxy3d/G3dMenu";
+import { DUE_CLASS } from "./galaxyIndexDue";
 
 interface IndexStatus {
   present: boolean;
@@ -78,8 +79,8 @@ export function GalaxyIndexDownload() {
     <div className="g3d-index-download" role="dialog" aria-label="Download the galaxy index">
       <h3>The galaxy map needs its index</h3>
       <p>
-        Every system with recorded biology — 5.3 million — built from <strong>EDAstro</strong>&apos;s codex
-        data, with the stars and planets from Spansh&apos;s galaxy dump; the stations (for Stations and
+        Every system with recorded biology — 5.4 million — built from <strong>EDAstro</strong>&apos;s and{" "}
+        <strong>EDSM</strong>&apos;s codex data, with the stars and planets from Spansh&apos;s galaxy dump; the stations (for Stations and
         nearest services) and the neutron stars (for the neutron route) come with it. It is a separate
         download, kept beside your settings so updates leave it alone.
       </p>
@@ -102,9 +103,9 @@ export function GalaxyIndexDownload() {
             sessionStorage.setItem("galaxyIndexDownloading", "1");
             void fetch("/api/galaxy/index/download", { method: "POST" }).then(() => load());
           }}
-          title={`Download the galaxy index (EDAstro data) from the app's GitHub release${st.downloadBytes ? ` · ${mb(st.downloadBytes)}` : ""}`}
+          title={`Download the galaxy index (EDAstro and EDSM codex data) from the app's GitHub release${st.downloadBytes ? ` · ${mb(st.downloadBytes)}` : ""}`}
         >
-          Download from EDAstro data
+          Download from EDAstro and EDSM data
           {st.systemsOnRelease
             ? ` · ${fmtSystems(st.systemsOnRelease)} systems`
             : st.downloadBytes
@@ -155,7 +156,7 @@ export function GalaxyIndexRow() {
   return (
     <MenuRow
       label="Galaxy index"
-      hint="EDAstro's codex data with Spansh's stars and planets, the stations, the neutron stars and the jumponium bodies, downloaded from the app's GitHub release and kept beside your settings. Update fetches the newer files when the release has them."
+      hint="EDAstro's and EDSM's codex data with Spansh's stars and planets, the stations, the neutron stars and the jumponium bodies, downloaded from the app's GitHub release and kept beside your settings. Update fetches the newer files when the release has them."
     >
       {d ? (
         <span className="g3d-row__val" aria-live="polite">
@@ -164,7 +165,7 @@ export function GalaxyIndexRow() {
       ) : (
         <button
           type="button"
-          className={`g3d-btn${update || extrasOnly ? " g3d-btn--primary-small" : ""}`}
+          className={`g3d-btn${update || extrasOnly ? ` g3d-btn--primary-small ${DUE_CLASS}` : ""}`}
           title={
             `${st.systemsHere != null ? `${st.systemsHere.toLocaleString("en-US")} systems` : mb(here)} here` +
             (st.systemsOnRelease != null

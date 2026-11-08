@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { optionsDirForJournalDir } from "./protonJournals.js";
+import { hudColourSupport, parseHudColourMatrix, type HudColourMatrix, type HudColourSupport } from "../shared/hudColourMatrix.js";
 
 export type EliteDisplayMode = "windowed" | "fullscreen" | "borderless" | "unknown";
 
@@ -73,6 +74,49 @@ export function readEliteDisplayMode(file = eliteDisplaySettingsPath()): EliteDi
   const m = /<FullScreen>\s*(\d+)\s*<\/FullScreen>/i.exec(xml);
   const mode = m ? (MODE_BY_VALUE[m[1]!] ?? "unknown") : "unknown";
   return { mode, overlaysBlocked: mode === "fullscreen", source: file };
+}
+
+/**
+ * The game's view, for the screen marker (owner, 2026-11-04: "a dot in a circle on the screen where you need to point
+ * at"): Options/Graphics/Settings.xml `<FOV>` is the vertical field of view in degrees, DisplaySettings.xml the
+ * resolution the game renders at. Null fields when a file or a value is missing; the marker then uses defaults.
+ */
+export interface EliteView {
+  verticalFovDeg: number | null;
+  /**
+   * The custom HUD colour (GraphicsConfigurationOverride.xml GUIColour, null: the default look) and whether the screen
+   * readers can read it (shared/hudColourMatrix.ts).
+   */
+  hudMatrix: HudColourMatrix | null;
+  hudColour: HudColourSupport;
+  width: number | null;
+  height: number | null;
+}
+
+export function readEliteView(displayFile = eliteDisplaySettingsPath()): EliteView {
+  const read = (f: string) => {
+    try {
+      return readFileSync(f, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const num = (xml: string, tag: string) => {
+    const m = new RegExp(`<${tag}>\\s*([0-9.]+)\\s*</${tag}>`, "i").exec(xml);
+    const n = m ? Number(m[1]) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const display = read(displayFile);
+  const settings = read(path.join(path.dirname(displayFile), "Settings.xml"));
+  const fov = num(settings, "FOV");
+  const hudMatrix = parseHudColourMatrix(read(path.join(path.dirname(displayFile), "GraphicsConfigurationOverride.xml")));
+  return {
+    verticalFovDeg: fov != null && fov >= 20 && fov <= 120 ? fov : null,
+    hudMatrix,
+    hudColour: hudColourSupport(hudMatrix),
+    width: num(display, "ScreenWidth"),
+    height: num(display, "ScreenHeight"),
+  };
 }
 
 /** One sentence for the launcher. Null when there is nothing worth saying. */

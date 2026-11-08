@@ -14,6 +14,7 @@
  */
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import type { NeutronLiveDTO } from "../shared/dto/neutron.js";
+import { routeProgress } from "../shared/routeProgress.js";
 
 export type { NeutronLiveDTO };
 
@@ -34,6 +35,16 @@ export interface LiveHop {
   scoopOnWay: boolean;
   /** "Use Jumponium": the FSD injections planned for the normal jumps to this stop (one jump fewer). */
   inject?: { tier: "basic" | "standard" | "premium"; count: number } | null;
+  /** The plan's fuel here in jumps, on arrival and on leaving (neutronRoute.ts NeutronHop); absent in older routes. */
+  fuelArrive?: number;
+  fuelLeave?: number;
+  /**
+   * The plan's jumps of fuel left and the FSD's health there, and the system's address: shown in the Neutron drawer's
+   * list of the stops ahead (review 2026-11-05: after a re-plot it had lost them). Absent on Spansh and older routes.
+   */
+  jumpsLeft?: number;
+  fsdHealth?: number;
+  address?: number;
 }
 
 /** The commander's own stops (not the neutron stars between) and the ship the route was planned for. */
@@ -44,20 +55,32 @@ export interface LivePlan {
   useJumponium?: boolean;
   /** Planned with refuels to half a tank: a re-plot keeps them. */
   halfTank?: boolean;
+  /** The share of the tank kept as a reserve (neutronRoute.ts `reserve`): a re-plot keeps it. */
+  reserve?: number;
   /** The supercharge it was planned with (×4 / ×6), kept by a re-plot; absent: the ship's own. */
   boost?: number;
 }
 
+/** Whose jumps move the route on: the ship's (FSDJump), or the commander's fleet carrier's (a Spansh carrier route). */
+export type LiveFollow = "ship" | "carrier";
+
 export interface NeutronLive {
-  start(hops: LiveHop[], here: Here, plan?: LivePlan | null): string | null;
+  start(hops: LiveHop[], here: Here, plan?: LivePlan | null, follow?: LiveFollow): string | null;
+  /** Whose jumps the route follows; null with no route. */
+  follows(): LiveFollow | null;
   /** The destinations not reached yet and the plan's ship, for planning again from here; null without a plan. */
   remaining(): LivePlan | null;
   /** The ship is far off the way from the stop reached to the next (more than twice its range, 100 ly at least). */
   offRoute(here: Here): boolean;
-  /** A new plan from where the ship is (hops[0] = here) to `targets`: the next stop is copied. */
+  /**
+   * A new plan from where the ship is (hops[0] = here) to `targets`: the next stop is copied, unless it is the one
+   * already on the clipboard (a re-plot for the fuel often keeps it).
+   */
   replace(hops: LiveHop[], targets: LivePlan["targets"]): string | null;
-  /** Planning again from here is under way (the HUD says so). */
-  setReplanning(on: boolean): void;
+  /** Planning again from here is under way (the HUD says so), and why, when it is not the ship leaving the route. */
+  setReplanning(on: boolean, why?: string | null): void;
+  /** The stop reached last, the one after, and whether the ship is in that stop's system; null with no route. */
+  position(here: Here): { at: number; hop: LiveHop; next: LiveHop | null; onStop: boolean } | null;
   /** Bumped with every new route, for the galaxy map to draw the new one. */
   version(): number;
   stop(): void;
@@ -108,6 +131,7 @@ export function parseLivePlan(raw: unknown): LivePlan | null {
   const targets = parseTargets(r.targets);
   const rangeLy = typeof r.rangeLy === "number" && r.rangeLy >= 5 && r.rangeLy <= 500 ? r.rangeLy : null;
   const boost = r.boost === 4 || r.boost === 6 ? r.boost : undefined;
+  const reserve = typeof r.reserve === "number" && r.reserve > 0 && r.reserve <= 0.5 ? r.reserve : undefined;
   return targets.length && rangeLy
     ? {
         targets,
@@ -115,6 +139,7 @@ export function parseLivePlan(raw: unknown): LivePlan | null {
         useJumponium: r.useJumponium === true,
         ...(r.halfTank === true ? { halfTank: true } : {}),
         ...(boost ? { boost } : {}),
+        ...(reserve ? { reserve } : {}),
       }
     : null;
 }
@@ -155,6 +180,11 @@ export function parseLiveHops(raw: unknown): LiveHop[] | null {
     const name = typeof r.name === "string" ? r.name.trim().slice(0, 80) : "";
     if (x == null || y == null || z == null || !name) return null;
     const kind = r.kind === "start" || r.kind === "neutron" || r.kind === "waypoint" ? r.kind : "waypoint";
+    const fuelArrive = num(r.fuelArrive);
+    const fuelLeave = num(r.fuelLeave);
+    const jumpsLeft = num(r.jumpsLeft);
+    const fsdHealth = num(r.fsdHealth);
+    const address = num(r.address);
     out.push({
       name,
       x,
@@ -168,6 +198,10 @@ export function parseLiveHops(raw: unknown): LiveHop[] | null {
       scoopLs: num(r.scoopLs),
       scoopOnWay: r.scoopOnWay === true,
       inject: parseInject(r.inject),
+      ...(fuelArrive != null && fuelArrive >= 0 && fuelLeave != null && fuelLeave >= 0 ? { fuelArrive, fuelLeave } : {}),
+      ...(jumpsLeft != null && jumpsLeft >= 0 ? { jumpsLeft } : {}),
+      ...(fsdHealth != null && fsdHealth >= 0 && fsdHealth <= 1 ? { fsdHealth } : {}),
+      ...(address != null && Number.isSafeInteger(address) && address > 0 ? { address } : {}),
     });
   }
   return out;
@@ -181,11 +215,14 @@ export function createNeutronLive(opts: {
   /** The last stop reached: what the route put on the HUD goes, as with Stop. */
   onDone?: () => void;
   now?: () => string;
+  /** Where the commander's carrier is, for a carrier route's view (plan 1.3.6). */
+  carrierHere?: () => Here;
 }): NeutronLive {
   const now = opts.now ?? (() => new Date().toISOString());
   let st = load(opts.filePath);
-  let done: { destination: string } | null = null;
+  let done: { destination: string; carrier?: boolean } | null = null;
   let replanning = false;
+  let replanWhy: string | null = null;
   let version = 1;
 
   const persist = (): void => {
@@ -211,7 +248,7 @@ export function createNeutronLive(opts: {
   };
 
   return {
-    start(hops, here, plan) {
+    start(hops, here, plan, follow) {
       opts.onStart?.();
       done = null;
       // Where the ship is on the route: the last stop it is in (a re-plan from mid-route), else the start.
@@ -221,9 +258,10 @@ export function createNeutronLive(opts: {
           at = i;
           break;
         }
-      st = { hops, at, startedAt: now(), plan: plan ?? null };
+      st = { hops, at, startedAt: now(), plan: plan ?? null, ...(follow === "carrier" ? { follow: "carrier" as const } : {}) };
       // A re-plot of the route before is not this route's: it neither shows nor lands here (version below).
       replanning = false;
+      replanWhy = null;
       version++;
       persist();
       return copyNext();
@@ -240,6 +278,7 @@ export function createNeutronLive(opts: {
             useJumponium: st.plan.useJumponium === true,
             ...(st.plan.halfTank ? { halfTank: true } : {}),
             ...(st.plan.boost ? { boost: st.plan.boost } : {}),
+            ...(st.plan.reserve ? { reserve: st.plan.reserve } : {}),
           }
         : null;
     },
@@ -253,23 +292,33 @@ export function createNeutronLive(opts: {
     },
     replace(hops, targets) {
       if (!st) return null;
-      st = { hops, at: 0, startedAt: st.startedAt, plan: st.plan ? { ...st.plan, targets } : null };
+      const was = st.hops[st.at + 1]?.name ?? null;
+      st = { ...st, hops, at: 0, plan: st.plan ? { ...st.plan, targets } : null };
       version++;
       persist();
-      return copyNext();
+      const next = hops[1]?.name ?? null;
+      return next != null && next === was ? next : copyNext();
     },
-    setReplanning(on) {
+    setReplanning(on, why = null) {
       replanning = on;
+      replanWhy = on ? why : null;
+    },
+    position(here) {
+      if (!st) return null;
+      const hop = st.hops[st.at]!;
+      return { at: st.at, hop, next: st.hops[st.at + 1] ?? null, onStop: sameSystem(hop, here) };
     },
     version: () => version,
     stop() {
       st = null;
       done = null;
       replanning = false;
+      replanWhy = null;
       version++;
       persist();
     },
     active: () => st != null,
+    follows: () => (st ? (st.follow ?? "ship") : null),
     hops: () => st?.hops ?? null,
     copyNext,
     onJump(here) {
@@ -284,7 +333,7 @@ export function createNeutronLive(opts: {
         }
       if (hit < 0) return null;
       if (hit === st.hops.length - 1) {
-        done = { destination: st.hops[hit]!.name };
+        done = { destination: st.hops[hit]!.name, ...(st.follow === "carrier" ? { carrier: true } : {}) };
         st = null;
         // A new version: the galaxy map clears the line (review 1.2.16: it stayed after arrival).
         version++;
@@ -296,7 +345,9 @@ export function createNeutronLive(opts: {
       persist();
       return copyNext();
     },
-    view(here) {
+    view(shipHere) {
+      const carrier = st?.follow === "carrier" || (!st && done?.carrier === true);
+      const here = carrier ? (opts.carrierHere?.() ?? shipHere) : shipHere;
       if (!st) {
         if (!done) return null;
         return {
@@ -315,6 +366,7 @@ export function createNeutronLive(opts: {
           done: true,
           replanning: false,
           destination: done.destination,
+          ...(carrier ? { carrier: true } : {}),
         };
       }
       const cur = st.hops[st.at]!;
@@ -335,7 +387,11 @@ export function createNeutronLive(opts: {
         scoopOnWay: !!next?.scoopOnWay,
         done: false,
         replanning,
+        ...(replanning && replanWhy ? { replanWhy } : {}),
         destination: st.hops[st.hops.length - 1]!.name,
+        ...(carrier ? { carrier: true } : {}),
+        ...(!carrier && !st.hops.some((h) => h.kind === "neutron") ? { noNeutrons: true } : {}),
+        progress: routeProgress(st.hops, st.at),
       };
     },
   };
@@ -343,7 +399,7 @@ export function createNeutronLive(opts: {
 
 function load(
   filePath: string | null,
-): { hops: LiveHop[]; at: number; startedAt: string; plan: LivePlan | null } | null {
+): { hops: LiveHop[]; at: number; startedAt: string; plan: LivePlan | null; follow?: "carrier" } | null {
   if (!filePath || !existsSync(filePath)) return null;
   try {
     const raw = JSON.parse(readFileSync(filePath, "utf8")) as {
@@ -351,6 +407,7 @@ function load(
       at?: unknown;
       startedAt?: unknown;
       plan?: unknown;
+      follow?: unknown;
     };
     const hops = parseLiveHops(raw.hops);
     if (!hops) return null;
@@ -363,6 +420,7 @@ function load(
       at,
       startedAt: typeof raw.startedAt === "string" ? raw.startedAt : "",
       plan: parseLivePlan(raw.plan),
+      ...(raw.follow === "carrier" ? { follow: "carrier" as const } : {}),
     };
   } catch {
     return null;

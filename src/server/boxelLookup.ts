@@ -26,13 +26,14 @@ import { toJournalPlanetClass } from "../shared/normalise/planetClass.js";
 import { isTerraformableState } from "../shared/terraformState.js";
 import { classifyGreenGiant } from "../shared/greenGasGiant.js";
 import { APP_USER_AGENT } from "./appVersion.js";
+import { BOXEL_MAX_ROWS } from "./boxel.js";
 
 const SEARCH_URL = "https://spansh.co.uk/api/systems/search";
 /** Check EDSM's spacing (navRouteLog.ts): one request every five seconds. */
 export const LOOKUP_GAP_MS = 5_000;
 const PAGE = 100;
-/** 3,000 systems: past any boxel anyone flies by hand. */
-const MAX_PAGES = 30;
+/** As far as a boxel can list (it was 30 pages, 3,000 systems: core boxels go to -17,719; T-MVS9JTOP-A782). */
+const MAX_PAGES = Math.ceil(BOXEL_MAX_ROWS / PAGE);
 export const LOOKUP_CACHE_DAYS = 30;
 
 /** What Spansh says about one system of the boxel. */
@@ -47,6 +48,8 @@ export interface LookupSystemFacts {
   bodyTypes: string[];
   /** Species commanders logged there (Spansh landmarks of the exobiology genera). */
   species: string[];
+  /** Where it is, light years (the shortest boxel order, shared/boxelOrder.ts). Look-ups before 1.3.8 have none. */
+  pos?: [number, number, number];
 }
 
 export interface BoxelLookupRecord {
@@ -130,6 +133,9 @@ export function spanshSearchSystemFacts(
     })),
     bodyTypes: [...bodyTypes],
     species: [...species].sort(),
+    ...([s.x, s.y, s.z].every((v) => typeof v === "number" && Number.isFinite(v))
+      ? { pos: [s.x, s.y, s.z] as [number, number, number] }
+      : {}),
   };
 }
 
@@ -222,7 +228,9 @@ export function createBoxelLookups(opts: {
         running: false,
         note: stopAsked
           ? `Stopped: ${Object.keys(systems).length} systems so far.`
-          : Object.keys(systems).length
+          : !complete
+            ? `${Object.keys(systems).length} systems read; Spansh has more past the last page read.`
+            : Object.keys(systems).length
             ? `${Object.keys(systems).length} systems on Spansh; the rest are not there.`
             : "Spansh lists none of its systems (none uploaded yet, or its search missed them).",
       };

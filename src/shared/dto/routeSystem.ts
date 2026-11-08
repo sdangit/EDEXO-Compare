@@ -1,0 +1,175 @@
+/**
+ * What a discovered system on the route is worth (plan 1.3.3 R-1 / R-3, owner 2026-10-30): its bodies from Spansh,
+ * valued the way the app values the system the ship is in. Values at 1×: other commanders reported the system, so
+ * no first-discovery, first-mapped or first-footfall bonus.
+ */
+export interface RouteSystemBodyDTO {
+  name: string;
+  /** The Notable card's tag ("Earth-like", "HMC - Terraformable"), or null for a bio-only body. */
+  tag: string | null;
+  fssCr: number;
+  /** Mapped value (DSS), for a planet. */
+  dssCr: number | null;
+  /** Biological signals, and the expected exobiology value at 1× (Σ chance × price). */
+  bioSignals: number | null;
+  bioCr: number | null;
+  /** The likeliest species, best first: logged by others, or predicted. */
+  species: { name: string; cr: number | null; chancePct: number | null; logged: boolean }[];
+  /** CODEX ×N: the likeliest species of each genus not yet in the commander's codex here; of them, firsts (shared/codexCount.ts). */
+  codexNew: number;
+  codexFirst: number;
+}
+
+export interface RouteSystemValuesDTO {
+  addr: string;
+  name: string;
+  /** `none`: Spansh has no bodies for it (undiscovered, or never reported). */
+  state: "ok" | "none" | "error";
+  /** Where the bodies come from: his journals (own scans, then EDSM) or Spansh (absent: Spansh). */
+  source?: "journal" | "spansh";
+  error?: string;
+  bodyCount: number;
+  /** The honk's count (Spansh `bodyCount`), when somebody reported it; and how many of those nobody scanned. */
+  bodyTotal: number | null;
+  missing: number;
+  /** Every body scanned with the FSS, the honk included. */
+  fssCr: number;
+  /** The worthwhile planets (the notable ones) mapped: their mapped value, in place of their scan. */
+  dssCr: number;
+  dssBodies: number;
+  /** FSS of everything plus the worthwhile planets mapped: what the system pays. */
+  totalCr: number;
+  /** Expected exobiology at 1×, all bodies. */
+  bioCr: number;
+  /** CODEX ×N for the system: its bodies' counts summed. */
+  codexNew: number;
+  codexFirst: number;
+  /** Notable planets and bodies with biology, most valuable first. */
+  bodies: RouteSystemBodyDTO[];
+  fetchedAt: string | null;
+}
+
+/** One body of the scan view (plan 1.3.3 R-4). Positions in light-seconds from the system's root, at `atMs`. */
+export interface ScanRouteBodyDTO {
+  /** Journal BodyID. */
+  id: number;
+  name: string;
+  /** The name without the system's ("AB 1 c"). */
+  short: string;
+  kind: "star" | "planet";
+  /** Star type ("K", "DA", "N") or planet class ("Icy body"). */
+  cls: string | null;
+  /** The Notable card's tag, if any. */
+  tag: string | null;
+  pos: { x: number; y: number; z: number };
+  /** Where the view draws it: seen from above, each orbit's length on a log scale (orbitPositions.ts). */
+  viewPos: { x: number; y: number; z: number };
+  /** The view's place of what it orbits (a barycentre too): the centre of its ring; null for the root. */
+  ringCentre: { x: number; y: number; z: number } | null;
+  /** The true place of what it orbits (ls), for the true-scale view's ring; null for the root. */
+  parentPos: { x: number; y: number; z: number } | null;
+  /** The body it orbits (journal id; a barycentre's Null id), and that orbit's size (ls): for the view's rings. */
+  parentId: number | null;
+  /** A planet somewhere up its Parents chain: a moon (drawn smaller, named only on the route). */
+  moon: boolean;
+  orbitLs: number | null;
+  radiusKm: number | null;
+  fssCr: number;
+  /** Mapped value (planets), at the rate this commander would get. */
+  dssCr: number | null;
+  mapped: boolean;
+  bioSignals: number | null;
+  /** Expected exobiology (Σ chance × price × the footfall multiplier this commander would get). */
+  bioCr: number | null;
+  /**
+   * In the route: DSS value at least the minimum, biology left worth at least the bio minimum, or (with the codex
+   * switch) a CODEX entry under it.
+   */
+  target: "dss" | "bio" | "both" | "codex" | null;
+  /** CODEX ×N on this body (the likeliest species per genus not in the codex here), and the firsts among them. */
+  codexNew: number;
+  codexFirst: number;
+  /** Known only from EDSM / Spansh: others discovered it, the commander has not scanned it (plan 1.3.4 S-1). */
+  others: boolean;
+}
+
+/** The ship's flight state from the journal's events (shipInSystem.ts). */
+export type ShipFlight = "supercruise" | "normal" | "landed" | "docked" | "unknown";
+
+/** The netlog switch (netlogPosition.ts): off, reading positions, or why it is not. */
+export interface NetlogStatusDTO {
+  on: boolean;
+  /**
+   * off; reading (a position seen this game session); waiting (switched on, no position line yet: the game reads its
+   * setting at start, so it needs a restart); no-game (no game folder found); failed (the game's settings file could
+   * not be written).
+   */
+  state: "off" | "reading" | "waiting" | "no-game" | "failed";
+  /** The game folder read (its Logs) and set, when found. */
+  folder: string | null;
+}
+
+/**
+ * Within this of a body (ls) the netlog's fix puts the ship at it (owner, 2026-11-01: "remembers the closest one you
+ * were near even if you overshoot it and only get back to the main star if I physically go near it again"). Passing a
+ * planet in supercruise the game measures from it at 0.2-1.6 ls; past it, from a star tens of thousands of ls away.
+ */
+export const SHIP_NEAR_LS = 10;
+
+/** `/api/scan-route/ship`: where the ship is in the current system (plan 1.3.5 R-1). */
+export interface ScanRouteShipDTO {
+  /** The current system, as the scan view's `addr`. */
+  addr: string | null;
+  /**
+   * The body the ship is at (arrival star, approached, dropped at, landed on, mapped), or the last body the netlog put
+   * it within {@link SHIP_NEAR_LS} of, whichever is newer; it stays there however far the ship flies on.
+   */
+  atId: number | null;
+  /**
+   * What put the ship at `atId`: a journal event (approached, dropped at, landed on, mapped, the arrival star) or the
+   * netlog passing near it. The Scan route keeps a ship it moved off the HUD's distance where it was over a netlog one.
+   */
+  atFrom?: "journal" | "netlog" | null;
+  /** The body targeted in the game (Status.json Destination), when it is in this system. */
+  targetId: number | null;
+  flight: ShipFlight;
+  /**
+   * Where the ship is measured from: the netlog's newest fix in this system (the body the game measures from and the
+   * distance to it), or, while the launcher's distance reader reads it, the HUD's distance to the target (`from: "hud"`).
+   */
+  fix: { refId: number; distLs: number; mode: "supercruise" | "normal"; atMs: number; from: "netlog" | "hud" } | null;
+  netlog: NetlogStatusDTO;
+}
+
+export interface ScanRouteDTO {
+  addr: string;
+  name: string;
+  /** Where the bodies come from: the commander's journals (own scans, then EDSM), or Spansh. */
+  source: "journal" | "spansh";
+  state: "ok" | "none" | "error";
+  error?: string;
+  atMs: number;
+  minDssCr: number;
+  /** A bio body's expected value it must reach to be a stop, and whether CODEX bodies are stops under it. */
+  bioMinCr: number;
+  codexOn: boolean;
+  /**
+   * The system map's header (plan 1.3.4 S-1): every body scanned (the honk included), every planet mapped, what the
+   * commander's own scans here sell for now (null for a system not in the journals), and CODEX ×N.
+   */
+  totals: { scanCr: number; mappedCr: number; currentCr: number | null; codexNew: number; codexFirst: number };
+  /**
+   * Where the route starts: the body the ship is at in the current system (approached, dropped at, landed on, mapped),
+   * else the arrival star (owner, 2026-11-01). `startShip` says which.
+   */
+  startId: number | null;
+  startShip?: boolean;
+  bodies: ScanRouteBodyDTO[];
+  /** Body ids in the order to fly them, and the whole way (ls). */
+  route: { order: number[]; totalLs: number };
+  /** Bodies known here, the honk's count when known, and the difference. */
+  bodyCount: { known: number; total: number | null; missing: number };
+  /** The route's values: mapping the DSS targets, sampling the bio ones. */
+  routeDssCr: number;
+  routeBioCr: number;
+}

@@ -1,0 +1,285 @@
+/**
+ * Species precision, phase 1: how many species does the app show for each genus slot, and which?
+ *
+ *   npx tsx scripts/probes/precision-phase1.ts
+ *
+ * Reads `docs/precision/truth-table.jsonl` from phase 0 — every body × genus whose species the
+ * sources agree on — and replays each body through the **shipped** matcher, the way the app sees
+ * it: `matchDatabaseToScan` with the spatial catalogue, the region rollup, host star, companion
+ * bodies and genus hints. Behaviour, never gate text.
+ *
+ * ## The unit is a slot
+ *
+ * The game places at most one species per genus per body, so the question the app has to answer is
+ * not "which of 108" but, for each genus really on the body, "which of *its* species". A slot's size
+ * is how many species of that genus the app shows there. The target is 1, and never more than 2.
+ *
+ * ## Two scenarios
+ *
+ *  - **post-DSS** — genus hints supplied: the genera the truth table knows on the body, or the
+ *    journal's own `SAASignalsFound` list where the commander scanned it. This is where the slot
+ *    question is sharpest: the genus is known, the species is not.
+ *  - **FSS-only** — no hints, the decision before flying there. Slot sizes are read off the same
+ *    candidate list per genus.
+ *
+ * ## Physics, one source per body
+ *
+ * The journal's `Scan` where the commander has one (the app's own merge cache, so it is exactly what
+ * the panel matched), then the EDDN capture (journal-shaped, full precision), then the Spansh corpus.
+ * Stars and sibling bodies come from the same source, mapped through the app's own
+ * `mapEdsmBodyToExplorationRecord` so host-star resolution is the app's and not a copy of it.
+ *
+ * Two deliberate differences from the live panel, both of which make the replay the commander's
+ * view *at the body* rather than from a distance:
+ *
+ *  - `systemCoords` is always attached. The app attaches it only for the commander's current
+ *    system, so spatial gates never fire on a system viewed remotely.
+ *  - The capture's body list is always marked incomplete: the collector keeps no Earth-like worlds
+ *    or gas giants, so a missing companion body there means nothing.
+ *
+ * ## Output — local only
+ *
+ * `docs/precision/phase1-report.md` and `phase1-slots.jsonl` (one row per slot, for phase 2).
+ */
+import path from "node:path";
+import { writeFileSync } from "node:fs";
+import { loadSpeciesDatabaseFromTree } from "../../src/server/speciesTreeLoader.js";
+import { loadPriceList, lookupPrice } from "../../src/server/priceList.js";
+import { loadExomasteryProfile } from "../../src/server/exomasteryProfile.js";
+import { createReplay, loadTruthByBody, precisionDir as outDir, root, runMatcher, type Prepared, type RunMatch } from "./precisionReplay.js";
+
+const db = loadSpeciesDatabaseFromTree(root);
+const byId = new Map(db.species.map((e) => [e.id, e]));
+const prices = loadPriceList(root);
+const priceOf = (id: string) => {
+  const e = byId.get(id);
+  return e ? (lookupPrice(prices, e.displayName, e.id) ?? 0) : 0;
+};
+
+const truthByBody = await loadTruthByBody();
+const { prepare, skipped } = await createReplay(db);
+
+/* ------------------------------------------------------------------ replay */
+
+interface Slot {
+  body: string;
+  genus: string;
+  truth: string;
+  source: Prepared["source"];
+  sourcesAgreeing: string[];
+  region: string | null;
+  post: { shown: string[]; all: string[] };
+  fss: { shown: string[]; all: string[] };
+  /** Why the truth landed in the unlikely tier, post-DSS: the soft failure fields. */
+  truthDemotedBy: string[];
+  /** The surface temperature the replay used (for the whole-kelvin edge check below). */
+  kelvin: number | null;
+}
+
+const slots: Slot[] = [];
+const genusOf = (id: string) => byId.get(id)?.genusDataDir ?? "?";
+function perGenus(matches: RunMatch[], genus: string) {
+  const inGenus = matches.filter((m) => m.entry.genusDataDir === genus);
+  return { shown: inGenus.filter((m) => !m.unlikely).map((m) => m.entry.id), all: inGenus.map((m) => m.entry.id) };
+}
+
+let bodiesReplayed = 0;
+const started = Date.now();
+/** `LIMIT=500` replays only the first bodies — a smoke test, never a measurement. */
+const LIMIT = Number(process.env.LIMIT ?? Infinity);
+for (const [bodyKey, rows] of truthByBody) {
+  if (bodiesReplayed >= LIMIT) break;
+  const p = prepare(bodyKey, rows);
+  if (!p) continue;
+  bodiesReplayed += 1;
+  const post = runMatcher(db, p, true);
+  const fss = runMatcher(db, p, false);
+  for (const r of rows) {
+    const g = genusOf(r.species);
+    const truthMatch = post.find((m) => m.entry.id === r.species);
+    slots.push({
+      body: r.body,
+      genus: g,
+      truth: r.species,
+      source: p.source,
+      sourcesAgreeing: r.sources,
+      region: p.ctx.regionName ?? null,
+      post: perGenus(post, g),
+      fss: perGenus(fss, g),
+      truthDemotedBy: truthMatch?.unlikely
+        ? [...new Set(truthMatch.reasons.filter((x) => x.soft).map((x) => x.field))]
+        : [],
+      kelvin: p.scan.SurfaceTemperature ?? null,
+    });
+  }
+  if (bodiesReplayed % 2000 === 0) process.stderr.write(`  ${bodiesReplayed} bodies…\n`);
+}
+const seconds = ((Date.now() - started) / 1000).toFixed(0);
+
+writeFileSync(path.join(outDir, "phase1-slots.jsonl"), slots.map((s) => JSON.stringify(s)).join("\n") + "\n");
+
+/* ------------------------------------------------------------------ measures */
+
+type Scenario = "post" | "fss";
+interface Tally {
+  slots: number;
+  shownHit: number;
+  allHit: number;
+  sizes: number[]; // shown slot size, truth or not
+}
+const emptyTally = (): Tally => ({ slots: 0, shownHit: 0, allHit: 0, sizes: [] });
+function tallyOf(list: Slot[], sc: Scenario): Tally {
+  const t = emptyTally();
+  for (const s of list) {
+    t.slots += 1;
+    if (s[sc].shown.includes(s.truth)) t.shownHit += 1;
+    if (s[sc].all.includes(s.truth)) t.allHit += 1;
+    t.sizes.push(s[sc].shown.length);
+  }
+  return t;
+}
+const pc = (a: number, b: number) => (b ? `${((100 * a) / b).toFixed(1)} %` : "—");
+const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+const share = (xs: number[], f: (n: number) => boolean) => pc(xs.filter(f).length, xs.length);
+function sizeCols(t: Tally): string {
+  return [
+    t.slots,
+    pc(t.shownHit, t.slots),
+    pc(t.allHit, t.slots),
+    mean(t.sizes).toFixed(2),
+    share(t.sizes, (n) => n === 1),
+    share(t.sizes, (n) => n <= 2),
+    share(t.sizes, (n) => n >= 3),
+    share(t.sizes, (n) => n >= 5),
+  ].join(" | ");
+}
+const HEAD = "| slots | truth shown | truth listed | mean size | size 1 | ≤ 2 | 3+ | 5+ |";
+const RULE = "|---:|---:|---:|---:|---:|---:|---:|---:|";
+
+const r: string[] = [];
+r.push(`# Species precision — phase 1 baseline`, ``, `Generated ${new Date().toISOString()} by \`scripts/probes/precision-phase1.ts\`. Local only.`, ``);
+r.push(
+  `Replayed **${bodiesReplayed}** bodies (${seconds} s) → **${slots.length}** slots. ` +
+    `Physics from: ${(["journal", "capture", "corpus"] as const).map((s) => `${s} ${slots.filter((x) => x.source === s).length}`).join(", ")} slots. ` +
+    `Skipped: ${skipped.noPhysics} bodies with no physics, ${skipped.noPlanetClass} with no planet class.`,
+  ``,
+  `*Slot* = a body × a genus really there. *Size* = species of that genus in the shown tier. ` +
+    `*Truth shown* = the real species is among them; *truth listed* = shown or behind "show unlikely".`,
+  ``,
+);
+
+for (const sc of ["post", "fss"] as Scenario[]) {
+  r.push(`## ${sc === "post" ? "Post-DSS (genus known)" : "FSS-only (before flying there)"}`, ``);
+  r.push(`| | ${HEAD.slice(2)}`, `|---${RULE.slice(0)}`);
+  r.push(`| **all** | ${sizeCols(tallyOf(slots, sc))} |`);
+  for (const src of ["journal", "capture", "corpus"] as const) {
+    const l = slots.filter((s) => s.source === src);
+    if (l.length) r.push(`| ${src} physics | ${sizeCols(tallyOf(l, sc))} |`);
+  }
+  r.push(``, `### by genus`, ``, `| genus ${HEAD}`, `|---${RULE}`);
+  const genera = [...new Set(slots.map((s) => s.genus))].sort();
+  for (const g of genera) r.push(`| ${g} | ${sizeCols(tallyOf(slots.filter((s) => s.genus === g), sc))} |`);
+  r.push(``);
+}
+
+/* per species, post-DSS, with rivals */
+r.push(`## Per species (post-DSS)`, ``, `Rivals: the species shown in the same slot most often, as a share of this species' slots.`, ``);
+r.push(`| species | slots | truth shown | mean size | size 1 | top rivals | demoted by (when unlikely) |`, `|---|---:|---:|---:|---:|---|---|`);
+const speciesIds = [...new Set(slots.map((s) => s.truth))].sort();
+for (const id of speciesIds) {
+  const l = slots.filter((s) => s.truth === id);
+  const t = tallyOf(l, "post");
+  const rivals = new Map<string, number>();
+  const demoted = new Map<string, number>();
+  for (const s of l) {
+    for (const o of s.post.shown) if (o !== id) rivals.set(o, (rivals.get(o) ?? 0) + 1);
+    for (const f of s.truthDemotedBy) demoted.set(f, (demoted.get(f) ?? 0) + 1);
+  }
+  const short = (x: string) => x.split("_").slice(-1)[0];
+  const top = [...rivals].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([o, n]) => `${short(o)} ${pc(n, l.length)}`).join(", ");
+  const dem = [...demoted].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([f, n]) => `${f} ×${n}`).join(", ");
+  r.push(`| ${id} | ${t.slots} | ${pc(t.shownHit, t.slots)} | ${mean(t.sizes).toFixed(2)} | ${share(t.sizes, (n) => n === 1)} | ${top || "—"} | ${dem || "—"} |`);
+}
+r.push(``);
+
+/* confusion pairs */
+interface Pair {
+  truth: string;
+  rival: string;
+  n: number;
+  stake: number;
+}
+const pairs = new Map<string, Pair>();
+for (const s of slots) {
+  if (!s.post.shown.includes(s.truth)) continue;
+  for (const o of s.post.shown) {
+    if (o === s.truth) continue;
+    const k = `${s.truth}|${o}`;
+    const p = pairs.get(k) ?? { truth: s.truth, rival: o, n: 0, stake: 0 };
+    p.n += 1;
+    p.stake += Math.abs(priceOf(s.truth) - priceOf(o));
+    pairs.set(k, p);
+  }
+}
+const M = (cr: number) => `${(cr / 1e6).toFixed(1)} M`;
+const pairRow = (p: Pair) =>
+  `| ${p.truth} | ${p.rival} | ${p.n} | ${M(priceOf(p.truth))} | ${M(priceOf(p.rival))} | ${M(p.stake)} |`;
+r.push(`## Confusion pairs (post-DSS, truth shown, rival shown beside it)`, ``);
+r.push(`### by credits at stake — Σ |price difference| over the slots`, ``, `| truth | rival | slots | truth pays | rival pays | at stake |`, `|---|---|---:|---:|---:|---:|`);
+for (const p of [...pairs.values()].sort((a, b) => b.stake - a.stake).slice(0, 40)) r.push(pairRow(p));
+r.push(``, `### by count`, ``, `| truth | rival | slots | truth pays | rival pays | at stake |`, `|---|---|---:|---:|---:|---:|`);
+for (const p of [...pairs.values()].sort((a, b) => b.n - a.n).slice(0, 40)) r.push(pairRow(p));
+r.push(``);
+
+/* recall losses */
+const lost = slots.filter((s) => !s.post.all.includes(s.truth));
+const lostBy = new Map<string, number>();
+for (const s of lost) lostBy.set(s.truth, (lostBy.get(s.truth) ?? 0) + 1);
+r.push(`## Truth not listed at all (post-DSS) — ${lost.length} slots`, ``);
+r.push(
+  [...lostBy].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id, n]) => `- ${id}: ${n} of ${slots.filter((s) => s.truth === id).length}`).join("\n") || "_none_",
+  ``,
+);
+
+/*
+  Whole-kelvin edges. Spansh stores temperatures cut down to whole kelvin; the journal and EDDN carry
+  the decimals. So a species whose hottest (or coldest) recorded body came from Spansh has its
+  observed histogram end on a whole number, and the same body read from EDDN can land a fraction past
+  it — outside every bin, so observedAtTemperature() (speciesTemperatureObservations.ts) gives no
+  rescue and the species drops off the list. First seen 2026-09-29: HIP 87621 2 b a, thin CO2,
+  Spansh 467 K, EDDN 467.999969 K; Concha renibus and Fungoida stabitis both have 467 K as their
+  observed maximum from that very body; HIP 87621 1 (698 K, Clypeus lacrimam) is the same story in the
+  same system. Left as it is by the owner's choice; this section says whether it has happened again.
+*/
+const edgeCases: string[] = [];
+for (const s of lost) {
+  const e = byId.get(s.truth);
+  if (!e || s.kelvin == null) continue;
+  const h = loadExomasteryProfile(root, e)?.displayHistograms?.["body.surfaceTemperature"];
+  if (!h) continue;
+  const past = s.kelvin > h.max ? s.kelvin - h.max : s.kelvin < h.min ? h.min - s.kelvin : null;
+  if (past !== null && past < 1) {
+    edgeCases.push(
+      `- ${s.body} — ${s.truth}: ${s.kelvin} K, recorded ${h.min}–${h.max} K (${past.toPrecision(3)} K past), physics from ${s.source}`,
+    );
+  }
+}
+r.push(`### Less than 1 K past a recorded temperature edge — ${edgeCases.length} slots`, ``);
+r.push(
+  edgeCases.length
+    ? "Spansh's whole-kelvin temperatures against the decimals of the journal and EDDN (see the comment in " +
+        "scripts/probes/precision-phase1.ts). Known since 2026-09-29: HIP 87621 1 and 2 b a.\n\n" +
+        edgeCases.join("\n")
+    : "_none_",
+  ``,
+);
+
+writeFileSync(path.join(outDir, "phase1-report.md"), r.join("\n"));
+const all = tallyOf(slots, "post");
+const fssT = tallyOf(slots, "fss");
+console.log(
+  `bodies ${bodiesReplayed}, slots ${slots.length} (${seconds} s)\n` +
+    `post-DSS: truth shown ${pc(all.shownHit, all.slots)}, listed ${pc(all.allHit, all.slots)}, mean slot ${mean(all.sizes).toFixed(2)}, size1 ${share(all.sizes, (n) => n === 1)}, ≤2 ${share(all.sizes, (n) => n <= 2)}\n` +
+    `FSS-only: truth shown ${pc(fssT.shownHit, fssT.slots)}, listed ${pc(fssT.allHit, fssT.slots)}, mean slot ${mean(fssT.sizes).toFixed(2)}, size1 ${share(fssT.sizes, (n) => n === 1)}, ≤2 ${share(fssT.sizes, (n) => n <= 2)}\n` +
+    `report ${path.relative(root, path.join(outDir, "phase1-report.md"))}`,
+);

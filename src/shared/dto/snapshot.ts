@@ -1,5 +1,6 @@
 import type { NspOutlookDTO } from "../nspOutlook.js";
 import type { ShipDamageState } from "../shipDamage.js";
+import type { OwnCarrierJumpDTO } from "../ownAssets.js";
 import type { ColonizeHudDTO } from "../colonize/hud.js";
 import type { JournalHistoryPreset } from "../journalHistoryPreset.js";
 import type { TriageTiming } from "../systemTriage.js";
@@ -114,6 +115,8 @@ export interface AppSnapshot {
   colonizeHud?: ColonizeHudDTO | null;
   /** The ship's damage part by part, for the HUD's Ship section (shared/shipDamage.ts); null before a Loadout. */
   shipDamage?: ShipDamageState | null;
+  /** The HUD's Carrier section (shared/ownAssets.ts, owner 2026-11-02): his carrier's jump or cooldown; null when idle. */
+  carrierJump?: OwnCarrierJumpDTO | null;
   /** Rows included in `organicDataValueCredits` (pending sales). */
   organicPendingSampleCount: number;
   /** Per-sample breakdown for the data value modal (unsold completes in journal). */
@@ -280,6 +283,11 @@ export interface AppSnapshot {
   /** Journal `FSDTarget.RemainingJumpsInRoute`; null until line merged. */
   remainingJumpsInRoute: number | null;
   /**
+   * The game flies a route NavRoute.json does not hold (a re-plot it did not write, owner 2026-11-01): the HUD says
+   * so with the jumps left instead of an empty route strip.
+   */
+  navRouteUnsaved?: boolean;
+  /**
    * Commander fuel tank + rough “how many max-range jumps left” from Status.json + journal `Loadout`/`FSDJump`.
    * Null when Status.json unread or no fuel fields.
    */
@@ -342,6 +350,12 @@ export interface AppSnapshot {
    * already be showing the next one's candidates. Null when nothing is targeted.
    */
   statusDestination?: { systemAddress: number; bodyId: number; name: string } | null;
+  /**
+   * The Scan route's distance reader should read now (plan 1.3.8; owner 2026-11-05: only on triggers): the Scan route
+   * tab showing, the ship in supercruise, a body of the current system targeted. The screen marker's page starts and
+   * stops its capture on this (with the launcher's option on); it never asks for it.
+   */
+  hudReadDistance?: boolean;
 
   /**
    * The last hyperspace jump target from `StartJump` (JumpType Hyperspace), for the HUD's next-jump

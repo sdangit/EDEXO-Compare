@@ -2,6 +2,8 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type { HudSnapshot } from "../types";
 import { cueFromOverlay } from "../audio";
 import { cap, fmtClock, fmtCr } from "../core";
+import { pref } from "../theme";
+import { Guide } from "../guide";
 import { drawMinimap } from "../radar";
 import { Head, Metres, Pill, type HudSection } from "../parts";
 import { useLiveRev } from "../store";
@@ -53,10 +55,19 @@ function Distance({ d, waiting = false }: { d: HudSnapshot; waiting?: boolean })
   useLiveRev();
   const svg = useRef<SVGSVGElement>(null);
   const { eo, live, tooClose } = readRun(d);
-  // On a surface when there is a map to draw (drawMinimap draws nothing and says false without one).
-  const onSurface = !d.journalBoot && !!(d.exoMinimap && d.exoMinimap.marks);
+  // On a surface when there is a map to draw (drawMinimap draws nothing and says false without one). A map of the
+  // planet flown over (`near`) opens it with "Radar always on" (owner, 2026-11-04: the composition scanner's marks are
+  // of no use while the radar folds shut off the ground).
+  // A composition scan on the planet flown over opens it too (owner, 2026-11-04: "tracker radar not activating on comp
+  // scan"): with something to show, the switch is not needed.
+  const map = d.exoMinimap;
+  const flownOverShows = !!map?.marks.some((m) => m.kind === "codex") || pref("edexoHudRadarAlways", "0") === "1";
+  const onSurface = !d.journalBoot && !!map?.marks && (!map.near || flownOverShows);
   // Before the first snapshot the block stands open, as the page's markup did: the first frame folds it if it must.
-  const showTracker = waiting || onSurface || live;
+  // A run in progress opens it only where there is a radar (owner, 2026-11-06: "radar not minimized" in supercruise at
+  // 1 / 3: the game keeps the run until a sample elsewhere, Status.json has no position there); the head still says
+  // "Sampling 1 / 3".
+  const showTracker = waiting || onSurface || (live && !!map);
   useLayoutEffect(() => {
     // The cue fires on the edge, once per frame of the run, as the tracker's render always fed it.
     cueFromOverlay(eo);
@@ -79,7 +90,8 @@ function Distance({ d, waiting = false }: { d: HudSnapshot; waiting?: boolean })
   let cele: string | null = null;
   let timer = "—";
   if (waiting || !showTracker) {
-    status = d.journalBoot ? "Journal loading" : "Standby";
+    // Folded with a run in progress (off the planet): the head still names it.
+    status = d.journalBoot ? "Journal loading" : live && !waiting ? "Sampling " + Math.min(eo!.sampleCount || 0, 3) + " / 3" : "Standby";
     if (waiting) {
       noteExplain = false;
       pay = "—";
@@ -120,43 +132,29 @@ function Distance({ d, waiting = false }: { d: HudSnapshot; waiting?: boolean })
         e.finalCredits != null ? (
           <>
             {fmtCr(e.finalCredits)}
-            {e.analyseWasLogged === true ? (
+            {e.footfallMult === 5 ? (
               <>
                 {" "}
-                <span style={{ opacity: 0.7 }}>(logged)</span>
+                <span style={{ opacity: 0.85 }}>(first footfall 5×)</span>
               </>
-            ) : (
-              <>
-                {" "}
-                <span style={{ opacity: 0.85 }}>(new codex 5×)</span>
-              </>
-            )}
+            ) : null}
           </>
         ) : (
           fmtCr(null)
         );
-      note =
-        e.analyseWasLogged === true
-          ? e.footfallMult === 5
-            ? "Includes first-footfall 5× on this body."
-            : "No first-footfall 5× on this body."
-          : e.footfallMult === 5
-            ? "5× new-codex payout (first footfall does not stack another ×5)."
-            : "5× new-codex payout.";
+      note = e.footfallMult === 5 ? "Includes the first-footfall 5× on this body." : "No first-footfall 5× on this body.";
       cele = "Complete — hiding in " + (e.celebrationRemainSec || 0) + "s";
     } else {
       /*
         The estimate from the first scan (owner, 2026-10-02: "show the value after Log, not after
         Sample"): the Log names the species, which is all the price needs. It waited for the second.
       */
-      const a = e.payLoggedCodex;
-      const b = e.payNewCodex;
-      if (e.sampleCount >= 1 && a != null && b != null) {
+      const a = e.payEstimate;
+      if (e.sampleCount >= 1 && a != null) {
         pay = (
           <span className="pay-est">
-            {fmtCr(b).replace(" CR", "")}
-            <small>new</small>· {fmtCr(a).replace(" CR", "")}
-            <small>logged</small>
+            {fmtCr(a)}
+            {e.footfallMult === 5 ? <small>first footfall 5×</small> : null}
           </span>
         );
       } else if (e.sampleCount >= 1) pay = "—";
@@ -168,7 +166,9 @@ function Distance({ d, waiting = false }: { d: HudSnapshot; waiting?: boolean })
           : "Need ≥ " + (e.minSampleDistanceM || "?") + " m from first sample before second.";
       } else if (e.sampleCount >= 2) {
         note =
-          "Estimates: new codex = 5× list; logged codex = list × footfall (×1 or ×5). These are not multiplied together.";
+          e.footfallMult === 5
+            ? "The list price × 5: you made the first footfall on this body."
+            : "The list price: the first footfall here was not yours (no 5×).";
       } else {
         noteExplain = false;
         note = "";
@@ -225,6 +225,7 @@ function Distance({ d, waiting = false }: { d: HudSnapshot; waiting?: boolean })
             </Row>
           </div>
         </div>
+        {showTracker && !waiting ? <Guide map={map} /> : null}
         <Row label="Payout" rule>
           <span className="val" data-f="pay">
             {pay}

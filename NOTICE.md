@@ -34,6 +34,9 @@ same release.
 
 ### EDSM — [edsm.net](https://edsm.net)
 
+EDSM's data may be reused with credit, for non-commercial use (the same terms as EDAstro's); this project credits
+it here and is non-commercial (see [LICENSE](LICENSE)).
+
 Body records: gravity, temperature, pressure, atmosphere, volcanism and orbital geometry for the
 bodies in the corpus, plus the system coordinates that place them. Queried through the public API at
 one request per 1.5 s and cached, so a re-run costs EDSM nothing.
@@ -44,6 +47,8 @@ systems covering every codex entry EDSM has there, with the entries it has for e
 matched against Spansh's bodies, is how the plant colour rules were checked on 119,657 bodies.
 `data/rarity/species-rarity.json` is from the same dump: per species, how many systems EDSM's codex
 has it in, galaxy-wide and per region — the rarity tiers and the region check read it.
+`src/shared/alienSites.ts` (the galaxy map's Guardian and Thargoid site layers) is from the same dump too: the
+systems its Guardian and Thargoid codex entries were reported in, with their coordinates.
 
 ### EDAstro — [edastro.com](https://edastro.com), by CMDR Orvidius
 
@@ -127,6 +132,11 @@ Credited by link to the network rather than by commander name, at ED-DSN's reque
 photographs were taken on an expedition years ago and a significant number of those commanders can no
 longer be reached, so naming some and not others would be worse than naming none.
 
+### edGGG — [ed-ggg.github.io/edggg](https://ed-ggg.github.io/edggg/), by CMDR Arcanic
+
+The catalogue of green gas giants (`src/shared/gggCatalogue.ts`) and the cloud-ladder method the app follows are
+edGGG's, included with credit under their author's terms (also named in `data/LICENSE-DATA.txt`).
+
 ### Ship outlines — the HUD's Ship section
 
 The ships seen from above (`src/shared/shipOutlines.ts`) are simplified silhouettes traced from other
@@ -153,9 +163,9 @@ Only the outline and a set of points are kept; no image from any of them ships w
 
 ## Species photographs
 
-`data/species/<genus>/<genus>_photos/` holds 184 images of Elite Dangerous exobiology (each also
-present as a cropped card and thumbnail, so 552 files). **157 of them were contributed by commanders
-of the Bahuckel clan and by the Stellar Exobiologists Guild**; the remaining 27 are sourced from the ED-DSN community, are **not covered by
+`data/species/<genus>/<genus>_photos/` holds 195 images of Elite Dangerous exobiology (each also
+present as a cropped card and thumbnail, so 585 files). **177 of them were contributed by commanders
+of the Bahuckel clan, by the Stellar Exobiologists Guild and by CMDR Nimblor [TSEG]**; the remaining 18 are sourced from the ED-DSN community, are **not covered by
 this project's licences** and are not this project's to sublicense.
 
 ### Telling them apart, in the app and on disk
@@ -178,9 +188,10 @@ commander against each file:
 
 | commander                                     | images |
 | --------------------------------------------- | ------ |
-| Bahuckel — CMDR FALrenica (the project owner) | 146    |
-| Bahuckel — CMDR PhoEniXDFA                    | 6      |
+| Bahuckel — CMDR FALrenica (the project owner) | 149    |
+| Bahuckel — CMDR PhoEniXDFA                    | 7      |
 | Stellar Exobiologists Guild                   | 5      |
+| CMDR Nimblor [TSEG]                           | 16     |
 
 Each contributor took the photographs themselves and gave them to this project knowingly. That is
 the difference from the ED-DSN set below, and it is the whole reason the manifest exists: an image
@@ -188,7 +199,7 @@ credited to the wrong person is the one mistake this area of the project cannot 
 
 These replace the ED-DSN images, which are there mainly as placeholders. Anything not listed in the
 manifest is ED-DSN's and carries the standing credit below. **Once a species has a contributed
-photograph, ED-DSN's of that same species is removed from the tree** — 66 were retired this way — so
+photograph, ED-DSN's of that same species is removed from the tree** — 77 were retired this way — so
 the borrowed images shrink as contributed ones arrive. They are also **variant** photographs — the
 exact colour a body grows — which is what lets a card show the plant you are about to walk up to
 rather than one of its siblings.
@@ -247,5 +258,19 @@ library as Ghostery packages it (GPL-3.0). This project is not affiliated with a
 
 ## Runtime dependencies
 
-`express` (MIT) and `ws` (MIT), and the browser's blocking bundle above. Everything else in
-`package.json` is a development dependency and is not redistributed with the application.
+Bundled into the application (their licence notices travel with it):
+
+- the server: `express` and its dependencies (MIT), `ws` (MIT), `sql.js` (MIT; its `sql-wasm.wasm` ships beside
+  it), and the browser's blocking bundle above;
+- the app's pages: React, `react-dom` and `scheduler` (MIT), three.js (MIT), Radix UI primitives and Floating UI
+  (MIT), Lucide icons (`lucide-react`, ISC), `html-to-image` (MIT), and the CSS Tailwind generates (MIT).
+
+Nothing else in `package.json` is redistributed: the rest are build and test tools.
+
+Exploration credits follow MattG's published exploration formulae
+([Frontier forums](https://forums.frontier.co.uk/threads/exploration-value-formulae.232000/)); EDMC Pioneer's figures
+were used only to confirm the results, none of its code is included.
+
+Also derived and shipped: EDCD's FDevIDs commodity table (`scripts/commodity.fdevids.csv`, compiled into the
+Colonize commodity list), and the Spansh-derived galaxy files the app downloads (`finder.bin`, `jumponium.bin.gz`, the
+galaxy index; see Spansh above). The EDEXO typeface in `public/fonts` is the project's own.
