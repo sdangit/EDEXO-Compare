@@ -114,10 +114,10 @@ import { loadBioIndex, peekBioIndex } from "./bioIndex.js";
 import { importedSystems, loadVisitedImport } from "./visitedCache.js";
 import { mySystemDetail, mySystemsDto, sessionRouteDto, visitedSystemsDto } from "./galaxyMine.js";
 import { commanderSectorsDto } from "./galaxySectorTiers.js";
-import { createUpdateChecker, currentReleaseForm } from "./updateCheck.js";
-import { createMacUpdateChecker, currentMacReleaseForm } from "./macUpdateCheck.js";
-import { createAppUpdater, resolveUpdateDir } from "./appUpdater.js";
-import { createWhatsNew } from "./whatsNew.js";
+import { currentReleaseForm } from "./updateCheck.js";
+import { currentMacReleaseForm } from "./macUpdateCheck.js";
+import { resolveUpdateDir } from "./appUpdater.js";
+import { createPlatformUpdates } from "./platformUpdates.js";
 import { buildDiagnosticsText, installLogRing, loggedLines, serverMemory } from "./diagnostics.js";
 import { galaxyMemoryState } from "./galaxyMemory.js";
 import { createUnknownExobioLog } from "./exobioUnknown.js";
@@ -231,19 +231,7 @@ export async function startEdexo(cli: CliOptions): Promise<EdexoRuntime> {
   }
 
   const projectRoot = getProjectRoot();
-  // Keep upstream notes for the installed base version; only fork releases offer Mac updates.
-  const upstreamUpdates = createUpdateChecker();
-  const updateChecker = process.platform === "darwin" ? createMacUpdateChecker() : upstreamUpdates;
-  const appUpdater = createAppUpdater({
-    newerAsset: () => (process.platform === "darwin" ? null : upstreamUpdates.newerAsset()),
-    form: currentReleaseForm(),
-    ...(process.platform === "darwin" ? { supported: false } : {}),
-  });
-  const whatsNew = createWhatsNew({
-    check: () => upstreamUpdates.check(false),
-    notesBetween: (from, to) => upstreamUpdates.notesBetween(from, to),
-    lastError: () => upstreamUpdates.lastError(),
-  });
+  const { updateChecker, appUpdater, whatsNew } = createPlatformUpdates();
 
   let journalDir = resolveInitialJournalDir(projectRoot);
   /*

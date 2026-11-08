@@ -28,13 +28,15 @@ it("stages macOS resources without HUDs or commander data and replaces stale rel
       "hud.webmanifest",
       "hud-overlay.html",
       "distance-overlay.html",
+      "aim-overlay.html",
+      "carrier-overlay.html",
       "hud/main.js",
       "assets/app.js",
     ])
       write(`dist/web/${file}`);
     write("data/species/species.json");
     write("data/foot_scanned.json", "private commander fixture");
-    write("data/spansh-dump-tests/export.json");
+    write("data/galaxy/bio-index.bin");
     write("node_modules/sql.js/dist/sql-wasm.wasm", "wasm fixture");
     write("out/stale-file");
     const module = pathToFileURL(path.resolve("scripts/mac-release.mjs")).href;
@@ -55,7 +57,7 @@ it("stages macOS resources without HUDs or commander data and replaces stale rel
     expect(readFileSync(path.join(out, "web/assets/app.js"), "utf8")).toBe("fixture");
     expect(readFileSync(path.join(out, "data/species/species.json"), "utf8")).toBe("fixture");
     expect(readFileSync(path.join(out, "sql-wasm/sql-wasm.wasm"), "utf8")).toBe("wasm fixture");
-    for (const file of ["stale-file", "data/foot_scanned.json", "data/spansh-dump-tests"])
+    for (const file of ["stale-file", "data/foot_scanned.json", "data/galaxy/bio-index.bin"])
       expect(existsSync(path.join(out, file)), file).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });

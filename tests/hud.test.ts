@@ -270,13 +270,13 @@ describe("HUD tracker", () => {
       return document.querySelector('[data-f="pay"]')?.textContent ?? "";
     };
     expect(run(0)).toBe("—");
-    expect(run(1)).toMatch(/1\s?000\s?000/);
+    expect(run(1)).toContain((1_000_000).toLocaleString());
     expect(document.querySelector(".trk")?.textContent).toContain("from first sample before second");
     // The 5× is the first footfall's only, never a new codex entry's (owner 2026-11-06, a commander's 5,000,000 "new
     // codex 5×" where the app said 1.00 M, the footfall another commander's).
-    expect(run(2)).toMatch(/1\s?000\s?000/);
+    expect(run(2)).toContain((1_000_000).toLocaleString());
     expect(run(2)).not.toContain("5×");
-    expect(run(2, 5)).toMatch(/5\s?000\s?000/);
+    expect(run(2, 5)).toContain((5_000_000).toLocaleString());
     expect(run(2, 5)).toContain("first footfall 5×");
   });
 
@@ -297,7 +297,7 @@ describe("HUD tracker", () => {
         },
       });
       const pay = document.querySelector('[data-f="pay"]')?.textContent ?? "";
-      expect(pay).toMatch(/1\s?000\s?000/);
+      expect(pay).toContain((1_000_000).toLocaleString());
       expect(pay).not.toContain("codex");
     }
   });
