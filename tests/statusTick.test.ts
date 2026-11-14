@@ -79,11 +79,19 @@ describe("createStatusTick", () => {
     expect(push).toHaveBeenCalledTimes(2);
   });
 
-  it("sends the radar on every tick while a sample run is open", () => {
-    const { tick, store, broadcastExoLive } = setup(() => status(20));
-    store.overlayTouchdownBodyKey = "1:2";
-    tick();
-    tick();
-    expect(broadcastExoLive).toHaveBeenCalledTimes(2);
+  it.each(["win32", "linux", "darwin"])("keeps live fuel on %s and sends radar only on HUD platforms", (platform) => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    try {
+      const { tick, store, broadcastExoLive, push } = setup(() => status(20));
+      store.overlayTouchdownBodyKey = "1:2";
+      tick();
+      tick();
+      expect(store.liveStatusFuelMainT).toBe(20);
+      expect(push).toHaveBeenCalledTimes(1);
+      expect(broadcastExoLive).toHaveBeenCalledTimes(platform === "darwin" ? 0 : 2);
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
   });
 });

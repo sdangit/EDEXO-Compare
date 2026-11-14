@@ -1,6 +1,9 @@
-import { _electron as electron } from "@playwright/test";
+import { _electron as electron, expect } from "@playwright/test";
+import { flipFuses, getCurrentFuseWire, FuseVersion, FuseV1Options } from "@electron/fuses";
+import { FuseState } from "@electron/fuses/dist/constants.js";
 import { cpSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -20,6 +23,41 @@ execFileSync("/usr/bin/ditto", [
   extracted,
 ]);
 const executablePath = path.join(extracted, "EDExoCompare.app/Contents/MacOS/EDExoCompare");
+const appPath = path.join(extracted, "EDExoCompare.app");
+execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath]);
+const fuses = await getCurrentFuseWire(appPath);
+for (const fuse of [
+  FuseV1Options.RunAsNode,
+  FuseV1Options.EnableNodeOptionsEnvironmentVariable,
+  FuseV1Options.EnableNodeCliInspectArguments,
+]) assert.equal(fuses[fuse], FuseState.DISABLE);
+
+// First boot the unmodified archive: Playwright's Electron driver needs --inspect, which releases disable.
+const release = spawn(executablePath, ["--port", "7139"], { env, stdio: "ignore" });
+const exited = once(release, "exit");
+try {
+  await expect.poll(async () => {
+    assert.equal(release.exitCode, null, "The unmodified release exited before serving its launcher");
+    assert.equal(release.signalCode, null, "The unmodified release was killed before serving its launcher");
+    try {
+      const response = await fetch("http://127.0.0.1:7139/launcher.html", { signal: AbortSignal.timeout(1000) });
+      return response.ok && (await response.text()).includes("id=\"main\"");
+    } catch {
+      return false;
+    }
+  }, { timeout: 60_000 }).toBe(true);
+  console.info("Unmodified Electron release booted with all three hardening fuses disabled.");
+} finally {
+  release.kill();
+  await exited;
+}
+
+// Instrument only this throwaway extraction. The built .app and release ZIP remain hardened.
+await flipFuses(appPath, {
+  version: FuseVersion.V1,
+  resetAdHocDarwinSignature: true,
+  [FuseV1Options.EnableNodeCliInspectArguments]: true,
+});
 const desktop = await electron.launch({
   executablePath,
   args: ["--port", "7139"],

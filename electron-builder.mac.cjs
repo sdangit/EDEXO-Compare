@@ -5,7 +5,10 @@ module.exports = {
   directories: { ...base.directories, output: "dist/electron-out-mac" },
   extraMetadata: { main: "electron/main.mac.cjs" },
   files: ["electron/main.mac.cjs", "electron/preload.mac.cjs", "package.json"],
+  // macOS signs Contents as code; licence documents belong in Resources.
+  extraFiles: [],
   extraResources: [
+    ...base.extraFiles,
     { from: "build/app.cjs", to: "edexo/app.cjs" },
     { from: "build/finder-worker.cjs", to: "edexo/finder-worker.cjs" },
     { from: "dist/mac-staging/web", to: "web" },
@@ -13,6 +16,8 @@ module.exports = {
     { from: "dist/mac-staging/sql-wasm", to: "sql-wasm" },
   ],
   mac: {
+    // Fuse changes invalidate Electron's signature; sign the finished local app without a Developer ID.
+    identity: "-",
     target: ["dir"],
     icon: "public/edexo-icon.png",
     category: "public.app-category.utilities",

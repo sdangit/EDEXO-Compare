@@ -534,8 +534,8 @@ checks. Journals and `Status.json` still update the main app. Automatic departur
 backups rely on journal `Shutdown` events; crash/process-exit detection is excluded.
 The launcher can still make manual and scheduled backups.
 
-These personal-use builds are not notarized. Browser executables use ad-hoc signing;
-the Electron build does not require a Developer ID certificate. Existing Windows/Linux
+These personal-use builds are not notarized. Browser executables and the Electron app use
+ad-hoc signing without a Developer ID certificate. Existing Windows/Linux
 overlay functionality is retained for those platforms.
 
 Apple Silicon browser and packaged Electron releases have passed automated smoke
@@ -571,6 +571,8 @@ checks live journal updates, Status.json updates through the app WebSocket, and
 HUD omission. The Electron smoke test checks the real preload bridge, isolated
 windows, opening/reopening the main app, and clean shutdown with a temporary
 profile and synthetic journals, launching the app extracted from the release ZIP.
+It first verifies the release's hardening fuses and boots the unmodified app, then
+enables debugger attachment only in the temporary extraction for Playwright's UI checks.
 These automated checks do not replace live
 CrossOver testing or validation on an Intel Mac.
 

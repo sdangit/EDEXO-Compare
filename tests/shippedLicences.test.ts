@@ -16,8 +16,19 @@ describe("the shipped licences", () => {
     expect(cfg.extraFiles.map((f) => f.to).sort()).toEqual(["LICENSE-DATA.txt", "LICENSE.txt", "NOTICE.md", "THIRD-PARTY-LICENSES.txt"]);
   });
 
-  it("are in the CLI pack and the Linux build", () => {
-    for (const f of ["scripts/dist-win-cli.mjs", "scripts/dist-linux.mjs"])
+  it("are in Resources in the signed macOS app", () => {
+    const cfg = require("../electron-builder.mac.cjs") as {
+      extraFiles: unknown[];
+      extraResources: { from: string; to: string }[];
+    };
+    expect(cfg.extraFiles).toEqual([]);
+    expect(cfg.extraResources.map((f) => f.to)).toEqual(expect.arrayContaining([
+      "LICENSE-DATA.txt", "LICENSE.txt", "NOTICE.md", "THIRD-PARTY-LICENSES.txt",
+    ]));
+  });
+
+  it("are in the CLI pack and the Linux and macOS browser builds", () => {
+    for (const f of ["scripts/dist-win-cli.mjs", "scripts/dist-linux.mjs", "scripts/dist-mac.mjs"])
       expect([f, readFileSync(f, "utf8").includes("THIRD-PARTY-LICENSES.txt")]).toEqual([f, true]);
   });
 

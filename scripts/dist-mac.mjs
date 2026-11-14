@@ -28,6 +28,7 @@ for (const mode of ["client", "server"]) {
 }
 for (const file of ["LICENSE", "NOTICE.md"]) cpSync(file, join(out, file));
 cpSync("data/LICENSE-DATA.txt", join(out, "LICENSE-DATA.txt"));
+cpSync("build/THIRD-PARTY-LICENSES.txt", join(out, "THIRD-PARTY-LICENSES.txt"));
 writeFileSync(
   join(out, "README.txt"),
   `ED Exo Compare ${version} — macOS ${arch}, browser edition

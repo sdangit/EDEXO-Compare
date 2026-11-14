@@ -41,6 +41,7 @@ const RAW: Record<string, string> = {
   "src/server/journalMergeCache.ts": "two files renamed in order; a miss rebuilds the cache (combined plan 1.1c)",
   "electron/updater.cjs": "moves the staged update into place",
   "electron/launcherIpc.cjs": "an export to the file the commander picked in a save dialog",
+  "electron/main.mac.cjs": "an export to the file the commander picked in a save dialog",
 };
 
 function files(dir: string): string[] {

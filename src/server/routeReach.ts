@@ -11,6 +11,8 @@
 export type RouteReach = "pc" | "lan";
 
 export const ROUTE_REACH: Readonly<Record<string, RouteReach>> = {
+  // httpServer.ts: capabilities used by both local and paired browser clients.
+  "GET /api/platform.js": "lan",
   // routes/speciesFilesRoutes.ts
   "GET /photos/__builtin_placeholder.svg": "lan",
   "GET /species-photos/:genusDir/:file": "lan",
