@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import initSqlJs, { type Database, type SqlValue } from "sql.js";
 import { genusFromLandmark, occurrenceKey, type SpeciesIndexEntry, type SpanshExoRow } from "./csvImport.js";
@@ -6,6 +6,7 @@ import { PROJECT_ROOT } from "./paths.js";
 import { asClaimOrigin, type ClaimOrigin } from "../shared/provenance.js";
 import { runExec, queryOne, queryAll, normSystem, normBody, normSpeciesLabel } from "./feederSql.js";
 import { META_CUMULATIVE, migrateSchema } from "./feederSchema.js";
+import { writeFileAtomic } from "../server/atomicWrite.js";
 
 /**
  * sql.js's WebAssembly: `node_modules` in a checkout, `resources/sql-wasm/` in the packaged app, where
@@ -44,18 +45,26 @@ export class FeederStore {
    * a full disk mid-write left a truncated database, the only copy of what was imported.
    */
   persist(): void {
-    const data = this.db.export();
-    const tmp = `${this.dbPath}.${process.pid}.tmp`;
+    // Flushed before the rename and the rename retried while Windows holds the file (writeFileAtomic, plan 1.3).
+    writeFileAtomic(this.dbPath, Buffer.from(this.db.export()), {});
+    this.unsaved = false;
+  }
+
+  private held = 0;
+  private unsaved = false;
+
+  /**
+   * The transactions inside `fn` reach disk once, when it ends (review 2026-11-07 §4.1): each one exported and
+   * rewrote the whole database (119 MB), three or four times an import. A throw still saves what was committed
+   * before it, as the per-transaction saves did.
+   */
+  holdWrites<T>(fn: () => T): T {
+    this.held++;
     try {
-      writeFileSync(tmp, Buffer.from(data));
-      renameSync(tmp, this.dbPath);
-    } catch (e) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        /* nothing to clean */
-      }
-      throw e;
+      return fn();
+    } finally {
+      this.held--;
+      if (this.held === 0 && this.unsaved) this.persist();
     }
   }
 
@@ -64,7 +73,8 @@ export class FeederStore {
       this.db.run("BEGIN;");
       const r = fn();
       this.db.run("COMMIT;");
-      this.persist();
+      if (this.held) this.unsaved = true;
+      else this.persist();
       return r;
     } catch (e) {
       try {

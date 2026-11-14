@@ -29,13 +29,14 @@
  *   out for the rest, and **never render `mainImage`** — 200 rows of hotlinked photographs would put
  *   this app's users on someone's hobby image server on every panel open.
  */
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { poiGroup, poiIsOrganic, poiTypeLabel, type PoiGroup } from "../shared/gecCategories.js";
 import { parseCarrierQuery, textMatchesQuery } from "../shared/carrierSearch.js";
 import { EDASTRO_USER_AGENT } from "./edastroCarriers.js";
 import { resolveUserSettingsJsonPath } from "./paths.js";
 import type { PoiDataStatusDTO, PoiRowDTO } from "../shared/types.js";
+import { writeFileAtomic } from "./atomicWrite.js";
 
 const POI_URL = "https://edastro.com/gec/json/combined";
 
@@ -135,10 +136,21 @@ export function parsePoiJson(text: string): PoiRecord[] {
       z: z!,
       summary: String(p.summary ?? "").trim(),
       rating: Number.isFinite(ratingRaw) && ratingRaw > 0 ? ratingRaw : null,
-      url: String(p.poiUrl ?? p.galMapUrl ?? "").trim(),
+      url: webUrl(String(p.poiUrl ?? p.galMapUrl ?? "")),
     });
   }
   return out;
+}
+
+/** A link from EDAstro's list, kept only as an http(s) address: it becomes a link target (review 2026-11-10 F6). */
+function webUrl(raw: string): string {
+  const t = raw.trim();
+  try {
+    const u = new URL(t);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : "";
+  } catch {
+    return "";
+  }
 }
 
 let memo: { mtimeMs: number; rows: PoiRecord[] } | null = null;
@@ -230,15 +242,13 @@ export async function fetchPoiData(opts?: {
 
   const path = resolvePoiCachePath();
   try {
-    const tmp = `${path}.part`;
-    writeFileSync(tmp, text, "utf8");
-    renameSync(tmp, path);
+    writeFileAtomic(path, text, "utf8");
   } catch (e) {
     return { ok: false, status: before, error: e instanceof Error ? e.message : "Could not save the file." };
   }
   resetPoiMemo();
   try {
-    writeFileSync(
+    writeFileAtomic(
       resolvePoiMetaPath(),
       JSON.stringify({ fetchedAtMs: nowMs, rowCount: rows.length }, null, 2),
       "utf8",

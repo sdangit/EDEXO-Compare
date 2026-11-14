@@ -24,6 +24,8 @@ import { CopySystemButton } from "../CopySystemButton";
 import { LoadingNote } from "../ui/Loading";
 import type { JumpRow } from "./jumpRow";
 import { CraftGraph, type CraftCard, type CraftMat } from "./LabCrafting";
+import { pickRow } from "../ui/pickRow";
+import { EmptyState } from "../ui/EmptyState";
 
 interface SiteRow {
   system: string;
@@ -160,10 +162,10 @@ export function GuardianLab({
   };
 
   if (!reply && busy) return <LoadingNote className="fdb-empty" label="Reading what you hold…" />;
-  if (reply?.error && !g) return <p className="fdb-empty">{reply.error}</p>;
+  if (reply?.error && !g) return <EmptyState tone="error">{reply.error}</EmptyState>;
 
   const notKnown = (
-    <p className="fdb-empty">What you hold shows after your next login: the game writes the list then.</p>
+    <EmptyState>What you hold shows after your next login: the game writes the list then.</EmptyState>
   );
   const shown = (g?.recipes ?? []).filter((r) => r.group === group && (!canOnly || r.count > 0));
   const groupChips = (
@@ -193,7 +195,7 @@ export function GuardianLab({
       <>
         {known ? null : notKnown}
         {groupChips}
-        {shown.length === 0 ? <p className="fdb-empty">Nothing here your materials unlock yet.</p> : <CraftGraph mats={mats} cards={cards} named />}
+        {shown.length === 0 ? <EmptyState>Nothing here your materials unlock yet.</EmptyState> : <CraftGraph mats={mats} cards={cards} named />}
         <p className="dim tiny">Unlocked at a Guardian technology broker, recipes as EDEngineer lists them. Commodities are bought at a market.</p>
       </>
     );
@@ -261,9 +263,9 @@ export function GuardianLab({
         </div>
       </div>
 
-      {reply?.error ? <p className="fdb-empty">{reply.error}</p> : null}
+      {reply?.error ? <EmptyState tone="error">{reply.error}</EmptyState> : null}
       {reply && !reply.error && reply.sites.length === 0 ? (
-        <p className="fdb-empty">No Guardian site of that kind {range ? `within ${range.toLocaleString("en-US")} ly` : "known"}.</p>
+        <EmptyState>No Guardian site of that kind {range ? `within ${range.toLocaleString("en-US")} ly` : "known"}.</EmptyState>
       ) : null}
       {reply?.sites.length ? (
         <div className="fdb-scroll">
@@ -277,7 +279,7 @@ export function GuardianLab({
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={r.id} className="is-pickable" onClick={() => onPick(r)} title="Click to show it on the map">
+                <tr key={r.id} {...pickRow(() => onPick(r))} title="Click to show it on the map">
                   <td>
                     {r.system} <CopySystemButton system={r.system} />
                   </td>

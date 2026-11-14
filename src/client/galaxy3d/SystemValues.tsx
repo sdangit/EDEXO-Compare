@@ -6,6 +6,8 @@
 import { useEffect, useState } from "react";
 import type { RouteSystemValuesDTO } from "@shared/dto/routeSystem.js";
 import { fmtCrExact, fmtCrShort } from "@shared/format";
+import { jsonOrThrow } from "../http";
+import { Done } from "../ui/glyphs";
 
 /** Bodies listed; the rest are counted. */
 const SHOWN = 8;
@@ -20,7 +22,7 @@ export function SystemValues({ addr, name }: { addr: string; name: string }) {
     let live = true;
     setD("loading");
     fetch(`/api/route/system-values?addr=${encodeURIComponent(addr)}&name=${encodeURIComponent(name)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<RouteSystemValuesDTO>) : Promise.reject(new Error(String(r.status)))))
+      .then(jsonOrThrow<RouteSystemValuesDTO>)
       .then((v) => live && setD(v))
       .catch(() => live && setD("error"));
     return () => {
@@ -94,7 +96,7 @@ export function SystemValues({ addr, name }: { addr: string; name: string }) {
                 <ul>
                   {b.species.map((s) => (
                     <li key={s.name} className={s.logged ? "g3d-done" : "g3d-todo"} title={s.logged ? "Logged here by other commanders" : "Predicted"}>
-                      {s.logged ? "✓" : "?"} {s.name}
+                      {s.logged ? <Done /> : "?"} {s.name}
                       {s.cr != null ? ` · ${fmtCrShort(s.cr)}` : ""}
                       {!s.logged && s.chancePct != null ? ` · ${s.chancePct} %` : ""}
                     </li>
@@ -108,7 +110,7 @@ export function SystemValues({ addr, name }: { addr: string; name: string }) {
         <p className="g3d-panel__note">No notable planets or biology on Spansh.</p>
       )}
       {hidden ? <p className="g3d-panel__note">{hidden} more bodies worth less.</p> : null}
-      <p className="g3d-panel__note">✓ logged by other commanders · ? predicted, with its chance.</p>
+      <p className="g3d-panel__note"><Done /> logged by other commanders · ? predicted, with its chance.</p>
     </>
   );
 }

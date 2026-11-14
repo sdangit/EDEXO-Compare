@@ -4,12 +4,13 @@ import os from "node:os";
 import express from "express";
 import type { AppSnapshot, ExoLiveDTO, UiCommand } from "../shared/types.js";
 import { getProjectRoot, getWebRoot } from "./paths.js";
-import { createLanAuthGuard, createOriginGuard } from "./lanAuth.js";
+import { createLanAuthGuard, createOriginGuard, requestIsFromThisPc } from "./lanAuth.js";
 import type { HttpServerOptions, RouteContext } from "./httpServerTypes.js";
 import { dropDeflateOfferFromThisPc } from "./wsCompression.js";
 import { createWsHub } from "./wsHub.js";
+import { enforceRouteReach } from "./routeAccess.js";
 
-import { answerErrorsAsJson, catchAsyncRejections } from "./routes/asyncErrors.js";
+import { answerErrorsAsJson, catchAsyncRejections, redactForOtherDevices } from "./routes/asyncErrors.js";
 import { registerSpeciesFilesRoutes } from "./routes/speciesFilesRoutes.js";
 import { registerGalaxyRoutes } from "./routes/galaxyRoutes.js";
 import { registerBoxelRoutes } from "./routes/boxelRoutes.js";
@@ -65,6 +66,8 @@ export function createHttpServer(opts: HttpServerOptions): {
   /** A command for the app pages (key binds: previous / next body tab), to every app-channel socket. */
   broadcastUiCommand: (cmd: UiCommand) => void;
   listening: Promise<void>;
+  /** Routes registered without a row in routeReach.ts (served to this PC only); tests require none. */
+  unclassifiedRoutes: () => string[];
   /**
    * Drop every open socket and keep-alive connection, so `server.close` returns at once (code review
    * 2026-10-10, A2): a phone or a forgotten browser tab kept its WebSocket and the quit waited the eight
@@ -75,6 +78,8 @@ export function createHttpServer(opts: HttpServerOptions): {
   const app = express();
   app.disable("x-powered-by");
   catchAsyncRejections(app);
+  // Every route's reach from one table (routeAccess.ts, plan 1.1): `pc` ones get localOnly, an unlisted one is closed.
+  const reach = enforceRouteReach(app);
   const root = getProjectRoot();
   const webRoot = getWebRoot(root);
   /**
@@ -98,6 +103,16 @@ export function createHttpServer(opts: HttpServerOptions): {
   };
   app.use(createOriginGuard(isOwnLanHost));
   app.use(createLanAuthGuard(lanKey));
+  /*
+    Review 2026-11-07 §7: no answer is sniffed into another type; a query string is flat (`?a[b]=1` no longer makes an
+    object of `req.query.a`; no route reads one); answers to other devices lose the home folder.
+  */
+  app.set("query parser", "simple");
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    next();
+  });
+  app.use(redactForOtherDevices((req) => requestIsFromThisPc(req)));
 
   /*
     The live sockets (wsHub.ts, split out in 1.3.1): made before the routes, which hold Colonize's pushes, the change
@@ -233,9 +248,12 @@ export function createHttpServer(opts: HttpServerOptions): {
     server.closeAllConnections?.();
   };
 
+  const unlisted = reach.unclassified();
+  if (unlisted.length) console.warn(`[edexo-compare] routes not in routeReach.ts, PC only: ${unlisted.join(", ")}`);
   server.listen(opts.port, opts.bindHost);
   return {
     server,
+    unclassifiedRoutes: reach.unclassified,
     broadcast: hub.broadcast,
     broadcastExoLive: hub.broadcastExoLive,
     broadcastUiCommand: hub.broadcastUiCommand,

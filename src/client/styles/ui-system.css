@@ -1,0 +1,256 @@
+/*
+  The UI system's first rules (plan 7.5; owner approved 2026-11-12 from before/after screenshots at 1920, 1280 and
+  390 px). Loaded last, so on equal terms it wins over the per-screen sheets it corrects; `:root:root` gives the rules
+  the weight they had while they were a proposal under <html data-ui-proposal>.
+
+  1. Selected is not action. Filled orange meant both ("This boxel" selected and "Add" looked the same): a
+     selected chip, tab or toggle is an outline with a faint fill; only the action fills, at most one a panel.
+     The body picker's current body stays filled (owner): it is the screen's "you are here".
+  2. One button height ladder: 28 px small (chips, toggles, table actions), 34 px medium (panel actions).
+  3. Chips and buttons in sentence case with light tracking; upper case stays for section heads and field labels.
+  4. Tables: a faint stripe on every other row.
+*/
+
+:root:root {
+  --btn-h-sm: 28px;
+  --btn-h-md: 34px;
+  --sel-fill: var(--accent-a15);
+  --track-1: 0.04em;
+}
+
+/* 1. selected: outline + faint fill + bright text */
+:root:root :is(.fdb-chip--on:not(.fdb-chip--primary), .gsx-tier--codex) {
+  background: var(--sel-fill) !important;
+  color: var(--accent-bright) !important;
+  border-color: var(--accent) !important;
+}
+:root:root .disc-tab--on,
+:root:root .candidate-species-toggles .btn-top-toggle--on {
+  background: var(--sel-fill);
+  color: var(--accent-bright);
+  border-color: var(--accent);
+}
+
+/* an open [?]: a selection too */
+:root:root .fold-help-btn--on {
+  background: var(--sel-fill);
+  color: var(--accent-bright);
+  border-color: var(--accent);
+}
+
+/* 1. action: filled accent with the dark ink (8.57:1), flat */
+:root:root .fdb-chip--primary {
+  background: var(--accent) !important;
+  color: var(--ink, #07060a) !important;
+  border-color: var(--accent) !important;
+}
+:root:root .fdb-chip--primary:hover:not(:disabled) {
+  background: var(--accent-bright) !important;
+}
+
+/* 2. heights */
+:root:root :is(.fdb-chip, .disc-tab, .btn-top-toggle, .sys-card__btn, .genus-notes-pill, .g3d-btn) {
+  min-height: var(--btn-h-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35em;
+}
+:root:root .btn:not(.tiny) {
+  min-height: var(--btn-h-md);
+}
+
+/* 3. sentence case for chips, tags and buttons */
+:root:root
+  :is(
+    .sys-chip,
+    .price-tag,
+    .srow-tag,
+    .genus-notes-pill,
+    .sys-card__btn,
+    .facts-dss,
+    .btn-top-toggle,
+    .btn,
+    .fdb-chip,
+    .disc-tab,
+    .candidate-species-unlikely-toggle
+  ) {
+  text-transform: none;
+  letter-spacing: var(--track-1);
+}
+
+/* 4. tables */
+:root:root .disc-table tbody tr:nth-child(even) .disc-td {
+  background: rgba(255, 255, 255, 0.025);
+}
+:root:root .disc-table tbody tr:hover .disc-td {
+  background: var(--accent-a08);
+}
+
+/* 5. icons in place of glyphs (plan 7.5 round 2): the close X and the Bookmark star sit on the text's middle */
+:root:root .modal-close,
+:root:root .bm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35em;
+}
+
+/* 6. ui/glyphs (round 3): the chevrons and check marks that were ▾ ▸ ✓ characters, on the text's middle */
+.ui-glyph {
+  flex: none;
+  vertical-align: -0.125em;
+}
+
+/* 7. ui/EmptyState (round 4): nothing to show (muted icon, dashed edge) and could-not-read (warning icon, red edge) */
+.ui-empty {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  margin: 0.6rem 0;
+  padding: 0.85rem 0.8rem;
+  border: 1px dashed var(--accent-a20);
+  background: var(--accent-a06);
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.ui-empty__icon {
+  flex: none;
+  margin-top: 0.1em;
+  color: var(--muted);
+}
+.ui-empty__text {
+  margin: 0;
+}
+.ui-empty__action {
+  margin-top: 0.5rem;
+}
+.ui-empty--error {
+  border-style: solid;
+  border-color: rgba(255, 90, 60, 0.45);
+  background: rgba(255, 90, 60, 0.06);
+  color: var(--text);
+}
+.ui-empty--error .ui-empty__icon {
+  color: var(--bad, #ff5a3c);
+}
+
+/* 8. A shorter header on a phone (round 5, owner approved 2026-11-12): 391 px before the body, now about 70 less */
+@media (max-width: 699px) {
+  /* the ⊕, DATA VALUE and D-SCAN on one row; NEXT BOXEL and the route tiles keep a full row each */
+  :root:root .top > .header-tray {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+    --tray-tile-h: 2.9rem;
+  }
+  :root:root .top > .header-tray .header-dscan-cluster {
+    display: contents;
+  }
+  :root:root .top > .header-tray .header-dscan-cluster > :not(.header-dscan-pill) {
+    grid-column: 1 / -1;
+  }
+  /* "Honk: yes" is on the System card's chips just above */
+  :root:root .top > .header-tray .d-scan-card__honk {
+    display: none;
+  }
+}
+
+/*
+  9. ui/Button (round 6): one button system. The older classes stay on the elements for their layout rules; these
+  win over their looks (:root:root, loaded last). Cut corner as the rest of the cockpit; sentence case.
+*/
+:root:root .ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4em;
+  box-sizing: border-box;
+  min-height: var(--btn-h-md, 34px);
+  padding: 0 0.95rem;
+  border: 1px solid var(--accent-a35);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: var(--track-1, 0.04em);
+  line-height: 1.2;
+  text-transform: none;
+  text-decoration: none;
+  text-shadow: none;
+  box-shadow: none;
+  filter: none;
+  white-space: nowrap;
+  cursor: pointer;
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+  transition:
+    background-color 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+:root:root .ui-btn.ui-btn--sm {
+  min-height: var(--btn-h-sm, 28px);
+  padding: 0 0.7rem;
+  font-size: var(--fs-xs);
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px);
+}
+:root:root .ui-btn.ui-btn--secondary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-a15);
+  color: var(--accent-bright);
+}
+:root:root .ui-btn.ui-btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--ink, #07060a);
+}
+:root:root .ui-btn.ui-btn--primary:hover:not(:disabled) {
+  border-color: var(--accent-bright);
+  background: var(--accent-bright);
+  color: var(--ink, #07060a);
+}
+:root:root .ui-btn.ui-btn--ghost {
+  border-color: transparent;
+  color: var(--accent);
+}
+:root:root .ui-btn.ui-btn--ghost:hover:not(:disabled) {
+  background: var(--accent-a10);
+  color: var(--accent-bright);
+}
+:root:root .ui-btn.ui-btn--danger {
+  border-color: rgba(255, 90, 60, 0.7);
+  background: rgba(255, 90, 60, 0.12);
+  color: #ffb3a3;
+}
+:root:root .ui-btn.ui-btn--danger:hover:not(:disabled) {
+  border-color: var(--bad, #ff5a3c);
+  background: var(--bad, #ff5a3c);
+  color: var(--ink, #07060a);
+}
+:root:root .ui-btn:disabled,
+:root:root .ui-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/*
+  10. The galaxy map's menu rows (owner, 2026-11-12: the Galaxy index download button's text ran over its label): the
+  label keeps its width; a control too wide for the rest of the row goes under it, right-aligned, its text wrapping.
+  Rows that fit are unchanged.
+*/
+:root:root .g3d-row {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+:root:root .g3d-row > .g3d-row__label {
+  flex: 1 0 auto;
+}
+:root:root .g3d-row > .g3d-row__ctl {
+  max-width: 100%;
+  margin-left: auto;
+}
+:root:root .g3d-row > .g3d-row__ctl > .ui-btn {
+  white-space: normal;
+  text-align: left;
+  padding-block: 0.3rem;
+}

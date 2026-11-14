@@ -23,9 +23,8 @@ import {
   renameSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Readable, type Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
@@ -33,6 +32,9 @@ import type { UpdateDownloadDTO } from "../shared/types.js";
 import { APP_USER_AGENT, APP_VERSION } from "./appVersion.js";
 import { resolveUserSettingsJsonPath } from "./paths.js";
 import { compareVersions, type ReleaseAsset, type ReleaseForm } from "./updateCheck.js";
+import { writeFileAtomic } from "./atomicWrite.js";
+import { stallGuard } from "./stallGuard.js";
+import { errorText } from "./errorText.js";
 
 /** What `ready.json` holds: the checked file Electron puts in place on the next restart. */
 export interface StagedUpdate {
@@ -95,6 +97,8 @@ export function readStagedUpdate(dir: string, current = APP_VERSION): StagedUpda
     )
       return null;
     if (compareVersions(j.version, current) <= 0 || !existsSync(j.file)) return null;
+    // The file this folder holds, never one named elsewhere (review 2026-11-10 C4: a restored ready.json named a share).
+    if (resolve(dirname(j.file)) !== resolve(dir)) return null;
     return j as StagedUpdate;
   } catch {
     return null;
@@ -167,7 +171,8 @@ export function createAppUpdater(o: AppUpdaterOptions) {
     mkdirSync(dir, { recursive: true });
     const part = join(dir, asset.name + ".part");
     const final = join(dir, asset.name);
-    const res = await fetchImpl(asset.url, { headers: { "User-Agent": APP_USER_AGENT }, redirect: "follow" });
+    const guard = stallGuard(asset.name);
+    const res = await fetchImpl(asset.url, { headers: { "User-Agent": APP_USER_AGENT }, redirect: "follow", signal: guard.signal });
     if (!res.ok || !res.body) throw new Error(`Download answered HTTP ${res.status}`);
     total = asset.size ?? (Number(res.headers.get("content-length")) || null);
     const hash = createHash("sha256");
@@ -180,6 +185,7 @@ export function createAppUpdater(o: AppUpdaterOptions) {
         Readable.fromWeb(res.body as unknown as WebReadableStream<Uint8Array>),
         async function* (source: AsyncIterable<Buffer>) {
           for await (const buf of source) {
+            guard.touch();
             hash.update(buf);
             received += buf.length;
             yield buf;
@@ -196,6 +202,7 @@ export function createAppUpdater(o: AppUpdaterOptions) {
       }
       throw e;
     }
+    guard.done();
     // The file is renamed below: on Windows the handle has to be closed first.
     await closed(out);
     const got = hash.digest("hex");
@@ -206,7 +213,7 @@ export function createAppUpdater(o: AppUpdaterOptions) {
     rmSync(final, { force: true });
     renameSync(part, final);
     const staged: StagedUpdate = { version: v, form: o.form, file: final, sha256: got, stagedAt: new Date().toISOString() };
-    writeFileSync(join(dir, READY_FILE), JSON.stringify(staged, null, 2));
+    writeFileAtomic(join(dir, READY_FILE), JSON.stringify(staged, null, 2));
   }
 
   return {
@@ -239,7 +246,7 @@ export function createAppUpdater(o: AppUpdaterOptions) {
           })
           .catch((e) => {
             state = "error";
-            error = e instanceof Error ? e.message : String(e);
+            error = errorText(e);
           })
           .finally(() => {
             running = null;

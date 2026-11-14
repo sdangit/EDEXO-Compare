@@ -5,6 +5,25 @@
 import { BODY_FEATURES, type BodyFeatureKey } from "../../shared/bodyFeatures.js";
 import { useState } from "react";
 import { isBool, usePersistedState } from "../usePersistedState";
+import { Disclosure } from "../ui/glyphs";
+
+/**
+ * One remembered answer per call site, kept while every input is the same object (review 2026-11-07 §4.2, D12).
+ *
+ * The tabs are render functions, not components (tabContext.ts), so they cannot hold a useMemo. Without one the
+ * search's urgent render filtered every row with the old query (useDeferredValue saved nothing), and the columns,
+ * a new array each time, made the table sort every row again.
+ */
+export function lastAnswer<R>(): (inputs: readonly unknown[], make: () => R) => R {
+  let last: readonly unknown[] | null = null;
+  let value: R;
+  return (inputs, make) => {
+    if (last && last.length === inputs.length && last.every((v, i) => Object.is(v, inputs[i]))) return value;
+    value = make();
+    last = inputs;
+    return value;
+  };
+}
 
 /**
  * A filter that is on when any chip is picked; an empty set means "everything".
@@ -36,7 +55,7 @@ export function ChipRow({
         onClick={() => setOpen(!open)}
         title={open ? "Hide these filters" : "Show these filters"}
       >
-        {open ? "▾" : "▸"} {label}
+        <Disclosure open={open} /> {label}
         {!open ? <span className="tiny"> ({options.length})</span> : null}
       </button>
       {shown.map((o) => (
@@ -47,7 +66,7 @@ export function ChipRow({
           onClick={() => onToggle(o.key)}
         >
           {o.label}
-          {o.n != null ? <span className="dim tiny"> {o.n.toLocaleString()}</span> : null}
+          {o.n != null ? <span className="dim tiny"> {o.n.toLocaleString("en-US")}</span> : null}
         </button>
       ))}
     </div>
@@ -129,7 +148,7 @@ export function Search({
         onChange={(e) => setQuery(e.target.value)}
       />
       <span className="my-exo-search-count dim tiny">
-        {n === of ? `${of.toLocaleString()} ${what}` : `${n.toLocaleString()} of ${of.toLocaleString()}`}
+        {n === of ? `${of.toLocaleString("en-US")} ${what}` : `${n.toLocaleString("en-US")} of ${of.toLocaleString("en-US")}`}
       </span>
     </div>
   );

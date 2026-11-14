@@ -27,6 +27,8 @@ import { useCardVerdicts } from "./encyclopedia/conditions";
 import { footHitsForEntry, normFoot } from "./encyclopedia/footHits";
 import { useInlineExomastery } from "./encyclopedia/useInlineExomastery";
 import { EncyclopediaSpeciesRow, type SpeciesRowContext } from "./encyclopedia/EncyclopediaSpeciesRow";
+import { jsonOrNull } from "./http";
+import { Done, NotDone } from "./ui/glyphs";
 
 /*
   The data caches, the condition rows, the catalogue matching, the photograph, the inline exomastery
@@ -167,7 +169,7 @@ export function EncyclopediaModal({
     }
     let live = true;
     void fetch(`/api/encyclopedia-region?name=${encodeURIComponent(currentRegion)}`)
-      .then((r) => (r.ok ? r.json() : null))
+      .then(jsonOrNull<{ region: string; species: Record<string, RegionalRarity | null> }>)
       .then((j: { region: string; species: Record<string, RegionalRarity | null> } | null) => {
         if (live && j?.species) setRegionInfo(j);
       })
@@ -351,7 +353,7 @@ export function EncyclopediaModal({
                   onClick={() => setNotFoundOnly(!notFoundOnly)}
                   title="Only species you have not found yet (no Log, Sample or Analyse in your journals). Per colour variant: Achievements → Still to find."
                 >
-                  {notFoundOnly ? `Not found yet ✓ (${notFoundCount})` : "Not found yet ✗"}
+                  {notFoundOnly ? <>Not found yet <Done /> ({notFoundCount})</> : <>Not found yet <NotDone /></>}
                 </button>
                 {regionInfo ? (
                   <button
@@ -360,7 +362,7 @@ export function EncyclopediaModal({
                     onClick={() => setInRegionOnly(!inRegionOnly)}
                     title={`Only species recorded in ${regionInfo.region}, where you are now.`}
                   >
-                    {inRegionOnly ? `In ${regionInfo.region} ✓` : `In ${regionInfo.region} ✗`}
+                    {inRegionOnly ? <>In {regionInfo.region} <Done /></> : <>In {regionInfo.region} <NotDone /></>}
                   </button>
                 ) : null}
                 {colourOptions.length ? (

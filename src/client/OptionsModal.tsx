@@ -42,6 +42,8 @@ import {
   EdsmUploadPanel,
   FeederCorpusSetting,
 } from "./OptionsPanels";
+import { copyText } from "./copyText";
+import { sendJson } from "./http";
 export { EddnUploadPanel } from "./OptionsPanels";
 
 /**
@@ -93,9 +95,9 @@ function CopyLanUrlButton({ url, label = "Copy" }: { url: string; label?: string
   return (
     <button
       type="button"
-      className="btn secondary tiny"
+      className="btn secondary tiny ui-btn ui-btn--secondary ui-btn--sm"
       onClick={() => {
-        void navigator.clipboard?.writeText(url).then(
+        void copyText(url).then(
           () => setDone(true),
           () => setDone(false),
         );
@@ -126,7 +128,7 @@ function CopyDiagnostics() {
       const t = await r.text();
       setText(t);
       try {
-        await navigator.clipboard.writeText(t);
+        await copyText(t);
         toast.success("Diagnostics copied — paste them into your message.");
       } catch {
         toast.info("Copy them from the box below.");
@@ -140,7 +142,7 @@ function CopyDiagnostics() {
   return (
     <div className="options-diagnostics">
       <div className="options-oneline">
-        <button type="button" className="btn secondary" disabled={busy} onClick={() => void copy()}>
+        <button type="button" className="btn secondary ui-btn ui-btn--secondary ui-btn--md" disabled={busy} onClick={() => void copy()}>
           Copy diagnostics
         </button>
         <span className="dim options-diagnostics-hint">
@@ -191,11 +193,7 @@ export function MapOptionsModal({
     (p: number, pp: number) => {
       void (async () => {
         try {
-          const r = await fetch("/api/settings/exo-map-tiers", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ plusMinCr: p, plusPlusMinCr: pp }),
-          });
+          const r = await sendJson("/api/settings/exo-map-tiers", { plusMinCr: p, plusPlusMinCr: pp });
           const j = (await r.json().catch(() => null)) as {
             error?: string;
           } | null;
@@ -235,11 +233,7 @@ export function MapOptionsModal({
   const persistJournalHistory = useCallback(
     async (preset: JournalHistoryPreset) => {
       try {
-        const r = await fetch("/api/settings/journal-history", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ preset }),
-        });
+        const r = await sendJson("/api/settings/journal-history", { preset });
         const j = (await r.json().catch(() => null)) as { error?: string } | null;
         if (!r.ok) throw new Error(j?.error || r.statusText);
       } catch (e) {
@@ -527,11 +521,7 @@ export function MapOptionsModal({
                 type="checkbox"
                 checked={snap.feederEnabled === true}
                 onChange={(e) => {
-                  void fetch("/api/settings/feeder", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ value: e.target.checked }),
-                  }).catch(() => {});
+                  void sendJson("/api/settings/feeder", { value: e.target.checked }).catch(() => {});
                 }}
               />{" "}
               Data feeder

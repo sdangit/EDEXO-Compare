@@ -18,7 +18,11 @@ import {
 } from "./journalWatcher.js";
 import { emitJournalReread } from "./journalTap.js";
 import { getCachedSpeciesDatabase } from "./snapshot.js";
-import { loadOrganicSampleSessionFromDisk } from "./organicSampleSessionFile.js";
+import {
+  holdSampleSessionFileForReplay,
+  loadOrganicSampleSessionFromDisk,
+  releaseSampleSessionFileAfterReplay,
+} from "./organicSampleSessionFile.js";
 import {
   buildJournalFileManifest,
   removeJournalMergeCache,
@@ -43,6 +47,9 @@ export type JournalPipelineDeps = {
   refreshLiveHudFromJournalDir: () => void;
   primeEddnFromNewestJournal: () => Promise<void>;
 };
+
+/** A cached start saves the cache again once it replayed this much journal (about 3,000 lines). */
+const SAVE_CACHE_AFTER_REPLAYED_BYTES = 1 << 20;
 
 export function createJournalPipeline({
   store,
@@ -165,6 +172,16 @@ export function createJournalPipeline({
 
   async function resyncAllJournalFilesInner(): Promise<void> {
     bootStart();
+    holdSampleSessionFileForReplay(() => store.lastEventIso);
+    try {
+      await resyncAllJournalFilesHeld();
+    } finally {
+      // Released by finishReplay on success; an empty folder or a failed start lets go here.
+      releaseSampleSessionFileAfterReplay(projectRoot);
+    }
+  }
+
+  async function resyncAllJournalFilesHeld(): Promise<void> {
     store.resetAll();
     notices.invalidate();
     journalBootProgress = {
@@ -205,6 +222,8 @@ export function createJournalPipeline({
       actually reached, and the live tail must start there, or lines are applied twice or never.
     */
     const consumed = new Map<string, number>();
+    /** Journal bytes the cached start replayed (the steps since the cache was saved). */
+    let replayedBytes = 0;
     // One bad line must not end the merge (combined plan 1.2; journalReplayGuards.ts).
     const replayApplier = makeReplayLineApplier((line) => {
       store.apply(line);
@@ -223,6 +242,7 @@ export function createJournalPipeline({
       settleManifest();
       journalPath = files[files.length - 1]!;
       store.resetFootTravelRuntime();
+      releaseSampleSessionFileAfterReplay(projectRoot);
       loadOrganicSampleSessionFromDisk(projectRoot, store, getCachedSpeciesDatabase());
       journalBootProgress = null;
       refreshLiveHudFromJournalDir();
@@ -280,12 +300,13 @@ export function createJournalPipeline({
           pushFlush();
           for (const step of cacheResult.steps) {
             if (step.kind === "tail") {
-              consumed.set(
-                step.path,
-                await readJournalFromOffset(step.path, step.startByte, applyReplayLine),
-              );
+              const end = await readJournalFromOffset(step.path, step.startByte, applyReplayLine);
+              consumed.set(step.path, end);
+              replayedBytes += Math.max(0, end - step.startByte);
             } else {
-              consumed.set(step.path, await readJournalFull(step.path, applyReplayLine));
+              const end = await readJournalFull(step.path, applyReplayLine);
+              consumed.set(step.path, end);
+              replayedBytes += end;
             }
             stepsDone += 1;
             journalBootProgress = {
@@ -312,7 +333,12 @@ export function createJournalPipeline({
         bootMark("position backfill");
         finishReplay();
         bootMark("session + first push");
-        if (cacheResult.steps.length > 0 || cacheResult.loadedFromLegacy) {
+        /*
+          A short session since the last save is replayed again on the next start instead of serialising the whole
+          store now (~0.4 s on this thread, review 2026-11-07 §4.1): the cache's manifest stays the old one, so the
+          same lines come back as replay steps, and they add up over starts until one passes the mark and saves.
+        */
+        if (cacheResult.loadedFromLegacy || replayedBytes >= SAVE_CACHE_AFTER_REPLAYED_BYTES) {
           await saveJournalMergeCache(
             journalDirNorm,
             manifest,

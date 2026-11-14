@@ -4,7 +4,7 @@ import type {
   SpeciesEntry,
   SpeciesMatch,
   SpeciesMatchContext,
-  GenusHint,
+  GenusEvidence,
   MatchReason,
   EstimatedSurfaceTempBand,
   OrganicGenusLock,
@@ -49,10 +49,12 @@ import {
 } from "../shared/scanAtmosphereMatch.js";
 import { atmosphereBucketForEstimator, estimatedTemperatureRangeForScan } from "./planetTemperature.js";
 import { dssHintsIncludeBacterium } from "../shared/genusHints.js";
+import { filteringGenera } from "../shared/genusEvidence.js";
+import { GENUS_DATA_DIR_REQUIRING_VOLCANISM } from "../shared/speciesSpawnConditionCards.js";
 import { filterByGenusHints } from "./genusMatchUtils.js";
 import {
   applyOrganicGenusLocks,
-  organicScanConfirmsNonBacteriumGenus,
+  ownOrganicLocks,
   collectOwnOrganicLockSpeciesIds,
 } from "./organicLocks.js";
 import { spectralKeysFromJournalStarType } from "../shared/starSpectralKeys.js";
@@ -138,8 +140,6 @@ function injectOrganicLockConfirmedSpecies(
   return { matches: [...matches, ...extra], injected };
 }
 
-/** Genera that require active volcanism in-game; enforced even if JSON omits `volcanismIncludes`. */
-const GENUS_DATA_DIR_REQUIRING_VOLCANISM = new Set<string>(["brain-tree"]);
 
 /**
  * How much of a gas has to be in the mix before a plant can be said to live in it.
@@ -177,6 +177,23 @@ export interface CriteriaMatchResult {
   passed?: MatchReason[];
   /** Kept at a lower chance by a soft band (the orbit's `softBelow`); multiplies "Chance here". */
   presenceFactor?: number;
+}
+
+/**
+ * A Region objection the "logged here" exemption may lift, with the line it becomes when it does. Decided in
+ * speciesMatchesCriteria once every gate has spoken (review 2026-11-07 B14): judged where the region gate runs, a
+ * soft planet-class miss before it blocked the exemption and a temperature miss after it did not.
+ */
+const LOGGED_HERE = new WeakMap<MatchReason, MatchReason>();
+
+/** The lines a passing row ends with: where its data came from, and its codex notes. */
+function sourceAndNotes(entry: SpeciesEntry): MatchReason[] {
+  const out: MatchReason[] = [];
+  if (entry.dataSourceRelPath) out.push({ field: "Source", detail: entry.dataSourceRelPath });
+  for (const n of entry.criteria.matchContextNotes ?? []) {
+    if (n?.trim()) out.push({ field: "Note", detail: n.trim() });
+  }
+  return out;
 }
 
 /**
@@ -897,17 +914,18 @@ export function speciesMatchesExcludingTempPressure(
     /*
       Logged in the region at all, on a body that meets every other condition: it grows there (owner,
       2026-10-04: "exempt it if logged at least once"). Clypeus speculumi in Aquila's Halo, 4 systems
-      against an uncommon species' 10, was hidden on 5 of 606 of its own known-spawn bodies.
+      against an uncommon species' 10, was hidden on 5 of 606 of its own known-spawn bodies. "Every other
+      condition" includes temperature and pressure, so speciesMatchesCriteria lifts it (LOGGED_HERE).
     */
-    const loggedHere = tierVerdict.presence === "absent" && tierVerdict.count >= 1 && failures.length === 0;
-    if (loggedHere) {
-      reasons.push({ field: "Region", detail: tierRegionDetail(ctx.regionName, tierVerdict, false) });
-    } else if (tierVerdict.presence === "absent") {
-      failures.push({
+    if (tierVerdict.presence === "absent") {
+      const failure: MatchReason = {
         field: "Region",
         soft: true,
         detail: tierRegionDetail(ctx.regionName, tierVerdict, true),
-      });
+      };
+      if (tierVerdict.count >= 1)
+        LOGGED_HERE.set(failure, { field: "Region", detail: tierRegionDetail(ctx.regionName, tierVerdict, false) });
+      failures.push(failure);
     } else if (tierVerdict.presence === "present") {
       reasons.push({ field: "Region", detail: tierRegionDetail(ctx.regionName, tierVerdict, false) });
     }
@@ -930,18 +948,12 @@ export function speciesMatchesExcludingTempPressure(
       reasons: failures,
       softOnly: failures.every((f) => f.soft === true),
       passed: reasons,
+      // Kept for a lifted Region objection (LOGGED_HERE); nothing reads it on a failed result otherwise.
+      ...(presenceFactor !== undefined ? { presenceFactor } : {}),
     };
   }
 
-  if (entry.dataSourceRelPath) {
-    reasons.push({ field: "Source", detail: entry.dataSourceRelPath });
-  }
-
-  if (c.matchContextNotes?.length) {
-    for (const n of c.matchContextNotes) {
-      if (n?.trim()) reasons.push({ field: "Note", detail: n.trim() });
-    }
-  }
+  reasons.push(...sourceAndNotes(entry));
 
   return presenceFactor !== undefined ? { ok: true, reasons, presenceFactor } : { ok: true, reasons };
 }
@@ -1153,7 +1165,7 @@ export function speciesMatchesCriteria(
         card: "soft-orbit",
         soft: true,
         detail:
-          `Orbits its parent at ${ls >= 100 ? Math.round(ls).toLocaleString() : ls.toFixed(1)} ls; this species is rarely ` +
+          `Orbits its parent at ${ls >= 100 ? Math.round(ls).toLocaleString("en-US") : ls.toFixed(1)} ls; this species is rarely ` +
           `recorded beyond ${smaMax} ls — it grows on close moons. ${DEMOTED_NOTE}`,
       });
     }
@@ -1429,6 +1441,10 @@ export function speciesMatchesCriteria(
     }
   }
 
+  // The region objection was the only one: logged here, it grows here.
+  const lifted = failures.length === 1 ? LOGGED_HERE.get(failures[0]!) : undefined;
+  if (lifted) failures.length = 0;
+
   if (failures.length > 0) {
     return {
       ok: false,
@@ -1438,7 +1454,7 @@ export function speciesMatchesCriteria(
     };
   }
 
-  const ok = { ok: true, reasons: [...base.reasons, ...extraOkReasons] };
+  const ok = { ok: true, reasons: lifted ? [...basePassed, lifted, ...sourceAndNotes(entry), ...extraOkReasons] : [...base.reasons, ...extraOkReasons] };
   const pf =
     base.presenceFactor !== undefined || envelopeFactor !== undefined || orbitFactor !== undefined
       ? (base.presenceFactor ?? 1) * (envelopeFactor ?? 1) * (orbitFactor ?? 1)
@@ -1469,7 +1485,8 @@ export interface MatchDatabaseRun {
 export function matchDatabaseToScan(
   db: SpeciesDatabase,
   scan: PlanetScan,
-  genusHints: GenusHint[] | null,
+  /** Who named which genera (shared/genusEvidence.ts): only a body's own DSS, Spansh's, or a sample filters. */
+  genusEvidence: GenusEvidence | null,
   organicGenusLocks: OrganicGenusLock[] | null | undefined,
   options?: {
     includeBacterium?: boolean;
@@ -1489,6 +1506,7 @@ export function matchDatabaseToScan(
     signalCountAssumed?: boolean;
   },
 ): MatchDatabaseRun {
+  const genusHints = filteringGenera(genusEvidence);
   const includeBacterium = options?.includeBacterium === true;
   const matchContext = options?.matchContext ?? null;
   const species = includeBacterium ? db.species : db.species.filter((e) => !isBacteriumSpeciesEntry(e));
@@ -1508,14 +1526,14 @@ export function matchDatabaseToScan(
       }
     }
   }
-  narrowed = applyOrganicGenusLocks(narrowed, organicGenusLocks, db);
-  if (
-    includeBacterium &&
-    !dssHintsIncludeBacterium(genusHints) &&
-    organicScanConfirmsNonBacteriumGenus(organicGenusLocks, db)
-  ) {
-    narrowed = narrowed.filter((e) => !isBacteriumSpeciesEntry(e));
-  }
+  /*
+    Only this body's own finds narrow a genus to their species (review 2026-11-10 A1). A twin moon's (`fromSibling`)
+    are a hint: twins differ by up to 120 K and a genus's species by 5-10 K bands, so the twin's species often fails
+    here, and as a filter it left the genus with no row at all.
+    No rule drops Bacterium for a sample of another genus (A2): with a DSS list the genus filter above already did
+    it; without one (FSS only) it removed the commonest genus from a body whose other signals were unknown.
+  */
+  narrowed = applyOrganicGenusLocks(narrowed, ownOrganicLocks(organicGenusLocks), db);
   // Species the game leaves out of the signal count are never named by a DSS, so no genus filter
   // or lock may remove them; their own gates (a known system) decide.
   for (const e of species) {

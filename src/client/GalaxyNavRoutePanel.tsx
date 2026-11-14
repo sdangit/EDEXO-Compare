@@ -18,6 +18,8 @@ import { CopySystemButton } from "./CopySystemButton";
 import { isNum, oneOf, usePersistedState } from "./usePersistedState";
 import { routeTotals, routeValueLine, useRouteValues } from "./routeValues";
 import { fmtCrShort } from "@shared/format";
+import { sendJson, jsonOrNull } from "./http";
+import { Done } from "./ui/glyphs";
 
 /** A system as the map marks it. */
 export interface NavRouteSystemDTO {
@@ -111,7 +113,7 @@ export function GalaxyNavRoutePanel({
     setVisited(null);
     setVisitedFailed(false);
     fetch(`/api/galaxy/visited?days=${days}`)
-      .then((r) => (r.ok ? (r.json() as Promise<GalaxyVisitedDTO>) : null))
+      .then(jsonOrNull<GalaxyVisitedDTO>)
       .then((d) => {
         if (!live) return;
         if (d) setVisited(d);
@@ -253,10 +255,10 @@ export function GalaxyNavRoutePanel({
           <p className="g3d-panel__note">
             {half === "next"
               ? next.length
-                ? `${next.length.toLocaleString()} systems on the route plotted now.`
+                ? `${next.length.toLocaleString("en-US")} systems on the route plotted now.`
                 : "No route plotted: plot one in the game's galaxy map."
               : visited
-                ? `${visited.systems.length.toLocaleString()} systems ${days ? `in the last ${RANGES.find((r) => r.days === days)?.label}` : "in your journals"}.`
+                ? `${visited.systems.length.toLocaleString("en-US")} systems ${days ? `in the last ${RANGES.find((r) => r.days === days)?.label}` : "in your journals"}.`
                 : visitedFailed
                   ? "Your journals could not be read."
                   : (
@@ -274,9 +276,9 @@ export function GalaxyNavRoutePanel({
                   className={classes.has(k) ? "g3d-filter__chip g3d-navroute__chip--on" : "g3d-filter__chip g3d-navroute__chip"}
                   aria-pressed={classes.has(k)}
                   onClick={() => toggle(k)}
-                  title={`${classLabel(k)}: ${n.toLocaleString()} systems`}
+                  title={`${classLabel(k)}: ${n.toLocaleString("en-US")} systems`}
                 >
-                  {k} {n.toLocaleString()}
+                  {k} {n.toLocaleString("en-US")}
                 </button>
               ))}
             </div>
@@ -309,22 +311,18 @@ export function GalaxyNavRoutePanel({
             <div className="g3d-navroute__row">
               <button
                 type="button"
-                className="g3d-btn"
+                className="g3d-btn ui-btn ui-btn--secondary ui-btn--sm"
                 disabled={!unchecked.length || !!ck}
                 onClick={() =>
-                  void fetch("/api/navroutes/edsm-check", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ addresses: unchecked.map((s) => s.address) }),
-                  }).then(() => loadLog())
+                  void sendJson("/api/navroutes/edsm-check", { addresses: unchecked.map((s) => s.address) }).then(() => loadLog())
                 }
                 title="Ask EDSM about the systems listed that have not been checked: forty a request, five seconds apart"
               >
-                Check EDSM ({unchecked.length.toLocaleString()})
+                Check EDSM ({unchecked.length.toLocaleString("en-US")})
               </button>
               {ck ? (
                 <span className="g3d-navroute__progress" aria-live="polite">
-                  {ck.note ?? `Asking EDSM… ${ck.done.toLocaleString()} / ${ck.total.toLocaleString()}`}
+                  {ck.note ?? `Asking EDSM… ${ck.done.toLocaleString("en-US")} / ${ck.total.toLocaleString("en-US")}`}
                 </span>
               ) : null}
             </div>
@@ -356,7 +354,7 @@ export function GalaxyNavRoutePanel({
                       s.edsm === true ? "EDSM knows this system" : s.edsm === false ? "Not in EDSM: nobody has reported it there" : "Not checked yet"
                     }
                   >
-                    {s.edsm === true ? "EDSM ✓" : s.edsm === false ? "not in EDSM" : "—"}
+                    {s.edsm === true ? <>EDSM <Done /></> : s.edsm === false ? "not in EDSM" : "—"}
                   </span>
                 ) : null}
                 <CopySystemButton system={s.name} />
@@ -366,7 +364,7 @@ export function GalaxyNavRoutePanel({
           </ul>
           {shown.length > ROW_CAP ? (
             <p className="g3d-panel__note">
-              Showing {ROW_CAP} of {shown.length.toLocaleString()}: pick a star type or type a name to narrow it.
+              Showing {ROW_CAP} of {shown.length.toLocaleString("en-US")}: pick a star type or type a name to narrow it.
             </p>
           ) : null}
         </>

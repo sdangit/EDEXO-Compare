@@ -264,51 +264,54 @@ export async function importCapture(
 
   const bodyByKey = new Map<string, Json>();
   for (const sys of parsed.systems.values()) for (const b of sys.bodies) bodyByKey.set(bodyIdentityKey(sys.name, String(b.name)), b);
-  ctx.store.applyEddnSightings(
-    toAdd.map(({ label, s }) => {
-      const b = bodyByKey.get(bodyIdentityKey(s.systemName, s.bodyName));
-      return {
-        systemName: s.systemName,
-        bodyName: s.bodyName,
-        bodySubtype: typeof b?.subType === "string" ? b.subType : "",
-        distanceLs: typeof b?.distanceToArrival === "number" ? b.distanceToArrival : null,
-        speciesLabel: label,
-        genus: genusFromLandmark(label),
-      };
-    }),
-  );
-  ctx.store.setSystemCoords(
-    [...new Set(toAdd.map(({ s }) => s.systemName))]
-      .map((n) => [...parsed.systems.values()].find((x) => x.name === n)!)
-      .filter((x) => x.coords)
-      .map((x) => ({ name: x.name, ...x.coords! })),
-  );
-  ctx.store.setBodyIdentityByName(
-    toAdd
-      .map(({ s }) => bodyByKey.get(bodyIdentityKey(s.systemName, s.bodyName)))
-      .filter((b): b is Json => !!b && typeof b.bodyId === "number")
-      .map((b) => ({
-        systemName: [...parsed.systems.values()].find((x) => x.bodies.includes(b))!.name,
-        bodyName: String(b.name),
-        bodyId: b.bodyId as number,
-        bodyId64: typeof b.id64 === "string" ? b.id64 : null,
-      })),
-  );
+  // One save for the three steps (feederDb.ts holdWrites).
+  ctx.store.holdWrites(() => {
+    ctx.store.applyEddnSightings(
+      toAdd.map(({ label, s }) => {
+        const b = bodyByKey.get(bodyIdentityKey(s.systemName, s.bodyName));
+        return {
+          systemName: s.systemName,
+          bodyName: s.bodyName,
+          bodySubtype: typeof b?.subType === "string" ? b.subType : "",
+          distanceLs: typeof b?.distanceToArrival === "number" ? b.distanceToArrival : null,
+          speciesLabel: label,
+          genus: genusFromLandmark(label),
+        };
+      }),
+    );
+    ctx.store.setSystemCoords(
+      [...new Set(toAdd.map(({ s }) => s.systemName))]
+        .map((n) => [...parsed.systems.values()].find((x) => x.name === n)!)
+        .filter((x) => x.coords)
+        .map((x) => ({ name: x.name, ...x.coords! })),
+    );
+    ctx.store.setBodyIdentityByName(
+      toAdd
+        .map(({ s }) => bodyByKey.get(bodyIdentityKey(s.systemName, s.bodyName)))
+        .filter((b): b is Json => !!b && typeof b.bodyId === "number")
+        .map((b) => ({
+          systemName: [...parsed.systems.values()].find((x) => x.bodies.includes(b))!.name,
+          bodyName: String(b.name),
+          bodyId: b.bodyId as number,
+          bodyId64: typeof b.id64 === "string" ? b.id64 : null,
+        })),
+    );
+  });
   return report;
 }
 
 export function formatCaptureReport(r: CaptureImportReport, apply: boolean): string {
   const lines = [
-    `bodies in export        ${r.bodies.toLocaleString()}`,
-    `species sightings       ${r.sightings.toLocaleString()} (Log/Sample and organic codex entries)`,
-    `already in the corpus   ${r.alreadyKnown.toLocaleString()}`,
-    `new to the corpus       ${[...r.newBySpecies.values()].reduce((a, b) => a + b, 0).toLocaleString()} across ${r.newBySpecies.size} species`,
+    `bodies in export        ${r.bodies.toLocaleString("en-US")}`,
+    `species sightings       ${r.sightings.toLocaleString("en-US")} (Log/Sample and organic codex entries)`,
+    `already in the corpus   ${r.alreadyKnown.toLocaleString("en-US")}`,
+    `new to the corpus       ${[...r.newBySpecies.values()].reduce((a, b) => a + b, 0).toLocaleString("en-US")} across ${r.newBySpecies.size} species`,
   ];
   if (r.unmatchedNames.size) {
     lines.push(`not in the corpus index ${[...r.unmatchedNames].map(([n, c]) => `${n} ×${c}`).join(", ")}`);
   }
   if (apply) {
-    lines.push(`packs written           ${r.packsWritten.toLocaleString()} · system files ${r.systemFilesWritten.toLocaleString()}`);
+    lines.push(`packs written           ${r.packsWritten.toLocaleString("en-US")} · system files ${r.systemFilesWritten.toLocaleString("en-US")}`);
     if (r.backup) lines.push(`store backed up to      ${r.backup}`);
   }
   lines.push("", "by species:");

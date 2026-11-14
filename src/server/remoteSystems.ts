@@ -16,7 +16,7 @@
  * discoveries, the data value or the visited-systems list; it lives in its own file in the user data
  * folder for 30 days, then is fetched again.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { BodyExoState, GenusHint, RemoteBioBody, RemoteSystemRecord } from "../shared/types.js";
 import { APP_USER_AGENT } from "./appVersion.js";
@@ -25,6 +25,8 @@ import { spanshDumpToExplorationRecords } from "./spanshSystemHydration.js";
 import { planetScanFromExplorationRecord } from "./footScannedCatalog.js";
 import { genusNameForCodexToken } from "../shared/codexGenusNames.js";
 import { bodyKey } from "../shared/bodyKey.js";
+import { writeFileAtomic } from "./atomicWrite.js";
+import { errorText } from "./errorText.js";
 
 const DUMP_URL = "https://spansh.co.uk/api/dump";
 const SYSTEM_URL = "https://spansh.co.uk/api/system";
@@ -125,7 +127,7 @@ async function getJson(
     if (!res.ok) return { ok: false, status: res.status, error: `Spansh answered HTTP ${res.status}` };
     return { ok: true, data: await res.json() };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, error: errorText(e) };
   }
 }
 
@@ -218,9 +220,10 @@ export function remoteSystemsCachePath(): string {
 /**
  * Format 2 (2026-09-27): body pressures in pascals, not Spansh's atmospheres — format 1 is refetched. Format 3
  * (2026-10-30): every body's whole orbit with its time, and the system's body count (the scan view, R-4); 4: the
- * orbit times read right (Spansh's "+00" was not).
+ * orbit times read right (Spansh's "+00" was not). 5 (2026-11-11): solid composition as the journal's fractions, not
+ * per cent (review 2026-11-10 A4).
  */
-type CacheFile = { format: 4; systems: RemoteSystemRecord[] };
+type CacheFile = { format: 5; systems: RemoteSystemRecord[] };
 
 function fresh(r: RemoteSystemRecord, nowMs: number): boolean {
   const t = Date.parse(r.fetchedAt);
@@ -233,7 +236,7 @@ export function readRemoteSystemsCache(nowMs = Date.now()): RemoteSystemRecord[]
   if (!existsSync(p)) return [];
   try {
     const j = JSON.parse(readFileSync(p, "utf8").replace(/^\uFEFF/, "")) as CacheFile;
-    if (j?.format !== 4 || !Array.isArray(j.systems)) return [];
+    if (j?.format !== 5 || !Array.isArray(j.systems)) return [];
     return j.systems.filter((r) => r && typeof r.systemAddress === "number" && fresh(r, nowMs));
   } catch {
     return [];
@@ -249,9 +252,7 @@ export function writeRemoteSystemToCache(system: RemoteSystemRecord, nowMs = Dat
   const p = remoteSystemsCachePath();
   try {
     mkdirSync(dirname(p), { recursive: true });
-    const tmp = `${p}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ format: 4, systems } satisfies CacheFile), "utf8");
-    renameSync(tmp, p);
+    writeFileAtomic(p, JSON.stringify({ format: 5, systems } satisfies CacheFile), "utf8");
   } catch {
     /* a cache that cannot be written only costs a fetch next time */
   }

@@ -402,13 +402,21 @@ export function replayOnLaw(nodes: Node[], ship: NeutronShip): number {
 }
 
 /** One leg, from a point (a neutron star or not) to a point, with `fuel` jumps in the tank. Null when no safe way. */
+/**
+ * Where a leg ends. A waypoint with legs after it is reached with a jump of fuel (`arriveWith`, units) unless the next
+ * leg can scoop there: a leg reaching it dry, unflagged, made the next one "unsafe" (review 2026-11-10 B6).
+ */
+type LegEnd = Pt & { arriveWith?: number };
+
 export async function planLeg(
   index: Pick<NeutronIndex, "within"> & Partial<Pick<NeutronIndex, "eachToward">>,
   from: { pos: Pt; star: NeutronStar | null },
-  to: Pt,
+  to: LegEnd,
   ship: NeutronShip,
   fuel: number,
   budgetMs = REFINE_MS,
+  /** Aborted: the search stops at its next yield and the plan rejects (the page that asked has gone). */
+  signal?: AbortSignal,
 ): Promise<{ nodes: Node[]; fuel: number } | null> {
   // The neighbours of a star are the same in every pass: read once.
   const lists = new Map<string, Kept>();
@@ -427,7 +435,7 @@ export async function planLeg(
     test routes the first one always found the route (docs/perf/_neutron-time.mts, unchanged).
   */
   for (const pass of law ? PASSES.slice(0, 1) : PASSES) {
-    best = await searchLeg(index, from, to, first, fuel, pass.weight, law ? Math.min(pass.expansions, LAW_FIRST_EXPANSIONS) : pass.expansions, lists);
+    best = await searchLeg(index, from, to, first, fuel, pass.weight, law ? Math.min(pass.expansions, LAW_FIRST_EXPANSIONS) : pass.expansions, lists, Infinity, Infinity, signal);
     if (best) break;
   }
   /*
@@ -444,14 +452,14 @@ export async function planLeg(
     for (const [k, pass] of PASSES.entries()) {
       // The last, greediest pass keeps its full count: it is the one that finds the route.
       const steps = k < PASSES.length - 1 ? Math.min(pass.expansions, LAW_FIRST_EXPANSIONS) : pass.expansions;
-      best = await searchLeg(index, from, to, safe, fuel, pass.weight, steps, lists);
+      best = await searchLeg(index, from, to, safe, fuel, pass.weight, steps, lists, Infinity, Infinity, signal);
       if (best) break;
     }
     // The next leg starts from the replayed tank, not the pessimistic one.
     if (best) best = { ...best, fuel: replayOnLaw(best.nodes, ship) };
     // Nothing even so: the greedier exact pass, as before.
     for (const pass of best ? [] : PASSES.slice(1)) {
-      best = await searchLeg(index, from, to, first, fuel, pass.weight, pass.expansions, lists);
+      best = await searchLeg(index, from, to, first, fuel, pass.weight, pass.expansions, lists, Infinity, Infinity, signal);
       if (best) break;
     }
   }
@@ -467,7 +475,7 @@ export async function planLeg(
     if (now >= deadline) break;
     // Its share of what is left: a pass stuck on a plateau must not starve the next weight.
     const until = now + (deadline - now) / (REFINE_WEIGHTS.length - k);
-    const leg = await searchLeg(index, from, to, ship, fuel, REFINE_WEIGHTS[k]!, REFINE_EXPANSIONS, lists, best.g, until);
+    const leg = await searchLeg(index, from, to, ship, fuel, REFINE_WEIGHTS[k]!, REFINE_EXPANSIONS, lists, best.g, until, signal);
     // Null: out of time or steps, or nothing cheaper exists.
     if (leg && leg.g < best.g - 1e-9) best = leg;
   }
@@ -480,7 +488,8 @@ const YIELD_MS = 15;
 async function searchLeg(
   index: Pick<NeutronIndex, "within"> & Partial<Pick<NeutronIndex, "eachToward">>,
   from: { pos: Pt; star: NeutronStar | null },
-  to: Pt,
+  /** `arriveWith`: the fuel (units) the leg must reach its end with (a waypoint with legs after it, LegEnd). */
+  to: LegEnd,
   ship: NeutronShip,
   fuel: number,
   weight: number,
@@ -489,6 +498,7 @@ async function searchLeg(
   /** Only a route cheaper than this is wanted (a refining pass). */
   bound = Infinity,
   deadline = Infinity,
+  signal?: AbortSignal,
 ): Promise<Leg | null> {
   const boost = ship.boost ?? 4;
   const { tank, perU, rangeWith, boostBurn, burn, keep } = tankModel(ship);
@@ -531,8 +541,32 @@ async function searchLeg(
     bubble has 2 within 240 ly of Sol), the extra distance in normal jumps. Kept per star and range: a star is
     expanded again with other fuel, and building the list (thousands of stars near the core) was most of a plan's time.
   */
-  const candidates = (u: Node, left: number, r: number, reach: number, isNeutron: boolean) =>
-    bound === Infinity ? firstCandidates(u, left, r, reach, isNeutron) : keptCandidates(u, left, r, reach, isNeutron);
+  const candidates = (u: Node, left: number, r: number, reach: number, isNeutron: boolean) => {
+    const got = bound === Infinity ? firstCandidates(u, left, r, reach, isNeutron) : keptCandidates(u, left, r, reach, isNeutron);
+    if (isNeutron && u.key !== "start") return got;
+    /*
+      Where no supercharge starts (a leg's start off a neutron star), the neutron stars a normal jump away go on
+      whatever they gain: one next to the start brings the end no nearer by itself, and the gain rule left it out for
+      one five jumps on (a guild mate, 2026-11-08: "instead of the neutron right next to the system I refueled at").
+      And from a leg's start, the scoopable ones in one hop, behind too: a ship that missed a refuel, at a neutron
+      star with fuel for one supercharge, could only go on dry, and the re-plot found no way at all (same report).
+    */
+    const have = new Set(got.cands.map((c) => c.n.i));
+    const close: Cand[] = [];
+    const scoop: Cand[] = [];
+    const hop = isNeutron ? reach : r;
+    for (const n of index.within(u.pos, hop)) {
+      if (have.has(n.i) || n.i === u.star?.i) continue;
+      const c = { n, gain: left - dist(n, to), d: dist(u.pos, n) };
+      if (!isNeutron) close.push(c);
+      if (u.key === "start" && n.scoopLs != null && n.scoopLs <= MAX_SCOOP_LS) scoop.push(c);
+    }
+    close.sort((a, b) => a.d - b.d);
+    scoop.sort((a, b) => a.d - b.d);
+    const extra = close.slice(0, NEIGHBOURS / 4);
+    for (const c of scoop.slice(0, NEIGHBOURS / 4)) if (!extra.includes(c)) extra.push(c);
+    return extra.length ? { ...got, cands: [...got.cands, ...extra] } : got;
+  };
   /*
     The first passes pick neighbours as plans always did, from the stars in reach at this fuel, so their route is the
     one a plan had before the refining passes, which can then only improve on it.
@@ -703,6 +737,8 @@ async function searchLeg(
       if (now - lastYield >= YIELD_MS) {
         await new Promise((r) => setImmediate(r));
         lastYield = Date.now();
+        // Looked at after the yield: that is when a closed request's abort can have arrived (review 2026-11-10 B13).
+        signal?.throwIfAborted();
       }
     }
     const isNeutron = u.star != null;
@@ -716,16 +752,20 @@ async function searchLeg(
       possible scooping on the way (the game's plot passes ordinary K G B F O A M stars, a third of all systems),
       and leave the tank about full. A hop that is all supercharge must fit the fuel aboard.
     */
-    const afterHop = (j: { jumps: number; boosted: number }, d: number): { fuel: number; onWay: boolean } | null => {
+    const afterHop = (
+      j: { jumps: number; boosted: number },
+      d: number,
+      need = keep,
+    ): { fuel: number; onWay: boolean } | null => {
       const used = burn(j, d, u.fuel, r);
-      if (used + keep <= u.fuel + 1e-9) return { fuel: Math.max(0, u.fuel - used), onWay: false };
+      if (used + need <= u.fuel + 1e-9) return { fuel: Math.max(0, u.fuel - used), onWay: false };
       // Reaching a scoopable star on the way takes a jump of fuel itself, on top of the supercharge (review 1.2.16).
       if (j.jumps - j.boosted >= 2 && u.fuel >= (j.boosted ? boostBurn(d, u.fuel, r) : 0) + perU)
         return { fuel: tank - 1, onWay: true };
       return null;
     };
     const toEnd = jumpsFrom(isNeutron, left, r, boost);
-    const endFuel = afterHop(toEnd, left);
+    const endFuel = afterHop(toEnd, left, Math.max(keep, to.arriveWith ?? 0));
     const endG = endFuel ? u.g + toEnd.jumps + (endFuel.onWay ? ON_WAY_COST : 0) : Infinity;
     if (endFuel && endG < bound - 1e-9) {
       const g = endG;
@@ -805,6 +845,8 @@ export async function planNeutronRoute(
   ship: NeutronShip,
   /** Time for the refining passes (ms): a re-plot in flight wants the next stop soon more than a jump less. */
   refineMs = REFINE_MS,
+  /** Aborted: the plan rejects at the search's next yield instead of running on for nobody. */
+  signal?: AbortSignal,
 ): Promise<NeutronRoute> {
   const r = Math.max(1, ship.rangeLy);
   const hops: NeutronHop[] = [];
@@ -844,12 +886,18 @@ export async function planNeutronRoute(
   const reserveDropped: number[] = [];
   let plainJumps = 0;
   for (let w = 1; w < waypoints.length; w++) {
+    signal?.throwIfAborted();
     const to = waypoints[w]!;
     plainJumps += Math.ceil(dist(from.pos, to) / r - 1e-9);
-    let leg = await planLeg(index, from, to, ship, fuel, refineMs / (waypoints.length - 1));
+    const scoopThere = neutronAt(to)?.scoopLs;
+    const goesOn = w < waypoints.length - 1 && !(scoopThere != null && scoopThere <= MAX_SCOOP_LS);
+    const end: LegEnd = goesOn ? { ...to, arriveWith: fuelModel.perU } : to;
+    let leg = await planLeg(index, from, end, ship, fuel, refineMs / (waypoints.length - 1), signal);
+    // No way leaves a jump of fuel there: reached as before (the next leg says how it goes on).
+    if (!leg && goesOn) leg = await planLeg(index, from, to, ship, fuel, refineMs / (waypoints.length - 1), signal);
     // No way keeps the reserve (the tank already under it, no scoopable neutron star in reach): without it, said.
     if (!leg && ship.reserve) {
-      leg = await planLeg(index, from, to, { ...ship, reserve: 0 }, fuel, refineMs / (waypoints.length - 1));
+      leg = await planLeg(index, from, to, { ...ship, reserve: 0 }, fuel, refineMs / (waypoints.length - 1), signal);
       if (leg) reserveDropped.push(w);
     }
     if (!leg) {

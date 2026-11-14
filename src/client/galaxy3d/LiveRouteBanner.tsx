@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { RouteProgressDTO } from "@shared/dto/neutron";
 import { liveProgressText } from "@shared/routeProgress";
 import { onServerChange } from "../serverChanges";
+import { jsonOrNull } from "../http";
 
 export interface LiveRouteView {
   at: number;
@@ -16,6 +17,8 @@ export interface LiveRouteView {
   replanning: boolean;
   /** Why the re-plot, when it is the fuel aboard and not the ship leaving the route. */
   replanWhy?: string;
+  /** The last re-plot found no fuel-safe neutron way from here and kept the route. */
+  noFuelWay?: boolean;
   /** A Spansh fleet carrier route: the carrier's jumps move it on, and the stop is pasted in the carrier's route. */
   carrier?: boolean;
   progress?: RouteProgressDTO;
@@ -42,6 +45,11 @@ export function LiveRouteBanner({ view, onStop }: { view: LiveRouteView; onStop:
           you are…
         </p>
       ) : null}
+      {view.noFuelWay && !view.replanning ? (
+        <p className="g3d-panel__note">
+          Too little fuel for a neutron way from here: scoop a star nearby, and the route re-plots once the tank is fuller.
+        </p>
+      ) : null}
       <button
         type="button"
         className="btn-top-toggle g3d-neutron-stop"
@@ -59,7 +67,7 @@ export function useLiveRoute(): { view: LiveRouteView | null; refresh: () => voi
   const [view, setView] = useState<LiveRouteView | null>(null);
   const refresh = useCallback(() => {
     void fetch("/api/neutron/live")
-      .then((r) => (r.ok ? (r.json() as Promise<{ active?: boolean; view?: LiveRouteView | null }>) : null))
+      .then(jsonOrNull<{ active?: boolean; view?: LiveRouteView | null }>)
       .then((j) => j && setView(j.active && j.view ? j.view : null))
       .catch(() => undefined);
   }, []);

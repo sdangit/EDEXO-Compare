@@ -41,6 +41,9 @@ import {
   type JumpElement,
   type LabKind,
 } from "../shared/jumponium.js";
+import { EARTH_G_MS2 } from "../shared/journalPhysics.js";
+import { stallGuard } from "./stallGuard.js";
+import { errorText } from "./errorText.js";
 
 const MAGIC = "EDEXOLAB";
 const CELL_B = 14;
@@ -355,7 +358,7 @@ export function ownJumpBodies(
       body: s.bodyName,
       ...p,
       type: s.planetClass ? (JOURNAL_TYPE[s.planetClass] ?? s.planetClass) : null,
-      gravityG: typeof s.surfaceGravity === "number" ? s.surfaceGravity / 9.80665 : null,
+      gravityG: typeof s.surfaceGravity === "number" ? s.surfaceGravity / EARTH_G_MS2 : null,
       distLs: typeof s.distanceFromArrivalLs === "number" ? s.distanceFromArrivalLs : null,
       pct,
       own: true,
@@ -453,15 +456,17 @@ export async function downloadJumponium(onDone: () => void, fetchImpl: typeof fe
   try {
     mkdirSync(dir, { recursive: true });
     downloading = { done: 0, total: null };
-    const r = await fetchImpl(`${GALAXY_INDEX_BASE_URL}/${JUMPONIUM_REMOTE}`, { redirect: "follow" });
+    const guard = stallGuard(JUMPONIUM_REMOTE);
+    const r = await fetchImpl(`${GALAXY_INDEX_BASE_URL}/${JUMPONIUM_REMOTE}`, { redirect: "follow", signal: guard.signal });
     if (!r.ok || !r.body) throw new Error(`${JUMPONIUM_REMOTE}: HTTP ${r.status}`);
     const total = Number(r.headers.get("content-length"));
     downloading = { done: 0, total: Number.isFinite(total) && total > 0 ? total : null };
     const body = Readable.fromWeb(r.body as import("node:stream/web").ReadableStream<Uint8Array>);
     body.on("data", (chunk: Buffer) => {
+      guard.touch();
       if (downloading) downloading = { ...downloading, done: downloading.done + chunk.length };
     });
-    await pipeline(body, createGunzip(), createWriteStream(part));
+    await pipeline(body, createGunzip(), createWriteStream(part), { signal: guard.signal }).finally(guard.done);
     const head = Buffer.alloc(8);
     const pfd = openSync(part, "r");
     readSync(pfd, head, 0, 8, 0);
@@ -475,7 +480,7 @@ export async function downloadJumponium(onDone: () => void, fetchImpl: typeof fe
     onDone();
   } catch (e) {
     downloading = null;
-    lastError = e instanceof Error ? e.message : String(e);
+    lastError = errorText(e);
     rmSync(part, { force: true });
   }
 }

@@ -3,6 +3,7 @@ import { parseMarketId } from "../../shared/colonize/marketId";
 import { commodityMergeBucket, itemLabel } from "../../shared/colonize/commodityKey";
 import { isConstructionDepotStation } from "../../shared/colonize/constructionDepot";
 import type { BasketCheckoutItem, CheckoutFilters, BasketCheckoutResult } from "../../shared/colonize/types";
+import { playerBuyPriceOf } from "../../shared/colonize/marketPrice";
 
 type MarketJsonRow = {
   Name?: string;
@@ -26,7 +27,7 @@ export function marketStockMap(items: unknown): Map<string, { stock: number; buy
     const bucket = commodityMergeBucket(nl) || commodityMergeBucket(n);
     if (!bucket) continue;
     // BuyPrice is what the commander pays (with Stock); SellPrice is what the market pays (with Demand).
-    const buyPrice = typeof r.BuyPrice === "number" && r.BuyPrice > 0 ? r.BuyPrice : null;
+    const buyPrice = playerBuyPriceOf(r);
     if (buyPrice == null) continue;
     const prev = m.get(bucket);
     if (!prev || stock > prev.stock) m.set(bucket, { stock, buyPrice });
@@ -35,12 +36,15 @@ export function marketStockMap(items: unknown): Map<string, { stock: number; buy
 }
 
 /**
- * If the latest `Market.json` lists every basket commodity with enough stock, return a single 0 Ly visit plan.
+ * If the latest `Market.json` lists every basket commodity with enough stock for what is needed, return a single 0 Ly
+ * visit plan: only when that market is in `referenceSystem` (the system the plan is measured from), since 0 Ly is
+ * from there. Before, any stock above zero was enough and the market could be anywhere (review 2026-11-10 B10).
  */
 export async function tryCheckoutFromMarketJson(
   journalDir: string,
   uniqueItems: BasketCheckoutItem[],
   filters?: Partial<CheckoutFilters>,
+  referenceSystem?: string,
 ): Promise<BasketCheckoutResult | null> {
   if (uniqueItems.length === 0) return null;
   const read = await readMarketJson(journalDir);
@@ -48,13 +52,16 @@ export async function tryCheckoutFromMarketJson(
   const j = read.market;
 
   const stockMap = marketStockMap(j.Items);
+  const needed = (it: BasketCheckoutItem) => Math.max(1, Math.ceil(it.quantityTons || 1));
   for (const it of uniqueItems) {
     const row = stockMap.get(it.id);
-    if (!row || row.stock <= 0) return null;
+    if (!row || row.stock < needed(it)) return null;
   }
 
   const stationName = typeof j.StationName === "string" ? j.StationName : "";
   const starSystem = typeof j.StarSystem === "string" ? j.StarSystem : "";
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  if (!referenceSystem?.trim() || !same(starSystem, referenceSystem)) return null;
   const marketId = parseMarketId(j.MarketID) ?? "";
   const stationType = typeof j.StationType === "string" ? j.StationType : null;
   if (
@@ -75,7 +82,7 @@ export async function tryCheckoutFromMarketJson(
       id: it.id,
       label,
       spanshCommodity: label,
-      quantityNeeded: Math.max(1, Math.ceil(it.quantityTons || 1)),
+      quantityNeeded: needed(it),
       buyPrice: row.buyPrice,
       supply: row.stock,
       dataSource: "journal" as const,

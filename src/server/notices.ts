@@ -22,7 +22,7 @@
  * (so the same body never comes back after being read), the records, and the settings.
  */
 import { rareColourPhrase, type ColourRarity } from "../shared/rareColour.js";
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { ExplorationScanRecord } from "../shared/types.js";
 import { BODY_FEATURES, bodyFeatures, directParent, featureRecordFromScan, inVoidCross } from "../shared/bodyFeatures.js";
 import { customRuleHits } from "../shared/customBodyRules.js";
@@ -47,7 +47,8 @@ import {
   type RecordMarkDTO,
   type RecordSubject,
 } from "../shared/notices.js";
-import { writeFileAtomic } from "./atomicWrite.js";
+import { setAsideUnreadable, writeFileAtomic } from "./atomicWrite.js";
+import { EARTH_G_MS2 } from "../shared/journalPhysics.js";
 
 type Line = Record<string, unknown>;
 
@@ -544,7 +545,7 @@ export function createNoticesService(opts: {
             : `${kinds.has("afm") ? "AFM refill" : "Jumponium"} (${served.map((i) => i.name).join(", ")})`;
         const g = num(line.SurfaceGravity);
         const ls = num(line.DistanceFromArrivalLS);
-        const facts = [g != null ? `${(g / 9.80665).toFixed(2)} g` : "", ls != null ? `${Math.round(ls).toLocaleString("en-US")} ls` : ""]
+        const facts = [g != null ? `${(g / EARTH_G_MS2).toFixed(2)} g` : "", ls != null ? `${Math.round(ls).toLocaleString("en-US")} ls` : ""]
           .filter(Boolean)
           .join(", ");
         const have = stock ? ` · aboard ${rich.map((h) => `${jumpElement(h.key).symbol} ${stock[h.key] ?? 0}`).join(", ")}` : "";
@@ -990,11 +991,7 @@ function load(filePath: string | null): NoticesFile {
       next save: it holds the commander's notify settings, and those were silently reset to the
       defaults (code review 2026-10-10, A5). Kept as `.unreadable-<time>` to recover by hand.
     */
-    try {
-      renameSync(filePath, `${filePath}.unreadable-${Date.now()}`);
-    } catch {
-      /* left where it is; the next save replaces it */
-    }
+    setAsideUnreadable(filePath);
     return fresh;
   }
 }

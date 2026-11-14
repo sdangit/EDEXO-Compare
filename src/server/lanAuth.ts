@@ -18,9 +18,10 @@
  * Delete that file to invalidate every paired device.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import type { RequestHandler } from "express";
+import { writeFileAtomic } from "./atomicWrite.js";
 
 /** `?k=` in a LAN URL — short, because it is typed by hand off a phone screen often enough. */
 export const LAN_KEY_QUERY = "k";
@@ -44,6 +45,28 @@ export function isLoopbackAddress(addr: string | null | undefined): boolean {
   if (a === "::1" || a === "::ffff:127.0.0.1") return true;
   const v4 = a.startsWith("::ffff:") ? a.slice("::ffff:".length) : a;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
+}
+
+/** Headers a proxy adds to say who the real client is. */
+const PROXY_HEADERS = ["x-forwarded-for", "x-real-ip", "cf-connecting-ip", "true-client-ip", "forwarded"] as const;
+
+/**
+ * From this PC itself: a loopback peer that is not a proxy relaying someone else (review 2026-11-10 C2). A tunnel or
+ * reverse proxy on this PC (the Cloudflare tunnel service, for one) connects over loopback, so every request through
+ * it read as this PC's own: no access key, and every PC-only route. A request naming another client in a proxy
+ * header is another device, whatever socket it came in on.
+ */
+export function requestIsFromThisPc(req: {
+  socket?: { remoteAddress?: string | null } | null;
+  headers?: Record<string, string | string[] | undefined>;
+}): boolean {
+  if (!isLoopbackAddress(req.socket?.remoteAddress)) return false;
+  return !requestCameThroughProxy(req);
+}
+
+/** A request a proxy or tunnel relayed: it names the real client in a header. */
+export function requestCameThroughProxy(req: { headers?: Record<string, string | string[] | undefined> }): boolean {
+  return PROXY_HEADERS.some((h) => req.headers?.[h] !== undefined);
 }
 
 export function parseCookieHeader(raw: string | undefined | null): Record<string, string> {
@@ -74,8 +97,13 @@ export function keysMatch(a: string | null | undefined, b: string | null | undef
 
 /** Query string first (the pairing link), then the header (scripts), then the cookie (paired). */
 export function readLanKeyFromRequest(req: IncomingMessage): { key: string | null; fromQuery: boolean } {
-  const url = new URL(req.url ?? "/", "http://127.0.0.1");
-  const q = url.searchParams.get(LAN_KEY_QUERY);
+  // A request-target URL cannot read (`//[`) carries no key: it threw, a 500 with a stack instead of the 401 (C9).
+  let q: string | null = null;
+  try {
+    q = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(LAN_KEY_QUERY);
+  } catch {
+    q = null;
+  }
   if (q) return { key: q, fromQuery: true };
   const header = req.headers[LAN_KEY_HEADER];
   const headerValue = Array.isArray(header) ? header[0] : header;
@@ -84,9 +112,15 @@ export function readLanKeyFromRequest(req: IncomingMessage): { key: string | nul
   return { key: cookie ?? null, fromQuery: false };
 }
 
+/** Relayed by a proxy on this PC: a loopback socket naming another client (see {@link requestIsFromThisPc}). */
+function relayedByProxy(req: Parameters<typeof requestIsFromThisPc>[0]): boolean {
+  return isLoopbackAddress(req.socket?.remoteAddress) && !requestIsFromThisPc(req);
+}
+
 export function requestIsAuthorized(req: IncomingMessage, lanKey: string | null): boolean {
-  if (!lanKey) return true;
-  if (isLoopbackAddress(req.socket?.remoteAddress)) return true;
+  // LAN access off: the server listens on this PC only, and a tunnel on this PC must not reopen it (review C2).
+  if (!lanKey) return !relayedByProxy(req);
+  if (requestIsFromThisPc(req)) return true;
   return keysMatch(readLanKeyFromRequest(req).key, lanKey);
 }
 
@@ -99,6 +133,30 @@ export function lanUrlWithKey(baseUrl: string, lanKey: string | null): string {
   return u.toString();
 }
 
+/*
+  The key file readable by its owner only (review 2026-11-07 §7): it was written with the default mode, 0644 on Linux,
+  so any account on the machine could read the key. Windows keeps the user profile's own ACL either way.
+*/
+const KEY_FILE_MODE = 0o600;
+
+/** The file calls tightenKeyFile makes, swappable so its mode logic is tested on Windows too (plan 2.8). */
+type KeyFileOps = { platform: NodeJS.Platform; modeOf: (file: string) => number; chmod: (file: string, mode: number) => void };
+const realKeyFileOps: KeyFileOps = {
+  platform: process.platform,
+  modeOf: (file) => statSync(file).mode,
+  chmod: (file, mode) => chmodSync(file, mode),
+};
+
+/** A key file from before is narrowed to the owner too; best-effort. */
+export function tightenKeyFile(file: string, ops: KeyFileOps = realKeyFileOps): void {
+  if (ops.platform === "win32") return;
+  try {
+    if ((ops.modeOf(file) & 0o077) !== 0) ops.chmod(file, KEY_FILE_MODE);
+  } catch {
+    /* the key still works */
+  }
+}
+
 /**
  * Read the stored key, or mint and store one. Best-effort: if the file cannot be written the key
  * still works for this run, it just will not survive a restart.
@@ -107,14 +165,17 @@ export function loadOrCreateLanKey(file: string): string {
   try {
     if (existsSync(file)) {
       const stored = readFileSync(file, "utf8").trim();
-      if (stored.length >= 16) return stored;
+      if (stored.length >= 16) {
+        tightenKeyFile(file);
+        return stored;
+      }
     }
   } catch {
     /* fall through and mint a new one */
   }
   const key = generateLanKey();
   try {
-    writeFileSync(file, `${key}\n`, "utf8");
+    writeFileAtomic(file, `${key}\n`, { encoding: "utf8", mode: KEY_FILE_MODE });
   } catch {
     /* in-memory only for this run */
   }
@@ -171,19 +232,52 @@ export function requestOriginIsAllowed(
   allowedHost: (hostName: string) => boolean,
   opts: { checkOrigin: boolean },
 ): boolean {
+  /*
+    Never through a proxy or tunnel (owner 2026-11-13: EDEXO is not to be reached that way, the Cloudflare tunnel service
+    on this PC included). Before, such a request only counted as another device's and passed with the access key.
+  */
+  if (requestCameThroughProxy(req)) return false;
   const ours = (name: string | null) => name !== null && (isLoopbackHostName(name) || allowedHost(name));
   const host = req.headers.host ? hostNameOf(req.headers.host) : null;
-  if (req.headers.host && isLoopbackAddress(req.socket?.remoteAddress) && !ours(host)) return false;
+  if (req.headers.host && requestIsFromThisPc(req) && !ours(host)) return false;
   if (!opts.checkOrigin) return true;
   const origin = req.headers.origin;
   if (origin === undefined) return true;
   if (origin === "null") return false;
   const originHost = hostNameOf(origin);
-  return (originHost !== null && originHost === host) || ours(originHost);
+  /*
+    The port and the scheme count (review 2026-11-10 C9): any page on `localhost:<any port>` had this PC's full trust
+    for body-less POSTs. Same-origin is the request's own host and port over http; one of our names, on the port the
+    request came in on. The dev server keeps its own Host when it proxies (vite.config.ts), so its pages are
+    same-origin.
+  */
+  const o = urlOf(origin);
+  const originPort = o ? o.port || (o.protocol === "https:" ? "443" : "80") : null;
+  const hostPort = req.headers.host ? (urlOf(`http://${req.headers.host}`)?.port || "80") : null;
+  const ownPort = typeof req.socket?.localPort === "number" ? String(req.socket.localPort) : hostPort;
+  const sameOrigin = originHost !== null && originHost === host && o?.protocol === "http:" && originPort === hostPort;
+  return sameOrigin || (ours(originHost) && originPort !== null && (originPort === ownPort || originPort === hostPort));
+}
+
+function urlOf(value: string): URL | null {
+  try {
+    return new URL(value.trim());
+  } catch {
+    return null;
+  }
 }
 
 export function createOriginGuard(allowedHost: (hostName: string) => boolean): RequestHandler {
   return (req, res, next) => {
+    /*
+      No API answer to a page of another site (review 2026-11-10 C1), GETs included, which the Origin test below lets
+      through: an `<img>` on any web page could make a GET route stat a network path on this PC. Browsers send
+      `Sec-Fetch-Site`; the app's windows, the phone and OBS are same-origin or "none", and scripts send nothing.
+    */
+    if (req.headers["sec-fetch-site"] === "cross-site" && (req.path === "/api" || req.path.startsWith("/api/"))) {
+      res.status(403).json({ error: "foreign_origin" });
+      return;
+    }
     const m = req.method.toUpperCase();
     const checkOrigin = m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
     if (requestOriginIsAllowed(req, allowedHost, { checkOrigin })) {
@@ -200,7 +294,7 @@ export function createOriginGuard(allowedHost: (hostName: string) => boolean): R
  * 1.4). A paired phone or tablet can still read and use everything else.
  */
 export const localOnly: RequestHandler = (req, res, next) => {
-  if (isLoopbackAddress(req.socket?.remoteAddress)) {
+  if (requestIsFromThisPc(req)) {
     next();
     return;
   }
@@ -210,10 +304,12 @@ export const localOnly: RequestHandler = (req, res, next) => {
 export function createLanAuthGuard(lanKey: string | null): RequestHandler {
   return (req, res, next) => {
     if (!lanKey) {
-      next();
+      // LAN access off: the server listens on this PC only, and a tunnel on this PC must not reopen it (review C2).
+      if (relayedByProxy(req)) res.status(403).json({ error: "lan_access_off" });
+      else next();
       return;
     }
-    if (isLoopbackAddress(req.socket?.remoteAddress)) {
+    if (requestIsFromThisPc(req)) {
       next();
       return;
     }

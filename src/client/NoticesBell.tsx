@@ -11,6 +11,8 @@ import type { NoticeDTO } from "@shared/notices";
 import { Popover } from "./ui/Popover";
 import { useToast } from "./ui/feedback";
 import { useRecordChime } from "./noticesClient";
+import { copyText } from "./copyText";
+import { sendJson } from "./http";
 
 function ago(iso: string): string {
   const ms = Date.now() - Date.parse(iso);
@@ -25,7 +27,7 @@ function ago(iso: string): string {
 
 async function post(path: string, body: unknown): Promise<boolean> {
   try {
-    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await sendJson(path, body);
     return r.ok;
   } catch {
     return false;
@@ -112,7 +114,7 @@ export const NoticesBell = memoOnSnapSlice(BELL_FIELDS, function NoticesBell({
         {n.systemAddress != null ? (
           <button
             type="button"
-            className="exo-data-alert__btn"
+            className="exo-data-alert__btn ui-btn ui-btn--primary ui-btn--sm"
             title={`Show ${n.body ? `${n.body} in ` : ""}${n.system}`}
             onClick={() => show(n)}
           >
@@ -122,16 +124,16 @@ export const NoticesBell = memoOnSnapSlice(BELL_FIELDS, function NoticesBell({
         {n.kind === "cg" ? (
           <button
             type="button"
-            className="exo-data-alert__btn"
+            className="exo-data-alert__btn ui-btn ui-btn--primary ui-btn--sm"
             title={`Copy ${n.system} to paste into the galaxy map`}
-            onClick={() => void navigator.clipboard?.writeText(n.system).catch(() => {})}
+            onClick={() => void copyText(n.system).catch(() => {})}
           >
             Copy system
           </button>
         ) : null}
         <button
           type="button"
-          className="exo-data-alert__btn exo-data-alert__btn--secondary"
+          className="exo-data-alert__btn exo-data-alert__btn--secondary ui-btn ui-btn--secondary ui-btn--sm"
           onClick={() => setRead([n.id], !n.read)}
         >
           {n.read ? "Unread" : "Read"}
@@ -173,7 +175,7 @@ export const NoticesBell = memoOnSnapSlice(BELL_FIELDS, function NoticesBell({
             Notices{unread.length ? ` · ${unread.length} unread` : ""}
           </span>
           {unread.length ? (
-            <button type="button" className="exo-data-alert__btn exo-data-alert__btn--secondary" onClick={() => setRead("all", true)}>
+            <button type="button" className="exo-data-alert__btn exo-data-alert__btn--secondary ui-btn ui-btn--secondary ui-btn--sm" onClick={() => setRead("all", true)}>
               Mark all read
             </button>
           ) : null}
@@ -192,7 +194,7 @@ export const NoticesBell = memoOnSnapSlice(BELL_FIELDS, function NoticesBell({
           <>
             <div className="notices-group__head notices-group__head--read">
               <span className="notices-group__title">Read ({read.length})</span>
-              <button type="button" className="exo-data-alert__btn exo-data-alert__btn--secondary" onClick={clearRead}>
+              <button type="button" className="exo-data-alert__btn exo-data-alert__btn--secondary ui-btn ui-btn--secondary ui-btn--sm" onClick={clearRead}>
                 Clear read
               </button>
             </div>

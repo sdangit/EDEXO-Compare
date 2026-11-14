@@ -23,7 +23,8 @@ import type { SectorMapFile } from "@shared/sectorMapFile.js";
 import { GalaxySectorMap, type CommanderPosition } from "./GalaxySectorMap";
 import { GalaxySearchPanel, type GalaxySearchApplied } from "./GalaxySearchPanel";
 import {
-  drawnGalaxyImage,
+  GALAXY_IMAGE_URL,
+  loadGalaxyImage,
   renderRegionBackdrop,
   type GalaxyImage,
   type RegionMapPayload,
@@ -33,6 +34,7 @@ import type { BacklogMapDTO, CommanderSectorsDTO } from "@shared/types";
 import { CopySystemButton } from "./CopySystemButton";
 import { LoadingNote } from "./ui/Loading";
 import { onServerChange } from "./serverChanges";
+import { jsonOrNull } from "./http";
 
 type Load =
   | { state: "loading" }
@@ -87,7 +89,7 @@ export function GalaxyMapScreen() {
   useEffect(() => {
     let cancelled = false;
     fetch("/api/region-map")
-      .then((r) => (r.ok ? (r.json() as Promise<RegionMapPayload>) : null))
+      .then(jsonOrNull<RegionMapPayload>)
       .then((data) => {
         if (cancelled || !data) return;
         setRegionMap(data);
@@ -104,7 +106,7 @@ export function GalaxyMapScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    drawnGalaxyImage()
+    loadGalaxyImage(GALAXY_IMAGE_URL)
       .then((img) => {
         if (!cancelled && img) setGalaxyImage(img);
       })
@@ -125,7 +127,7 @@ export function GalaxyMapScreen() {
   useEffect(() => {
     let cancelled = false;
     fetch("/api/galaxy/my-sectors")
-      .then((r) => (r.ok ? (r.json() as Promise<CommanderSectorsDTO>) : null))
+      .then(jsonOrNull<CommanderSectorsDTO>)
       .then((d) => {
         if (!cancelled && d) setCommanderSectors(d);
       })
@@ -147,7 +149,7 @@ export function GalaxyMapScreen() {
   useEffect(() => {
     let cancelled = false;
     fetch("/api/backlog-map")
-      .then((r) => (r.ok ? (r.json() as Promise<BacklogMapDTO>) : null))
+      .then(jsonOrNull<BacklogMapDTO>)
       .then((d) => {
         if (!cancelled && d) setBacklog(d);
       })
@@ -192,7 +194,7 @@ export function GalaxyMapScreen() {
     let cancelled = false;
     const read = () => {
       fetch("/api/commander-position")
-        .then((r) => (r.ok ? (r.json() as Promise<CommanderPosition>) : null))
+        .then(jsonOrNull<CommanderPosition>)
         .then((p) => {
           if (!cancelled && p) setCommander(p);
         })
@@ -219,7 +221,7 @@ export function GalaxyMapScreen() {
         </a>
         {load.state === "ready" ? (
           <p className="galaxy-screen__meta">
-            {load.file.cells.length} sectors · built {new Date(load.file.generatedAt).toLocaleString()}
+            {load.file.cells.length} sectors · built {new Date(load.file.generatedAt).toLocaleString(undefined)}
             {commander?.system ? (
               <>
                 {" "}

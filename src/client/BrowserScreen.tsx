@@ -16,6 +16,7 @@ import { BrowserPrivacyPanel } from "./BrowserPrivacyPanel";
 import { onBrowserUrlRequest, takePendingBrowserUrl } from "./tabs/browserOpen";
 import type { InaraPageRead } from "./colonize/inaraBrowser";
 import "./styles/browser.css";
+import { Caret } from "./ui/glyphs";
 
 interface BrowserTab {
   id: number;
@@ -578,7 +579,7 @@ export function BrowserScreen() {
               onClick={() => (tab.logins.length > 1 ? setKeyMenu(!keyMenu) : fill(tab.logins[0]))}
             >
               {/* A word beside the key (owner, 2026-10-16: the bare icon went unnoticed). */}
-              <IconKey className="ebr-key-icon" /> {tab.logins.length > 1 ? "Logins ▾" : "Fill login"}
+              <IconKey className="ebr-key-icon" /> {tab.logins.length > 1 ? <>Logins <Caret /></> : "Fill login"}
             </button>
             {keyMenu && tab.logins.length > 1 ? (
               <div className="ebr-menu" role="menu" onMouseLeave={() => setKeyMenu(false)}>
@@ -727,7 +728,7 @@ export function BrowserScreen() {
             <p className="dim">One browser serves Compare and Colonize; its pages show in one window at a time.</p>
             <button
               type="button"
-              className="btn-confirm-go"
+              className="btn-confirm-go ui-btn ui-btn--primary ui-btn--md"
               onClick={() => bringHereRef.current()}
             >
               Bring it here

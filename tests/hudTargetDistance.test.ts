@@ -167,6 +167,30 @@ describe("the target's distance off the HUD", () => {
     for (let y = 0; y < 600; y++) crop.set(f.subarray(y * W * 4, (y * W + 600) * 4), y * 600 * 4);
     expect(readTargetDistance(crop, 600, 600, GLYPHS, H)?.distLs).toBe(357);
   });
+
+  /*
+    Review 2026-11-10 E1 / T16: a bright body's limb behind the leading figure dropped it, and the rest was a valid
+    number: 1,957 read 957, 927 read 27, 8.59 read 59. Now not sure: the line starts a character right of the time line
+    under it, or the cell before it is a bright block.
+  */
+  const limbOver = (text: string, cells: number) => {
+    const f = frame();
+    const right = 300 + cells * 6 * S - S;
+    const r = 120;
+    const cx = right - r;
+    const cy = 400 - 7;
+    for (let y = cy - r; y <= cy + r; y++)
+      for (let x = cx - r; x <= right; x++)
+        if (x >= 0 && y >= 0 && y < H && (x - cx) ** 2 + (y - cy) ** 2 <= r * r) f.set([255, 255, 255, 255], (y * W + x) * 4);
+    label(f, text, 300, 400);
+    return f;
+  };
+  it("does not take a number whose leading figure a bright body hides", () => {
+    for (const [text, cells] of [["1,957Ls", 2], ["927Ls", 1], ["8.59Ls", 2]] as const) {
+      const r = readTargetDistance(limbOver(text, cells), W, H, GLYPHS);
+      expect(r === null || r.text === text, `${text} read ${r?.text}`).toBe(true);
+    }
+  });
 });
 
 /*

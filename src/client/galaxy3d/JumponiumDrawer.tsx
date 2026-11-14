@@ -24,6 +24,9 @@ import { tabListKeyDown } from "../ui/Tabs";
 import { G3D_HELP, MenuHead } from "./G3dMenu";
 import { LabCrafting } from "./LabCrafting";
 import { GuardianLab } from "./GuardianLab";
+import { sendJson } from "../http";
+import { pickRow } from "../ui/pickRow";
+import { EmptyState } from "../ui/EmptyState";
 
 
 interface NearReply {
@@ -160,11 +163,7 @@ export function JumponiumDrawer({
     setDownloading(true);
     setDownloadError(null);
     try {
-      const r = await fetch("/api/galaxy/index/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ extrasOnly: true }),
-      });
+      const r = await sendJson("/api/galaxy/index/download", { extrasOnly: true });
       if (!r.ok) throw new Error(`Download failed (${r.status})`);
       // The combined download runs on the server (stations and neutron stars first when they are due): follow it
       // while it is busy, and stop on its error or when the tab closes (review 1.2.16).
@@ -248,7 +247,7 @@ export function JumponiumDrawer({
           ) : reply == null && busy ? (
             <LoadingNote className="fdb-empty" label="Reading what you hold…" />
           ) : (
-            <p className="fdb-empty">What you hold shows after your next login: the game writes the list then.</p>
+            <EmptyState>What you hold shows after your next login: the game writes the list then.</EmptyState>
           )
         ) : (
           <>
@@ -291,9 +290,9 @@ export function JumponiumDrawer({
               ) : null}
             </>
           ) : (
-            <p className="fdb-empty">
+            <EmptyState>
               What you hold shows after your next login: the game writes the list then.
-            </p>
+            </EmptyState>
           )}
 
           <div className="stations-filters">
@@ -383,12 +382,12 @@ export function JumponiumDrawer({
             </div>
           </div>
 
-          {downloadError ? <p className="fdb-empty">{downloadError}</p> : null}
+          {downloadError ? <EmptyState tone="error">{downloadError}</EmptyState> : null}
           {reply && !reply.galaxyFile && !reply.error ? (
             <div className="carriers-fetch">
               <button
                 type="button"
-                className="fdb-chip fdb-chip--on"
+                className="fdb-chip fdb-chip--on fdb-chip--primary ui-btn ui-btn--primary ui-btn--sm"
                 onClick={() => void download()}
                 disabled={downloading}
               >
@@ -401,10 +400,10 @@ export function JumponiumDrawer({
               </span>
             </div>
           ) : null}
-          {reply?.error ? <p className="fdb-empty">{reply.error}</p> : null}
+          {reply?.error ? <EmptyState tone="error">{reply.error}</EmptyState> : null}
           {reply == null && busy ? <LoadingNote className="fdb-empty" label="Searching…" /> : null}
           {reply && rows.length === 0 ? (
-            <p className="fdb-empty">No body within {range.toLocaleString("en-US")} ly has that.</p>
+            <EmptyState>No body within {range.toLocaleString("en-US")} ly has that.</EmptyState>
           ) : null}
           {rows.length ? (
             <div className="fdb-scroll">
@@ -420,12 +419,7 @@ export function JumponiumDrawer({
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr
-                      key={r.id}
-                      className="is-pickable"
-                      onClick={() => onPick(r)}
-                      title="Click to show it on the map"
-                    >
+                    <tr key={r.id} {...pickRow(() => onPick(r))} title="Click to show it on the map">
                       <td
                         className={r.own ? "stations-own" : undefined}
                         title={r.own ? "You scanned it" : undefined}

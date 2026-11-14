@@ -12,6 +12,7 @@ import type {
 } from "../shared/types.js";
 import type { GameStateStore } from "./gameState.js";
 import { collectOwnOrganicLockSpeciesIds } from "./organicLocks.js";
+import { filterByGenusHints } from "./genusMatchUtils.js";
 import { regionIndexForSystem } from "./regionMapData.js";
 import { REGION_PRIOR_WEIGHT, rankSpeciesOnBody } from "./speciesLikelihood.js";
 import { applyMeasuredOdds } from "./measuredOdds.js";
@@ -52,6 +53,13 @@ function regionIndexForBody(store: GameStateStore, b: BodyExoState, projectRoot:
 const FIXED_PRESENCE_PCT: Record<string, { oneSignal: number; more: number }> = {
   crystalline_shards_crystalline_shards: { oneSignal: 48.6, more: 6 },
 };
+
+/** The measured presence for a species that has one (above), by the body's signal count; null for the rest. */
+export function fixedPresencePercent(speciesId: string, biologicalSignals: number | null | undefined): number | null {
+  const fixed = FIXED_PRESENCE_PCT[speciesId];
+  if (!fixed) return null;
+  return (biologicalSignals ?? 1) > 1 ? fixed.more : fixed.oneSignal;
+}
 
 /**
  * The ranking model's answer, written onto the matches.
@@ -108,9 +116,8 @@ export function attachPresenceProbability(
       holds 28 bodies, so the ranking put it at 0 % on every body that met its rules (owner,
       2026-10-09: "Crystalline Shards are getting shown at 0% all the time").
     */
-    const fixed = FIXED_PRESENCE_PCT[r.match.entry.id];
-    if (fixed)
-      r.match.presenceProbabilityPercent = (b.biologicalSignals ?? 1) > 1 ? fixed.more : fixed.oneSignal;
+    const fixed = fixedPresencePercent(r.match.entry.id, b.biologicalSignals);
+    if (fixed != null) r.match.presenceProbabilityPercent = fixed;
   }
 
   /**
@@ -224,7 +231,7 @@ export function presenceFloorFor(speciesId: string): number {
  * less (owner, 2026-10-09). Read once the whole pipeline has run; the chance can still move after the
  * floor (the genus prior), which is one of the answers.
  */
-export type FloorKept = "sampled" | "approximate" | "best" | "passed" | "genusShare" | "genusBest";
+export type FloorKept = "sampled" | "approximate" | "best" | "passed" | "genusShare" | "genusBest" | "twin" | "count";
 const floorKept = new WeakMap<SpeciesMatch, { why: FloorKept; pct: number }>();
 export function floorKeptReason(m: SpeciesMatch): { why: FloorKept; pct: number } | null {
   return floorKept.get(m) ?? null;
@@ -239,19 +246,40 @@ export function floorKeptReason(m: SpeciesMatch): { why: FloorKept; pct: number 
  *
  * Three things it will not do:
  *
- *  - **Empty the list.** If nothing at all clears the floor, the single best row stays. A body where
- *    the answer is spread that thin still deserves a best guess, and an empty panel over a body the
- *    game says has life on it reads as a broken app rather than as an honest shrug.
- *
- *    Deliberately *one* row and not one per biological signal. Two signals mean two genera are down
- *    there, so keeping the runner-up looks defensible — but it puts a row the model scored at 4.7 %
- *    on the same list as one it scored at 100 %, which is the thing being complained about. The
- *    second genus is not unknown, it is unnamed, and the ambiguity note already says so.
+ *  - **Show fewer genera than the body has signals.** One signal is one genus with one species of it
+ *    (owner, 2026-11-11; review 2026-11-10 A7), Brain Trees aside, several of which can grow on one body:
+ *    four candidate genera for four signals are all four there, whatever the model makes of one. The best row
+ *    of each genus the floor would empty comes back, likeliest first, until the count is met (signalSlots).
+ *    This replaces the one-row rule of 2026-09 (a 4.7 % row beside a 100 % one was the complaint): with one
+ *    signal the list still keeps one row.
  *  - **Touch an unmeasured row.** `presenceProbabilityPercent` is null when the model has no opinion
  *    — no profile, too few observed bodies. Null is "unmeasured", never "unlikely".
  *  - **Argue with the commander's own boots.** A species he has sampled on this body stays, whatever
  *    the model thinks of it.
  */
+/**
+ * The likeliest shown row of each genus a similar twin moon's DSS named (`siblingGenusHints`, review 2026-11-10 A3),
+ * before this body has a DSS of its own: the twin's genus is the hint, not its species (twins differ by up to 120 K).
+ * These rows keep their place: the presence floor and the genus veto pass them over.
+ */
+export function twinGenusRows<M extends Pick<SpeciesMatch, "entry" | "unlikely" | "presenceProbabilityPercent">>(
+  matches: M[],
+  b: Pick<BodyExoState, "genusHints" | "siblingGenusHints">,
+): Set<M> {
+  const out = new Set<M>();
+  if (b.genusHints?.length || !b.siblingGenusHints?.length) return out;
+  const named = new Set(filterByGenusHints(matches.map((m) => m.entry), b.siblingGenusHints).map((e) => e.genusDataDir));
+  const best = new Map<string, M>();
+  for (const m of matches) {
+    if (m.unlikely || !named.has(m.entry.genusDataDir)) continue;
+    const prev = best.get(m.entry.genusDataDir);
+    if (!prev || (m.presenceProbabilityPercent ?? Infinity) > (prev.presenceProbabilityPercent ?? Infinity))
+      best.set(m.entry.genusDataDir, m);
+  }
+  for (const m of best.values()) out.add(m);
+  return out;
+}
+
 export function demoteBelowPresenceFloor(
   matches: SpeciesMatch[],
   b: BodyExoState,
@@ -270,6 +298,8 @@ export function demoteBelowPresenceFloor(
   if (shown.length === 0) return;
 
   const keepAtLeast = 1;
+  const twin = twinGenusRows(shown, b);
+  const below: SpeciesMatch[] = [];
   // Highest chance first, so the one row that survives an all-below-floor body is the best of them.
   // An unmeasured row sorts with the survivors rather than the casualties: it is not a weak claim,
   // it is no claim.
@@ -285,7 +315,8 @@ export function demoteBelowPresenceFloor(
       !Number.isFinite(pct) ||
       m.organicAnalysisComplete === true ||
       m.approximateMatch === true ||
-      confirmed.has(m.entry.id);
+      confirmed.has(m.entry.id) ||
+      twin.has(m);
     const floor = presenceFloorFor(m.entry.id);
     if (immune || pct >= floor || kept < keepAtLeast) {
       kept++;
@@ -298,21 +329,57 @@ export function demoteBelowPresenceFloor(
                 ? "approximate"
                 : pct >= floor
                   ? "passed"
-                  : "best",
+                  : twin.has(m)
+                    ? "twin"
+                    : "best",
           pct,
         });
       }
       continue;
     }
+    below.push(m);
+  }
+  // The signal count first: the best row of each genus the floor would empty, likeliest first, until it is met.
+  const signals = b.biologicalSignals;
+  if (signals != null && Number.isFinite(signals) && signals > 1) {
+    const left = shown.filter((m) => !below.includes(m));
+    for (const m of [...below]) {
+      if (signalSlots(left) >= signals) break;
+      const g = m.entry.genusDataDir;
+      if (g !== BRAIN_TREE_DIR && left.some((o) => o.entry.genusDataDir === g)) continue;
+      left.push(m);
+      below.splice(below.indexOf(m), 1);
+      floorKept.set(m, { why: "count", pct: m.presenceProbabilityPercent! });
+    }
+  }
+  for (const m of below) {
+    const pct = m.presenceProbabilityPercent!;
     m.unlikely = true;
     m.unlikelyReasons = [
       ...(m.unlikelyReasons ?? []),
       {
         field: "Chance here",
-        detail: `${pct.toFixed(1)} % — under the ${floor} % this panel shows. Listed as a low-probability find rather than excluded.`,
+        detail: `${pct.toFixed(1)} % — under the ${presenceFloorFor(m.entry.id)} % this panel shows. Listed as a low-probability find rather than excluded.`,
       },
     ];
   }
+}
+
+/** Brain Trees' data folder: the one genus of which several species can grow on one body, each a signal. */
+const BRAIN_TREE_DIR = "brain-tree";
+
+/**
+ * How many of a body's biological signals these rows can stand for: one per genus, one per row for Brain Trees (owner,
+ * 2026-11-11: one signal is one genus, one species of it, Brain Trees aside).
+ */
+export function signalSlots(rows: readonly Pick<SpeciesMatch, "entry">[]): number {
+  const genera = new Set<string>();
+  let trees = 0;
+  for (const m of rows) {
+    if (m.entry.genusDataDir === BRAIN_TREE_DIR) trees++;
+    else genera.add(m.entry.genusDataDir);
+  }
+  return genera.size + trees;
 }
 
 /**

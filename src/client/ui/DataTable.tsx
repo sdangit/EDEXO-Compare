@@ -11,6 +11,7 @@ import { ScrollArea } from "./ScrollArea";
 import { Select } from "./Select";
 import { csvFileName, downloadCsv, toCsv } from "../csv";
 import { PAGE } from "./tablePage";
+import { EmptyState } from "./EmptyState";
 
 /** List (a table, the default) or cards — owner, 2026-09-25; every tab offers both. */
 export type DiscoveriesLayout = "list" | "cards";
@@ -41,6 +42,8 @@ function SortHeader<T>({
       scope="col"
       className={`disc-th${col.numeric ? " disc-th--num" : ""}${active ? " disc-th--active" : ""}`}
       title={col.title}
+      // The order for a screen reader too, not only the caret (review 2026-11-07 §9, plan 7.5).
+      aria-sort={active ? (sort.dir === 1 ? "ascending" : "descending") : "none"}
     >
       <button type="button" className="disc-sort" onClick={() => onSort(col.key)}>
         {col.label}
@@ -183,17 +186,17 @@ function TableInner<T>({
       setMeasured((n) => n + 1);
     }
   }, [from, to, sorted, columns, view.top]);
-  if (rows.length === 0) return <p className="dim disc-empty">{empty}</p>;
+  if (rows.length === 0) return <EmptyState>{empty}</EmptyState>;
 
   const exportCsv = csvName ? (
     <div className="disc-export">
       <button
         type="button"
-        className="btn secondary tiny"
+        className="btn secondary tiny ui-btn ui-btn--secondary ui-btn--sm"
         title="Every row of this table, in this order, as a CSV file for a spreadsheet"
         onClick={() => downloadCsv(csvFileName(csvName), toCsv(sorted, columns))}
       >
-        Export CSV ({sorted.length.toLocaleString()})
+        Export CSV ({sorted.length.toLocaleString("en-US")})
       </button>
     </div>
   ) : null;
@@ -201,7 +204,7 @@ function TableInner<T>({
   const more =
     sorted.length > PAGE ? (
       <p className="dim tiny disc-more">
-        Showing the first {PAGE.toLocaleString()} of {sorted.length.toLocaleString()} — narrow the search or
+        Showing the first {PAGE.toLocaleString("en-US")} of {sorted.length.toLocaleString("en-US")} — narrow the search or
         sort to bring the rest into view.
       </p>
     ) : null;

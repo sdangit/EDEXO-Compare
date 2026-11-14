@@ -33,6 +33,9 @@ import type { CarrierLiveFixDTO, CarrierQueryResultDTO, CarrierRowDTO } from "@s
 import { CopySystemButton } from "./CopySystemButton";
 import { fmtLyAway } from "@shared/format";
 import { AutoRefreshPick } from "./AutoRefreshPick";
+import { sendJson } from "./http";
+import { pickRow } from "./ui/pickRow";
+import { EmptyState } from "./ui/EmptyState";
 
 const ly = fmtLyAway;
 
@@ -282,11 +285,7 @@ export function CarriersPanel({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/carriers/fetch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
+      const res = await sendJson("/api/carriers/fetch", {});
       const body = (await res.json()) as { ok?: boolean; error?: string };
       if (!body.ok) setError(body.error ?? "EDAstro fetch failed.");
       await load();
@@ -330,7 +329,7 @@ export function CarriersPanel({
       <div className="carriers-fetch">
         <button
           type="button"
-          className="fdb-chip fdb-chip--on"
+          className="fdb-chip fdb-chip--on fdb-chip--primary ui-btn ui-btn--primary ui-btn--sm"
           onClick={() => void fetchFromEdastro()}
           disabled={busy || cooling}
         >
@@ -354,14 +353,14 @@ export function CarriersPanel({
         ) : null}
       </div>
 
-      {error ? <p className="fdb-empty">{error}</p> : null}
+      {error ? <EmptyState tone="error">{error}</EmptyState> : null}
 
       {!data && querying ? (
         <LoadingNote className="fdb-empty" label="Searching the carrier list…" />
       ) : !haveData && !busy ? (
-        <p className="fdb-empty">
+        <EmptyState>
           No data. Click <strong>Fetch from EDAstro</strong> above to download the carrier list.
-        </p>
+        </EmptyState>
       ) : null}
 
       {haveData ? (
@@ -496,9 +495,8 @@ export function CarriersPanel({
                   return (
                     <tr
                       key={r.callsign}
-                      className={pickable(r) ? "is-pickable" : undefined}
+                      {...(pickable(r) ? pickRow(() => onPick!(r)) : {})}
                       title={pickable(r) ? "Click to show it on the map" : undefined}
-                      onClick={pickable(r) ? () => onPick!(r) : undefined}
                     >
                       <td>
                         {moved ? (
@@ -598,7 +596,7 @@ export function CarriersPanel({
           </div>
 
           {rows.length === 0 ? (
-            <p className="fdb-empty">
+            <EmptyState>
               Nothing matches{search.trim() ? <> “{search.trim()}”</> : " those filters"}. Out in the
               black the sighting ages are long — try <strong>Any age</strong>
               {dssaOnly ? (
@@ -608,7 +606,7 @@ export function CarriersPanel({
                 </>
               ) : null}
               .
-            </p>
+            </EmptyState>
           ) : null}
         </>
       ) : null}

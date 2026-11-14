@@ -6,14 +6,15 @@
  */
 import type express from "express";
 import { mkdirSync } from "node:fs";
-import { isLoopbackAddress, localOnly } from "../lanAuth.js";
+import { localOnly, requestIsFromThisPc } from "../lanAuth.js";
 import { openLocalFile } from "../openUrl.js";
 import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
+import { errorText } from "../errorText.js";
 
 export function registerBackupRoutes(app: express.Express, opts: HttpServerOptions, _ctx: RouteContext): void {
   const service = opts.backup;
   const guard = (req: express.Request, res: express.Response): boolean => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!requestIsFromThisPc(req)) {
       res.status(403).json({ ok: false, error: "Backups are managed on the PC running the app." });
       return false;
     }
@@ -24,7 +25,7 @@ export function registerBackupRoutes(app: express.Express, opts: HttpServerOptio
     return true;
   };
   const fail = (res: express.Response, e: unknown, status = 400) =>
-    res.status(status).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    res.status(status).json({ ok: false, error: errorText(e) });
 
   app.get("/api/backup/status", async (req, res) => {
     if (!guard(req, res)) return;

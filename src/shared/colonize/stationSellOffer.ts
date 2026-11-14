@@ -1,4 +1,5 @@
 import { commodityNeedMatchesLabel } from "./commodityKey";
+import { playerBuyPriceOf, type PlayerBuyPrice } from "./marketPrice";
 
 function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -8,8 +9,8 @@ export type NormalizedSellRow = {
   commodity: string;
   /** Units the station has for sale to the commander. */
   supply: number;
-  /** Credits per ton the commander pays (station sell price). */
-  playerBuyPrice: number | null;
+  /** Credits per ton the commander pays (the station's buy price). */
+  playerBuyPrice: PlayerBuyPrice | null;
 };
 
 /**
@@ -32,9 +33,13 @@ export function parseMarketRowForPlayerBuy(raw: unknown): NormalizedSellRow | nu
   const supply = num(row.supply) ?? num(row.stock) ?? num(row.Stock) ?? 0;
   if (supply <= 0) return null;
 
-  // Commander pays the station's SellPrice only — BuyPrice is demand (station buys from you).
-  const playerBuyPrice = num(row.sell_price) ?? num(row.sellPrice) ?? num(row.SellPrice) ?? null;
-  if (playerBuyPrice == null || playerBuyPrice <= 0) return null;
+  /*
+    The commander pays the station's buy price, the one that goes with stock; its sell price goes with demand (what
+    it pays you). Market.json, EDDN and Spansh alike (review 2026-11-10 B1): reading sell_price put every Spansh
+    seller's cost low by the spread (buy 68 / sell 45 → 45) and dropped carriers with a sell order only (sell 0).
+  */
+  const playerBuyPrice = playerBuyPriceOf(row);
+  if (playerBuyPrice == null) return null;
 
   return { commodity: commodity.trim(), supply, playerBuyPrice };
 }

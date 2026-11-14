@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { CodexGapsDTO, CodexNearestDTO } from "@shared/types";
 import { CopySystemButton } from "./CopySystemButton";
+import { jsonOrNull } from "./http";
+import { Disclosure } from "./ui/glyphs";
 
 const SHOWN = 12;
 
@@ -41,7 +43,7 @@ export function CodexGapsList({
     setAll(false);
     setPicked(null);
     fetch(`/api/codex/gaps?region=${encodeURIComponent(region)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<CodexGapsDTO>) : null))
+      .then(jsonOrNull<CodexGapsDTO>)
       .then((d) => {
         if (!live) return;
         if (d) setData(d);
@@ -58,7 +60,7 @@ export function CodexGapsList({
     const q = `region=${encodeURIComponent(region)}&key=${encodeURIComponent(key)}&x=${at.x}&y=${at.y}&z=${at.z}`;
     const mine = ++ask.current;
     void fetch(`/api/codex/nearest?${q}`)
-      .then((r) => (r.ok ? (r.json() as Promise<CodexNearestDTO>) : null))
+      .then(jsonOrNull<CodexNearestDTO>)
       .then((site) => {
         if (mine !== ask.current) return;
         setPicked({ key, name, regionSystems, site });
@@ -79,7 +81,7 @@ export function CodexGapsList({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <span className="g3d-row__label">{open ? "▾" : "▸"} Not in your codex here</span>
+        <span className="g3d-row__label"><Disclosure open={open} /> Not in your codex here</span>
         <span className="g3d-row__val g3d-num">{data ? data.gaps.length : "…"}</span>
       </button>
       {open && data ? (
@@ -115,10 +117,10 @@ export function CodexGapsList({
                 <>
                   {picked.name}: nearest in {data.region} is <strong>{picked.site.name}</strong>{" "}
                   <CopySystemButton system={picked.site.name} />,{" "}
-                  {Math.round(picked.site.distanceLy).toLocaleString()} ly{from ? "" : " from Sol"}
+                  {Math.round(picked.site.distanceLy).toLocaleString("en-US")} ly{from ? "" : " from Sol"}
                   {picked.site.complete
                     ? ` — the nearest of the ${picked.site.known} system${picked.site.known === 1 ? "" : "s"} it is logged in there.`
-                    : ` — the nearest of ${picked.site.known} spread-out examples; it is logged in ${picked.regionSystems.toLocaleString()} systems there, so a closer one is likely.`}
+                    : ` — the nearest of ${picked.site.known} spread-out examples; it is logged in ${picked.regionSystems.toLocaleString("en-US")} systems there, so a closer one is likely.`}
                 </>
               ) : (
                 <>{picked.name}: no system with a known position in {data.region}.</>
@@ -126,7 +128,7 @@ export function CodexGapsList({
             </p>
           ) : null}
           {!all && data.gaps.length > SHOWN ? (
-            <button type="button" className="g3d-btn" onClick={() => setAll(true)}>
+            <button type="button" className="g3d-btn ui-btn ui-btn--secondary ui-btn--sm" onClick={() => setAll(true)}>
               Show all {data.gaps.length}
             </button>
           ) : null}

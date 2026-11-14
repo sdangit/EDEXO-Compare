@@ -10,11 +10,13 @@
  * a minute's pause after a rate limit, and only the systems the commander asked about. The answers
  * are kept: a system does not stop being known.
  */
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { EDSM_USER_AGENT } from "./edsmSystemHydration.js";
 import type { NavRouteWaypointDTO } from "./navRouteFuel.js";
 import { resolveCommanderDataDir } from "./paths.js";
+import { writeFileAtomic } from "./atomicWrite.js";
+import { errorText } from "./errorText.js";
 
 export interface NavRouteSystem {
   address: number;
@@ -63,6 +65,11 @@ let routes: NavRouteRecord[] = [];
 const systems = new Map<number, NavRouteSystem>();
 let loadedFrom: string | null = null;
 let lastKey = "";
+/**
+ * Moves on every change to the kept systems (each change is followed by a save) and on loading another commander's
+ * file: the map asks with the revision it holds and gets the list again only when it moved (review 2026-11-10 F3).
+ */
+let revision = 0;
 
 function filePath(): string {
   return path.join(resolveCommanderDataDir(), "edexo-navroutes.json");
@@ -72,6 +79,7 @@ function ensureLoaded(): void {
   const f = filePath();
   if (loadedFrom === f) return;
   loadedFrom = f;
+  revision++;
   routes = [];
   systems.clear();
   if (!existsSync(f)) return;
@@ -87,6 +95,7 @@ function ensureLoaded(): void {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function saveSoon(): void {
+  revision++;
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
@@ -102,11 +111,11 @@ export function flushNavRouteLog(): void {
   saveNow();
 }
 function saveNow(): void {
+  revision++;
   try {
     const f = filePath();
     const body: FileShape = { formatVersion: 1, routes, systems: [...systems.values()] };
-    writeFileSync(`${f}.tmp`, JSON.stringify(body));
-    renameSync(`${f}.tmp`, f);
+    writeFileAtomic(f, JSON.stringify(body), "utf8");
   } catch {
     /* a later save tries again */
   }
@@ -194,6 +203,12 @@ export function plottedSystemsCompact(): [number, string, string, number, number
   return [...systems.values()].map((s) => [s.address, s.name, s.starClass, s.pos[0], s.pos[1], s.pos[2], s.edsm === undefined ? 0 : s.edsm ? 1 : 2, s.routes]);
 }
 
+/** The kept systems' revision (see {@link revision}). */
+export function plottedRevision(): number {
+  ensureLoaded();
+  return revision;
+}
+
 /** Kept systems whose name holds `q` (at least 3 letters), most recently plotted first. */
 export function findPlottedSystems(q: string, max = 20): NavRouteSystem[] {
   ensureLoaded();
@@ -240,6 +255,8 @@ export async function checkNavRouteSystemsOnEdsm(addresses: number[], fetchImpl:
       for (let attempt = 0; attempt < 3; attempt++) {
         r = await fetchImpl(`${EDSM_SYSTEMS_URL}?${qs}&showId=1`, {
           headers: { Accept: "application/json", "User-Agent": EDSM_USER_AGENT },
+          // 20 s (review 2026-11-10 C9: none, so the check said "running" for five minutes on a dead connection).
+          signal: AbortSignal.timeout(20_000),
         });
         if (r.status !== 429) break;
         checking = { ...checking, note: "EDSM rate limit — waiting a minute" };
@@ -264,7 +281,7 @@ export async function checkNavRouteSystemsOnEdsm(addresses: number[], fetchImpl:
     }
     checking = null;
   } catch (e) {
-    checking = { ...(checking ?? { done: 0, total: 0 }), note: e instanceof Error ? e.message : String(e) };
+    checking = { ...(checking ?? { done: 0, total: 0 }), note: errorText(e) };
     // Leave the note up a moment for the panel, then clear so the next check can start.
     setTimeout(() => {
       checking = null;

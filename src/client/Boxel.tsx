@@ -13,6 +13,7 @@
 import { tabListKeyDown } from "./ui/Tabs";
 import { withTransition } from "./motion";
 import { showPickedSystem } from "./tabs/tabStore";
+import { useTabInFront } from "./tabs/TabHost";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BoxelTableDTO, BoxelTableRowDTO, PreviousBoxelDTO, SavedBoxelDTO } from "@shared/boxel";
 import type { BoxelLookupStatus } from "@shared/boxel";
@@ -48,6 +49,9 @@ import { BoxelSideActions } from "./boxel/BoxelSideActions";
 import { BoxelFlyingStrip } from "./boxel/BoxelFlyingStrip";
 import { RollingNumber } from "./ui/RollingNumber";
 import { usePresence } from "./ui/usePresence";
+import { copyText as writeClipboard } from "./copyText";
+import { X } from "lucide-react";
+import { EmptyState } from "./ui/EmptyState";
 
 /*
   The labels and helpers and the table's columns live in boxel/ since the audit of 2026-10-22; the
@@ -86,7 +90,7 @@ export function BoxelScreen({
     return () => clearTimeout(t);
   }, [copied]);
   const copyText = (text: string) =>
-    void navigator.clipboard?.writeText(text).then(
+    void writeClipboard(text).then(
       () => setCopied(text),
       () => setCopied(null),
     );
@@ -150,8 +154,26 @@ export function BoxelScreen({
     }
   }, []);
 
+  /*
+    Behind other tabs (review 2026-11-10 F4) a change only marks the screen stale: every FSS scan and jump re-read the
+    list and the whole table of a Boxels tab nobody was looking at. It reads once when its tab comes to the front.
+  */
+  const inFront = useTabInFront();
+  const inFrontNow = useRef(inFront);
+  inFrontNow.current = inFront;
+  const staleBehind = useRef(false);
+  const callWhenInFront = useCallback(() => {
+    if (inFrontNow.current) void call();
+    else staleBehind.current = true;
+  }, [call]);
+  useEffect(() => {
+    if (!inFront || !staleBehind.current) return;
+    staleBehind.current = false;
+    void call();
+  }, [inFront, call]);
+
   // After every jump, route, target, copy or run change: the side menu and the table read again.
-  useEffect(() => void call(), [currentSystem, revision, call]);
+  useEffect(() => callWhenInFront(), [currentSystem, revision, callWhenInFront]);
 
   const ids = useMemo(() => {
     if (!saved) return [];
@@ -197,8 +219,8 @@ export function BoxelScreen({
       firstScan.current = false;
       return;
     }
-    void call();
-  }, [scanKey, call]);
+    callWhenInFront();
+  }, [scanKey, callWhenInFront]);
 
   /*
     Look up (plan Q1): the boxel's systems from Spansh, pages five seconds apart. Polled while it
@@ -292,11 +314,27 @@ export function BoxelScreen({
   );
   const previousRef = useRef<PreviousBoxelDTO[] | null>(null);
   previousRef.current = previous;
+  /*
+    Page one again after a jump or a save, not after a scan (F4: a scan re-read the saved list, a new object, and
+    scrolled History back to the top), and only in front.
+  */
+  const savedIdsKey = saved ? saved.map((b) => b.id).join(",") : "";
+  const historyStale = useRef(false);
   useEffect(() => {
     if (!showPrevious) return;
+    if (!inFrontNow.current) {
+      historyStale.current = true;
+      return;
+    }
     const t = window.setTimeout(() => loadPrevious(true), prevQuery ? 200 : 0);
     return () => window.clearTimeout(t);
-  }, [showPrevious, loadPrevious, prevQuery, saved, currentSystem]);
+  }, [showPrevious, loadPrevious, prevQuery, savedIdsKey, currentSystem]);
+  // Back in front after a jump or a save behind the other tabs: page one once; nothing moved, the list stays.
+  useEffect(() => {
+    if (!inFront || !showPrevious || !historyStale.current) return;
+    historyStale.current = false;
+    loadPrevious(true);
+  }, [inFront, showPrevious, loadPrevious]);
   // The end of the list in view: the next page.
   const prevHasMore = previous != null && prevTotal != null && previous.length < prevTotal;
   useEffect(() => {
@@ -442,7 +480,7 @@ export function BoxelScreen({
       flown: n((r) => r.flown),
       skipped: n((r) => !r.flown && !!r.skipped),
       elsewhere: n((r) => !r.flown && (r.from === "index" || r.from === "lookup" || r.from === "route" || !!r.onRoute || !!r.gap)),
-      split: parts.filter(([k]) => k > 0).map(([k, what]) => `${k.toLocaleString()} ${what}`).join("\n") || "Nothing known beyond your own journals",
+      split: parts.filter(([k]) => k > 0).map(([k, what]) => `${k.toLocaleString("en-US")} ${what}`).join("\n") || "Nothing known beyond your own journals",
     };
   }, [allRows]);
   /*
@@ -496,7 +534,7 @@ export function BoxelScreen({
             />
             <button
               type="submit"
-              className="fdb-chip fdb-chip--on"
+              className="fdb-chip fdb-chip--on fdb-chip--primary ui-btn ui-btn--primary ui-btn--sm"
               disabled={!addTarget}
               title={
                 addWhat
@@ -519,7 +557,7 @@ export function BoxelScreen({
             ?
           </button>
           <button type="button" className="modal-close" onClick={() => withTransition(onClose)} aria-label="Close">
-            ×
+            <X size={18} strokeWidth={2} aria-hidden="true" />
           </button>
         </header>
         {massHelp.mounted ? <BoxelMassCodeHelp closing={massHelp.closing} /> : null}
@@ -561,7 +599,7 @@ export function BoxelScreen({
                   onClick={() => setSideTab(k)}
                 >
                   {label}
-                  {n != null ? <span className="dim tiny"> {n.toLocaleString()}</span> : null}
+                  {n != null ? <span className="dim tiny"> {n.toLocaleString("en-US")}</span> : null}
                 </button>
               ))}
             </div>
@@ -731,7 +769,7 @@ export function BoxelScreen({
                     <div ref={prevMore} className="boxel-loading" role="status">
                       <span className="boxel-loading__spin" aria-hidden="true" /> Loading
                       {prevTotal != null && previous
-                        ? ` · ${previous.length.toLocaleString()} of ${prevTotal.toLocaleString()}`
+                        ? ` · ${previous.length.toLocaleString("en-US")} of ${prevTotal.toLocaleString("en-US")}`
                         : ""}
                     </div>
                   ) : null}
@@ -751,7 +789,7 @@ export function BoxelScreen({
           </button>
 
           <main className="boxel-main">
-            {error ? <p className="fdb-empty">{error}</p> : null}
+            {error ? <EmptyState tone="error">{error}</EmptyState> : null}
             {ticked.length ? (
               // Review P7 (owner, 2026-11-05): nine pieces were one line; the sources' split is in the tooltip.
               <div className="fdb-summary">
@@ -761,10 +799,10 @@ export function BoxelScreen({
                 </span>
                 <span title={sources.split}>
                   <strong>
-                    <RollingNumber text={sources.flown.toLocaleString()} />
-                  </strong> / {allRows.length.toLocaleString()} flown
-                  {sources.skipped ? ` · ${sources.skipped.toLocaleString()} skipped` : ""}
-                  {sources.elsewhere ? ` · ${sources.elsewhere.toLocaleString()} known elsewhere` : ""}
+                    <RollingNumber text={sources.flown.toLocaleString("en-US")} />
+                  </strong> / {allRows.length.toLocaleString("en-US")} flown
+                  {sources.skipped ? ` · ${sources.skipped.toLocaleString("en-US")} skipped` : ""}
+                  {sources.elsewhere ? ` · ${sources.elsewhere.toLocaleString("en-US")} known elsewhere` : ""}
                 </span>
               </div>
             ) : null}
@@ -786,7 +824,7 @@ export function BoxelScreen({
               <p className="boxel-lookup-status" role="status">
                 {lookup.running ? (
                   <>
-                    Looking up <strong>{lookup.boxel}</strong> on Spansh: {lookup.systems.toLocaleString()}{" "}
+                    Looking up <strong>{lookup.boxel}</strong> on Spansh: {lookup.systems.toLocaleString("en-US")}{" "}
                     systems in {lookup.pages} page{lookup.pages === 1 ? "" : "s"}…{" "}
                     <button
                       type="button"
@@ -830,7 +868,7 @@ export function BoxelScreen({
                         <strong>
                           {b.boxel} -{n}
                         </strong>
-                        {after > 0 ? ` and the ${after.toLocaleString()} after it` : ""}? The boxel will end
+                        {after > 0 ? ` and the ${after.toLocaleString("en-US")} after it` : ""}? The boxel will end
                         at -{n - 1}.
                       </span>
                       <span className="boxel-cut__actions">
@@ -887,8 +925,8 @@ export function BoxelScreen({
                 </button>
                 <span className="dim tiny">
                   {rows.length === allRows.length
-                    ? `${allRows.length.toLocaleString()} systems`
-                    : `${rows.length.toLocaleString()} of ${allRows.length.toLocaleString()}`}
+                    ? `${allRows.length.toLocaleString("en-US")} systems`
+                    : `${rows.length.toLocaleString("en-US")} of ${allRows.length.toLocaleString("en-US")}`}
                 </span>
               </div>
             ) : null}
@@ -907,7 +945,7 @@ export function BoxelScreen({
                 </div>
               </>
             ) : saved?.length ? (
-              <p className="dim disc-empty">Tick a boxel in the side menu to list its systems.</p>
+              <EmptyState>Tick a boxel in the side menu to list its systems.</EmptyState>
             ) : null}
           </main>
         </div>

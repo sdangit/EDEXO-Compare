@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { CoriolisPaths } from "../ui/icons";
 import { BookOpen, Check, Compass, Crosshair, Eye, Filter, FlaskConical, Import, Layers, Route, ScanSearch, Search, type LucideIcon } from "lucide-react";
 import { InfoPopover, Tooltip } from "../ui/Tooltip";
+import { DUE_CLASS } from "../galaxyIndexDue";
 
 export type G3dTabKey =
   | "view"
@@ -114,7 +115,7 @@ export const G3D_HELP: Record<G3dTabKey, string[]> = {
   ],
   layers: [
     "What is drawn over the 5.4 million systems. Your systems: amber where signals still wait for you, green where you mapped or sampled, grey where you only passed through.",
-    "Region borders and names, the groups that stand for many systems when zoomed out, and the Milky Way drawn behind them.",
+    "Region borders and names, the groups that stand for many systems when zoomed out, and the game's picture of the Milky Way behind them, lifted into 3D clouds.",
     "Points of interest, notable phenomena, fleet carriers, your bookmarks and green gas giants come from lists already on this PC; a layer that needs a download says so.",
   ],
   filter: [
@@ -293,5 +294,41 @@ export function G3dIcon({ name }: { name: G3dTabKey }) {
         </>
       )}
     </svg>
+  );
+}
+
+/** The row of icon tabs (plan 7.3, moved out of GalaxyMap3D.tsx unchanged); the open one is pressed. */
+export function MapTabs({
+  drawer,
+  filterTicks,
+  indexDue,
+  onOpen,
+}: {
+  drawer: string;
+  filterTicks: number;
+  indexDue: boolean;
+  onOpen: (key: G3dTabKey) => void;
+}) {
+  return (
+    <nav className="g3d-tabs" aria-label="Galaxy map menus">
+      {G3D_TABS.map((t) => {
+        const on = drawer === t.key;
+        const label = t.key === "filter" && filterTicks ? `Filter (${filterTicks})` : t.label;
+        return (
+          <Tooltip key={t.key} text={t.hint}>
+            <button
+              type="button"
+              className={`${on ? "g3d-tab g3d-tab--on" : "g3d-tab"}${t.key === "view" && indexDue && !on ? ` ${DUE_CLASS}` : ""}`}
+              aria-pressed={on}
+              aria-label={label}
+              onClick={() => onOpen(t.key)}
+            >
+              <G3dIcon name={t.key} />
+              {t.key === "filter" && filterTicks ? <span className="g3d-tab__badge">{filterTicks}</span> : null}
+            </button>
+          </Tooltip>
+        );
+      })}
+    </nav>
   );
 }

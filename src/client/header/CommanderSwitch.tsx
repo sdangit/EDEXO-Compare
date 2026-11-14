@@ -9,6 +9,7 @@
 import { useState } from "react";
 import type { AppSnapshot, CommanderRefDTO } from "@shared/types";
 import { Dialog } from "../ui/Dialog";
+import { sendJson } from "../http";
 
 const KEEP_KEY = "edexo.commanderKeep";
 /** The server's journal boot can take a while on a full folder; the page reloads as soon as it answers. */
@@ -29,11 +30,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Ask the app to show `target`, then wait for the server to answer as them and load the page again. */
 export async function switchToCommander(target: CommanderRefDTO): Promise<string | null> {
-  const r = await fetch("/api/commanders/switch", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fid: target.fid }),
-  }).catch(() => null);
+  const r = await sendJson("/api/commanders/switch", { fid: target.fid }).catch(() => null);
   const j = (await r?.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
   if (!r || !r.ok || !j?.ok) return j?.error ?? "The app could not switch commander.";
   const t0 = Date.now();
@@ -110,11 +107,11 @@ export function CommanderSwitch({ snap }: { snap: AppSnapshot }) {
             ) : null}
             <div className="cmdr-switch-dialog__actions">
               {canSwitch ? (
-                <button type="button" className="btn-confirm-go" onClick={go}>
+                <button type="button" className="btn-confirm-go ui-btn ui-btn--primary ui-btn--md" onClick={go}>
                   Switch to CMDR {game.name}
                 </button>
               ) : null}
-              <button type="button" className="btn-top-neutral" onClick={keep}>
+              <button type="button" className="btn-top-neutral ui-btn ui-btn--secondary ui-btn--sm" onClick={keep}>
                 Keep CMDR {active.name}
               </button>
             </div>

@@ -11,6 +11,7 @@ import { formatTons as t } from "../../../shared/colonize/formatPrice";
 import type { ColonizeModel } from "../useColonize";
 import { Select } from "../../ui/Select";
 import { BTN, BTN_LINK, Panel } from "./ui";
+import { Done } from "../../ui/glyphs";
 
 export function WingView({ m }: { m: ColonizeModel }) {
   const roster = m.snap?.wingRoster ?? [];
@@ -141,7 +142,7 @@ export function WingView({ m }: { m: ColonizeModel }) {
                     </span>
                     {r.open <= 0 ? (
                       <span className="cz-mat__v">
-                        ✓ covered <small>{t(r.totalTonsNeeded)}</small>
+                        <Done /> covered <small>{t(r.totalTonsNeeded)}</small>
                       </span>
                     ) : (
                       <span className="cz-mat__v">
@@ -239,7 +240,7 @@ function MemberCard({
               <span className="cz-dim cz-num">{t(c.tons)}</span>
               <button
                 type="button"
-                className="btn-top-neutral cz-x"
+                className="btn-top-neutral cz-x ui-btn ui-btn--secondary ui-btn--sm"
                 aria-label={`Drop ${c.label}`}
                 onClick={() => setClaims(w.claims.filter((x) => x.commodityId !== c.commodityId))}
               >

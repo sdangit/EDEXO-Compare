@@ -59,6 +59,23 @@ export default tseslint.config(
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
   {
+    /*
+      Type-aware rules on the server (review 2026-11-10 E6, plan 2.6): a promise nobody awaits or catches is an
+      unhandled rejection, and in the server it can stop a request answering. All at zero when added (2026-11-11).
+      Async route handlers are allowed where Express wants a void function: httpServer.ts's catchAsyncRejections
+      catches their rejections for every route.
+    */
+    files: ["src/server/**/*.ts"],
+    languageOptions: {
+      parserOptions: { project: "./tsconfig.server.json", tsconfigRootDir: import.meta.dirname },
+    },
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": ["error", { checksVoidReturn: { arguments: false, returns: false } }],
+      "@typescript-eslint/await-thenable": "error",
+    },
+  },
+  {
     // Electron main/preload and build helpers are plain CommonJS Node scripts.
     files: ["**/*.cjs"],
     languageOptions: {
@@ -140,6 +157,24 @@ export default tseslint.config(
   },
   {
     /*
+      One number format (owner 2026-11-12, plan Q14: "5,000,000 format only"): a number's toLocaleString() follows the
+      Windows locale (his groups with a space), so a bare call is refused; numbers pass "en-US" (or use shared/format.ts).
+      A date that should follow the Windows locale says so with an explicit `undefined`.
+    */
+    files: ["src/**/*.{ts,tsx,js}"],
+    ignores: ["**/*.gen.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "warn",
+        {
+          selector: "CallExpression[callee.property.name='toLocaleString'][arguments.length=0]",
+          message: 'Pass "en-US" for a number (5,000,000 everywhere), or `undefined` for a date in the Windows locale.',
+        },
+      ],
+    },
+  },
+  {
+    /*
       File size cap (item 27, after the 1.3.1 splits): 1,200 code lines, blank lines and comments not counted. A warning,
       so it fails `npm run lint`. The files still over it have their own cap, their size when the cap came in rounded up
       to the next hundred: they may not grow past it, and a split brings the line down (lower it when one lands). Tests
@@ -151,7 +186,7 @@ export default tseslint.config(
   },
   ...Object.entries({
     "src/client/galaxy3d/GalaxyEngine.ts": 1900,
-    "src/client/GalaxyMap3D.tsx": 1600,
+    "src/client/GalaxyMap3D.tsx": 1500,
   }).map(([file, max]) => ({
     files: [file],
     rules: { "max-lines": ["warn", { max, skipBlankLines: true, skipComments: true }] },

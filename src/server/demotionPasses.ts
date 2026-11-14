@@ -182,11 +182,25 @@ export function restoreDemotionsBelowSignalCount(
     .map((m, i) => ({ m, i }))
     .filter(({ m }) => solely(m, "StarType") && !(firmHolds && hostStarGateForSpeciesId(m.entry.id)?.firm))
     .sort((a, b) => hostStarDeterminism(a.m.entry) - hostStarDeterminism(b.m.entry));
-  const eligible = [...byTemperature, ...byStar];
+  /*
+    Then a row hidden only by the region (the corpus has barely logged it there) or only by a measured exclusion
+    ("Never found here"), weakest first (review 2026-11-07 §3.2.3). Both came back only after a DSS named the genus.
+    After the star rows, so every row restored before still is: on the EDDN year (2026-11-06 run) 7 truth rows sat
+    behind a Region objection alone and 25 behind Never found here, on bodies short of their signal count with the
+    genus not shown.
+  */
+  const byRegion = unlikely.map((m, i) => ({ m, i, newGenus: true })).filter(({ m }) => solely(m, "Region"));
+  const byExclusion = unlikely.map((m, i) => ({ m, i, newGenus: true })).filter(({ m }) => solely(m, "Never found here"));
+  const eligible: { m: PendingMatch; i: number; newGenus?: boolean }[] = [...byTemperature, ...byStar, ...byRegion, ...byExclusion];
 
   const restored = new Set<number>();
-  for (const { m, i } of eligible) {
+  for (const { m, i, newGenus } of eligible) {
     if (generaOf(strict).size >= signalCount) break;
+    /*
+      Those two only for a genus not shown yet: a row of a shown genus adds no genus, only a rival. On the EDDN year a
+      Region-only Tussock cultro came back beside every Tussock divisa and took first on 2,457 bodies (2026-11-11).
+    */
+    if (newGenus && generaOf(strict).has(m.entry.genusDataDir)) continue;
     strict.push({ entry: m.entry, reasons: m.reasons, restoredForSignalCount: true, ...factorOf(m) });
     restored.add(i);
   }

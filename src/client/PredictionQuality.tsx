@@ -7,6 +7,8 @@
 import { useEffect, useState } from "react";
 import type { CalibrationBandDTO, PredictionHitsDTO, PredictionQualityDTO } from "@shared/dto/predictions";
 import { LoadingNote } from "./ui/Loading";
+import { jsonOrNull } from "./http";
+import { Disclosure } from "./ui/glyphs";
 
 const pct = (a: number, b: number) => (b > 0 ? `${Math.round((a / b) * 100)} %` : "—");
 
@@ -155,7 +157,7 @@ function HitsTable({ q }: { q: PredictionQualityDTO }) {
                     className="pq-toggle tw:[background:none] tw:[border:none] tw:p-0 tw:[color:inherit] tw:[font:inherit] tw:cursor-pointer"
                     aria-expanded={open === g.key}
                   >
-                    {open === g.key ? "▾" : "▸"} {g.label}
+                    <Disclosure open={open === g.key} /> {g.label}
                   </button>
                 </td>
                 <td className="stats-rec__n">{g.n}</td>
@@ -215,7 +217,7 @@ export function PredictionQualitySection() {
   const [q, setQ] = useState<PredictionQualityDTO | null | undefined>(undefined);
   useEffect(() => {
     void fetch("/api/predictions/quality", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
+      .then(jsonOrNull<PredictionQualityDTO>)
       .then((j: PredictionQualityDTO | null) => setQ(j && j.scoredBodies > 0 ? j : null))
       .catch(() => setQ(null));
   }, []);

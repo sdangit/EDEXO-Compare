@@ -6,6 +6,7 @@ import { isFdevSymbolSlug, spanshLabelKey } from "../../shared/colonize/spanshCo
 import type { SpanshStationSearchCommodityFilter } from "../../shared/colonize/spanshCommodity";
 import { rememberSystemFromSpansh, resolveSpanshReferenceSystem } from "./galaxySystemCoords";
 import { fetchJson, HttpStatusError, spanshGate } from "./httpGate";
+import { errorText } from "../errorText";
 
 const SPANSH_SEARCH = "https://spansh.co.uk/api/stations/search";
 const FETCH_TIMEOUT_MS = 18_000;
@@ -64,8 +65,8 @@ function stationSearchRowKey(row: SpanshStationSearchRow): string {
 /**
  * Spansh station search uses `name` / `symbol`; only rows with supply/stock for sale.
  *
- * The result keeps `sell_price` (what the commander pays, Spansh's own field) beside `buy_price` (the same figure,
- * the name the rest of Colonize reads), so normalising a normalised market again gives the same rows. It did not:
+ * The result carries what the commander pays (Spansh's `buy_price`) in both `buy_price` and `sell_price`, so normalising
+ * a normalised market again gives the same rows, whichever field a reader takes. It did not:
  * the search normalised each market once, the index writer (hitsFromBuyPayload) a second time, found no `sell_price`
  * and dropped every row - background Spansh scans saved no seller at all (owner's profile, 2026-10-23).
  */
@@ -220,7 +221,7 @@ export async function searchSpanshBuyStations(args: {
       }
       lastSpanshSearchError = {
         message:
-          e instanceof HttpStatusError ? `Spansh answered ${e.status}.` : `Spansh could not be reached (${e instanceof Error ? e.message : String(e)}).`,
+          e instanceof HttpStatusError ? `Spansh answered ${e.status}.` : `Spansh could not be reached (${errorText(e)}).`,
         at: Date.now(),
       };
       break;

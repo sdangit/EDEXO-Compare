@@ -63,9 +63,9 @@ type ElectronHud = {
   hudDrag?: (phase: string) => Promise<unknown>;
   hudChain?: (dir: "below" | "right") => Promise<unknown>;
   hudUnchain?: () => Promise<unknown>;
-  onHudChainOffers?: (cb: (v: unknown) => void) => void;
-  onHudPrefs?: (cb: (p: unknown) => void) => void;
-  onHudMoveMode?: (cb: (v: unknown) => void) => void;
+  onHudChainOffers?: (cb: (v: unknown) => void) => () => void;
+  onHudPrefs?: (cb: (p: unknown) => void) => () => void;
+  onHudMoveMode?: (cb: (v: unknown) => void) => () => void;
   resizeHudOverlay?: (o: { height?: number; scale?: number; idle?: boolean }) => Promise<unknown>;
 };
 const electron = (): ElectronHud | undefined =>
@@ -562,7 +562,14 @@ HUD.mount = function (names: string[] | null | undefined, opts?: { noTimers?: bo
   };
 
   if (!o.noTimers) {
-    setInterval(reportHeight, 250);
+    /*
+      The panel's height reported when it changes (review 2026-11-10 F5): a 250 ms poll measured it four times a second
+      in every overlay for as long as it was open. A scale change redraws the theme, which reports too. The slow poll
+      stays as a fallback for a change neither sees.
+    */
+    if (typeof ResizeObserver === "function") new ResizeObserver(() => requestAnimationFrame(reportHeight)).observe(shell);
+    onThemeApplied(() => requestAnimationFrame(reportHeight));
+    setInterval(reportHeight, typeof ResizeObserver === "function" ? 5000 : 250);
     // Once a second: the run clock, notices leaving, and the "only when relevant" hold running out.
     setInterval(() => hudStore.bumpTick(), 1000);
   }

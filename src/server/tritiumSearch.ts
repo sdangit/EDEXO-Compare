@@ -9,6 +9,8 @@
  */
 import { TtlCache } from "../shared/colonize/ttlCache.js";
 import { fetchJson, spanshGate } from "./colonize/httpGate.js";
+import { playerBuyPriceOf } from "../shared/colonize/marketPrice.js";
+import { errorText } from "./errorText.js";
 
 const BODIES_SEARCH = "https://spansh.co.uk/api/bodies/search";
 const STATIONS_SEARCH = "https://spansh.co.uk/api/stations/search";
@@ -116,7 +118,7 @@ export function tritiumSellersFrom(payload: unknown, limit = LIMIT): TritiumSell
       distanceLy: num(s.distance) ?? 0,
       distanceLs: num(s.distance_to_arrival),
       supply,
-      price: num(row.buy_price) ?? 0,
+      price: playerBuyPriceOf(row) ?? 0,
       updatedAt: str(s.market_updated_at) || null,
       x: num(s.system_x),
       y: num(s.system_y),
@@ -137,7 +139,7 @@ export async function findTritium(from: { x: number; y: number; z: number }, now
   const since = new Date(nowMs - TRITIUM_MARKET_MAX_AGE_DAYS * 86_400_000).toISOString();
   const errors: string[] = [];
   const say = (what: string) => (e: unknown) => {
-    errors.push(`${what}: ${e instanceof Error ? e.message : String(e)}`);
+    errors.push(`${what}: ${errorText(e)}`);
     return null;
   };
   const [bodies, stations] = await Promise.all([

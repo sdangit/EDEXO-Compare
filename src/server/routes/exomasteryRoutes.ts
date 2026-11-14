@@ -4,10 +4,10 @@ import { openLocalFile } from "../openUrl.js";
 import path from "node:path";
 import express from "express";
 import { getProjectRoot, getSpeciesDataDir } from "../paths.js";
-import { isLoopbackAddress, localOnly } from "../lanAuth.js";
+import { localOnly, requestIsFromThisPc } from "../lanAuth.js";
 
 import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
-import { CONTENT_SECURITY_POLICY } from "../csp.js";
+import { contentSecurityPolicyFor } from "../csp.js";
 import {
   eliteAccountsRoot,
   findVisitedCacheFiles,
@@ -15,6 +15,7 @@ import {
   loadVisitedImport,
   removeVisitedImport,
 } from "../visitedCache.js";
+import { errorText, fail } from "../errorText.js";
 
 export function registerExomasteryRoutes(
   app: express.Express,
@@ -49,7 +50,7 @@ export function registerExomasteryRoutes(
     });
   });
   app.post("/api/visited-cache/import", localOnly, (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!requestIsFromThisPc(req)) {
       res.status(403).json({ ok: false, error: "Only on the PC running the app." });
       return;
     }
@@ -64,11 +65,11 @@ export function registerExomasteryRoutes(
       });
       opts.scheduleBroadcast?.();
     } catch (e) {
-      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      res.status(400).json({ ok: false, error: errorText(e) });
     }
   });
   app.post("/api/visited-cache/remove", localOnly, (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!requestIsFromThisPc(req)) {
       res.status(403).json({ ok: false, error: "Only on the PC running the app." });
       return;
     }
@@ -108,7 +109,7 @@ export function registerExomasteryRoutes(
 
   /** Open the shared-exomastery folder in Explorer — on the PC running the app only. */
   app.post("/api/exomastery/open-shared-folder", localOnly, (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!requestIsFromThisPc(req)) {
       res
         .status(403)
         .json({ ok: false, error: "The folder opens on the PC running the app, so only from there." });
@@ -134,7 +135,7 @@ export function registerExomasteryRoutes(
         projectRoot: root,
       });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      fail(res, e);
     }
   });
 
@@ -145,7 +146,7 @@ export function registerExomasteryRoutes(
         const norm = absPath.replace(/\\/g, "/").toLowerCase();
         if (norm.endsWith(".html")) {
           res.setHeader("Cache-Control", "no-store, max-age=0, must-revalidate");
-          res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+          res.setHeader("Content-Security-Policy", contentSecurityPolicyFor(res.req.headers.host));
         } else if (/\/assets\//.test(norm)) {
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
         }
@@ -168,7 +169,7 @@ export function registerExomasteryRoutes(
       return;
     }
     res.setHeader("Cache-Control", "no-store, max-age=0, must-revalidate");
-    res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+    res.setHeader("Content-Security-Policy", contentSecurityPolicyFor(req.headers.host));
     res.sendFile(path.join(webRoot, "index.html"), {
       etag: false,
       lastModified: false,

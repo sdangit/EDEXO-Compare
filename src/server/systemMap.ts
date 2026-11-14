@@ -90,8 +90,15 @@ export function roleForStarType(starType: string | undefined, cfg: StarRolesConf
   if (cfg.blackHoleExact.some((x) => x.toUpperCase() === u)) return "useless";
   const wd = cfg.whiteDwarfPrefix.trim().toUpperCase().charAt(0);
   if (wd && u.charAt(0) === wd) return "wd_boost";
+  /*
+    The class letter alone, with a subclass, a giant's tail (`M_RedGiant`) or EDSM's long name (`K (Yellow-Orange)
+    Star`) after it. A first-letter test called Herbig Ae/Be (`AeBe`) and MS-type stars scoopable (review 2026-11-10
+    B5): neither is.
+  */
   const c0 = u.charAt(0);
-  if (cfg.fuelPrefixes.some((p) => p.trim().toUpperCase().charAt(0) === c0)) return "fuel";
+  const next = u.charAt(1);
+  const classLetterOnly = next === "" || next === "_" || next === " " || (next >= "0" && next <= "9");
+  if (classLetterOnly && cfg.fuelPrefixes.some((p) => p.trim().toUpperCase().charAt(0) === c0)) return "fuel";
   return "useless";
 }
 
@@ -139,9 +146,10 @@ function formatCompositionList(raw: unknown): string {
   }
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const parts: string[] = [];
+    // A solid composition: the journal's 0-1 fractions, and EDSM / Spansh's per cent stored as fractions too (A4).
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
       const sym = ELEMENT_SYMBOL[k.trim().toLowerCase()] ?? k.trim();
-      if (typeof v === "number" && Number.isFinite(v)) parts.push(`${sym} ${v.toFixed(1)}%`);
+      if (typeof v === "number" && Number.isFinite(v)) parts.push(`${sym} ${(v * 100).toFixed(1)}%`);
     }
     return parts.join(", ");
   }
@@ -503,11 +511,12 @@ export function buildSystemMapSnapshot(
      */
     const matchRun = tabRuns?.get(bk) ?? exoMatchRun(store, db, r, spatialCatalogue);
     const maxExo = maxExoHeuristicPair(store, prices, r, matchRun);
-    const exoTier = exoValueTierFromHeuristic(
-      maxExo.tierValue,
-      store.exoMapTierPlusMinCr,
-      store.exoMapTierPlusPlusMinCr,
-    );
+    // The + / ++ mark and the popup's top-species credits say there is life worth the trip: only on journal evidence,
+    // as the bio mark (a landable body with no signals came out "Exo +" from what its conditions suit; owner,
+    // 2026-11-13).
+    const exoTier = hasExo
+      ? exoValueTierFromHeuristic(maxExo.tierValue, store.exoMapTierPlusMinCr, store.exoMapTierPlusPlusMinCr)
+      : 0;
     const parentResolved = orbitChild.get(r.bodyId);
     const parentBodyId = parentResolved ?? directParentBodyId(r.parents);
     const parentStarIds = allStarParentIds(r.parents);
@@ -582,7 +591,7 @@ export function buildSystemMapSnapshot(
       estimatedSurfaceTempK: est != null ? { minK: est.tMin, maxK: est.tMax, midK: est.tMid } : null,
       surfaceTemperatureRangeK: estimateSurfaceTemperatureRange(r, byId, arrivalStarRecord),
       exoMatchSummaries: exoMatchSummaries(matchRun),
-      maxExoHeuristicCredits: maxExo.displayMax,
+      maxExoHeuristicCredits: hasExo ? maxExo.displayMax : 0,
       exoValueTier: exoTier,
       exoPayoutRange: buildExoPayoutRangeForRecord(store, prices, r, matchRun),
       parentBodyId,

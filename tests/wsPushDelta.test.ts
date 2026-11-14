@@ -138,6 +138,30 @@ describe("snapshot pushes", () => {
     expect(((q.payload as Record<string, unknown>).bodies as unknown[]).length).toBe(2);
   });
 
+  it("knows a body or list handed back as the same object is unchanged, and a new object by its content (review 2026-11-07 §4.1)", async () => {
+    const body = (key: string, n: number) => ({ state: { key, bodyName: `B ${key}`, n }, matches: [], pad: "x".repeat(3000) });
+    const one = body("1", 0);
+    const two = body("2", 0);
+    const list = big("A");
+    const t = await start({ bodies: [one, two], journalSystems: list, footScannedEntries: big("F") });
+    await t.next(1);
+    t.set({ bodies: [one, two], journalSystems: list, footScannedEntries: big("F"), tick: 1 });
+    const p1 = await t.next(2);
+    expect(Object.keys(p1.payload as object).sort()).toEqual(["bodies", "footScannedEntries", "journalSystems", "tick"]);
+    // The body cache's same objects, one body recomputed (a new object, same key, new content).
+    t.set({ bodies: [one, body("2", 1)], journalSystems: list, footScannedEntries: big("F"), tick: 2 });
+    const p2 = await t.next(3);
+    expect(p2.unchanged).toEqual(["journalSystems", "footScannedEntries"]);
+    const d = p2.bodiesDelta as { changed: { state: { key: string; n: number } }[] };
+    expect(d.changed.map((b) => [b.state.key, b.state.n])).toEqual([["2", 1]]);
+    // A recomputed body with the same content is still unchanged, and a new list object with new content goes out.
+    t.set({ bodies: [one, body("2", 1)], journalSystems: big("B"), footScannedEntries: big("F"), tick: 3 });
+    const p3 = await t.next(4);
+    expect(p3.bodiesDelta).toBeUndefined();
+    expect(p3.unchanged).toEqual(["bodies", "footScannedEntries"]);
+    expect(((p3.payload as Record<string, unknown>).journalSystems as { starSystem: string }[])[0]!.starSystem).toBe("B 0");
+  });
+
   it("serves a candidate's habitat detail that the pushes leave out", async () => {
     const detail = { stats: [{ id: "s" }], atmosphereClimateStats: [], compositionGroups: [] };
     const bodies = [
@@ -278,6 +302,26 @@ describe("the channel in the address", () => {
     // The HUD slice has no journal system list; the app frame does.
     expect(first.payload.journalSystems).toBeUndefined();
     expect(hudMsgs[0]!.length).toBeLessThan(appFirst / 10);
+  });
+});
+
+describe("identical frames on the other channels (review 2026-11-10 C9)", () => {
+  it("an app push that changes nothing the launcher reads sends the launcher nothing", async () => {
+    const t = await start({ port: 7111, journalDir: "J", liveShipFuelRange: { ly: 10 } });
+    await t.next(1);
+    const launcher: Record<string, unknown>[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${t.port}/ws?channel=launcher`);
+    closersPush(() => ws.close());
+    ws.on("message", (d) => launcher.push(JSON.parse(String(d))));
+    await new Promise((r) => ws.once("open", r));
+    for (let i = 0; i < 100 && launcher.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
+    // Three app pushes, the fuel only: the app gets each, the launcher's frame is the same every time.
+    for (const ly of [11, 12, 13]) t.set({ port: 7111, journalDir: "J", liveShipFuelRange: { ly } });
+    await t.next(4);
+    await new Promise((r) => setTimeout(r, 50));
+    // The connect frame and the first push's (nothing to compare it with yet); none after.
+    expect(launcher.length).toBe(2);
+    expect(launcher.every((m) => typeof m.rev === "number")).toBe(true);
   });
 });
 

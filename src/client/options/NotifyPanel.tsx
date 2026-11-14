@@ -23,7 +23,9 @@ import { AFM_REFILLS, INJECTIONS } from "@shared/jumponium";
 import { fmtPct } from "@shared/format";
 import { DraftNumber } from "./DraftNumber";
 import { CustomRulesEditor } from "./CustomRulesEditor";
+import { isThisPc } from "../noticesClient";
 import { postSetting } from "./postSetting";
+import { sendJson } from "../http";
 
 /*
   One fold per kind of notice (owner, 2026-10-13: "a bit text heavy … make everything collapsable per title"): each says
@@ -416,7 +418,7 @@ export function NotifyPanel() {
           <p>
             After each jump, points of interest and carriers within that many of your average jumps (your last
             twenty, or the ship&apos;s range until you have flown a few). Each point of interest is announced once.
-            Carriers only count out in the black, over {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString()} ly from Sol,
+            Carriers only count out in the black, over {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString("en-US")} ly from Sol,
             and their position is only as fresh as EDAstro&apos;s last sighting — the notice says how old it is. Both
             use the lists you downloaded in the Points of interest and Carriers panels.
           </p>
@@ -433,7 +435,7 @@ export function NotifyPanel() {
               onCommit={(jumps) => save({ nearby: { jumps } })}
             />{" "}
             <span className="dim">
-              jumps{radiusLy != null ? ` ≈ ${radiusLy.toLocaleString()} ly` : " (range known after your first jump)"}
+              jumps{radiusLy != null ? ` ≈ ${radiusLy.toLocaleString("en-US")} ly` : " (range known after your first jump)"}
             </span>
           </span>
         </div>
@@ -454,7 +456,7 @@ export function NotifyPanel() {
           ))}
         </div>
         <p className="dim tiny options-notify-sub">
-          Carriers, beyond {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString()} ly from Sol
+          Carriers, beyond {CARRIER_NOTICE_MIN_FROM_SOL_LY.toLocaleString("en-US")} ly from Sol
           {st.carrierDataReady ? "" : " — download the list in Carriers & Stations first"}
         </p>
         <div className="options-focus-grid">
@@ -496,26 +498,29 @@ export function NotifyPanel() {
         ) : null}
       </NotifySection>
 
-      {/* Review F-5.10: see (and hear, with the chime on) what a find looks like, without waiting for one. */}
-      <div className="options-oneline options-notify-test">
-        <button
-          type="button"
-          className="btn secondary"
-          disabled={busy}
-          onClick={() => {
-            setMsg(null);
-            void postSetting("/api/notices/test", {}).then((r) => {
-              setMsg(r.ok ? null : (r.error ?? "Could not send the test notice."));
-              setTestSent(r.ok);
-            });
-          }}
-        >
-          Send a test notice
-        </button>
-        {testSent ? (
-          <span className="dim tiny">Sent: look at the mail icon in the top bar{p.chime ? " (the chime plays)" : ""}.</span>
-        ) : null}
+      {/* Review F-5.10: see (and hear, with the chime on) what a find looks like, without waiting for one. The PC's
+          only (owner 2026-11-13): it can show a Windows notification there. */}
+      {isThisPc() ? (
+        <div className="options-oneline options-notify-test">
+          <button
+            type="button"
+            className="btn secondary ui-btn ui-btn--secondary ui-btn--md"
+            disabled={busy}
+            onClick={() => {
+              setMsg(null);
+              void postSetting("/api/notices/test", {}).then((r) => {
+                setMsg(r.ok ? null : (r.error ?? "Could not send the test notice."));
+                setTestSent(r.ok);
+              });
+            }}
+          >
+            Send a test notice
+          </button>
+          {testSent ? (
+            <span className="dim tiny">Sent: look at the mail icon in the top bar{p.chime ? " (the chime plays)" : ""}.</span>
+          ) : null}
       </div>
+      ) : null}
       {msg ? <p className="options-error">{msg}</p> : null}
     </FoldPanel>
   );
@@ -557,11 +562,7 @@ function NspDownload({ on, busy, onToggle }: { on: boolean; busy: boolean; onTog
     return () => window.clearInterval(t);
   }, [st?.running, load]);
   const start = (force: boolean) => {
-    void fetch("/api/nsp/fetch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force }),
-    })
+    void sendJson("/api/nsp/fetch", { force })
       .then((r) => r.json())
       .then((j) => {
         if (j?.status) setSt(j.status as NspStatus);
@@ -569,7 +570,7 @@ function NspDownload({ on, busy, onToggle }: { on: boolean; busy: boolean; onTog
       .catch(() => {});
   };
   if (!st) return null;
-  const mb = (b: number) => `${Math.round(b / 1_000_000).toLocaleString()} MB`;
+  const mb = (b: number) => `${Math.round(b / 1_000_000).toLocaleString("en-US")} MB`;
   return (
     <div className="options-nsp">
       <label className="options-toggle">
@@ -577,7 +578,7 @@ function NspDownload({ on, busy, onToggle }: { on: boolean; busy: boolean; onTog
         <span>
           Phenomena nearby
           {st.haveData
-            ? ` — ${st.systemCount.toLocaleString()} systems known`
+            ? ` — ${st.systemCount.toLocaleString("en-US")} systems known`
             : " — download the list first"}
         </span>
       </label>

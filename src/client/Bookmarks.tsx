@@ -13,6 +13,9 @@ import { isStr, isStrArr, usePersistedState } from "./usePersistedState";
 import { BookmarkEditor, removeBookmark } from "./BookmarkButton";
 import { fmtLyAway } from "@shared/format";
 import { usePullToRefresh } from "./ui/usePullToRefresh";
+import { sendJson } from "./http";
+import { X } from "lucide-react";
+import { EmptyState } from "./ui/EmptyState";
 
 const ly = fmtLyAway;
 
@@ -67,19 +70,11 @@ export function BookmarksModal({
 
   const show = (b: BookmarkRowDTO) => {
     void (async () => {
-      await fetch("/api/ui/view-system", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemAddress: b.systemAddress === currentSystemAddress ? null : b.systemAddress,
-        }),
+      await sendJson("/api/ui/view-system", {
+        systemAddress: b.systemAddress === currentSystemAddress ? null : b.systemAddress,
       });
       if (b.bodyKey) {
-        await fetch("/api/ui/selected-body", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ bodyKey: b.bodyKey, focus: true }),
-        });
+        await sendJson("/api/ui/selected-body", { bodyKey: b.bodyKey, focus: true });
       }
     })();
     // Main to the front, the bookmarks staying in their tab (a pop-up closes).
@@ -105,7 +100,7 @@ export function BookmarksModal({
             </p>
           </div>
           <button type="button" className="modal-close" onClick={() => withTransition(onClose)} aria-label="Close">
-            ×
+            <X size={18} strokeWidth={2} aria-hidden="true" />
           </button>
         </header>
 
@@ -216,13 +211,13 @@ export function BookmarksModal({
           </table>
         </div>
         {!data && failed ? (
-          <p className="fdb-empty">Your bookmarks could not be read.</p>
+          <EmptyState tone="error">Your bookmarks could not be read.</EmptyState>
         ) : !data ? (
           <LoadingNote className="fdb-empty" label="Reading your bookmarks…" />
         ) : data && !data.items.length ? (
-          <p className="fdb-empty">No bookmarks yet. Press the ☆ beside a system&apos;s name to add one.</p>
+          <EmptyState>No bookmarks yet. Press the ☆ beside a system&apos;s name to add one.</EmptyState>
         ) : data && !rows.length ? (
-          <p className="fdb-empty">Nothing matches.</p>
+          <EmptyState>Nothing matches.</EmptyState>
         ) : null}
       </div>
     </div>

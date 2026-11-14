@@ -31,6 +31,8 @@ import { fmtLyAway } from "@shared/format";
 import { Tooltip } from "./ui/Tooltip";
 import { LoadingNote } from "./ui/Loading";
 import { usePullToRefresh } from "./ui/usePullToRefresh";
+import { X } from "lucide-react";
+import { EmptyState } from "./ui/EmptyState";
 
 const crFmt = new Intl.NumberFormat("en-US");
 const cr = (n: number) => `${crFmt.format(Math.round(n))} CR`;
@@ -187,11 +189,11 @@ export function FirstDiscoveryBacklogModal({
             </p>
           </div>
           <button type="button" className="modal-close" onClick={() => withTransition(onClose)} aria-label="Close">
-            ×
+            <X size={18} strokeWidth={2} aria-hidden="true" />
           </button>
         </header>
 
-        {error ? <p className="fdb-empty">{error}</p> : null}
+        {error ? <EmptyState tone="error">{error}</EmptyState> : null}
 
         {!data && !error ? (
           /*
@@ -288,7 +290,7 @@ export function FirstDiscoveryBacklogModal({
                   onClick={() => setCodexOnly((v) => !v)}
                 >
                   New codex (
-                  {(data?.rows ?? []).filter((r) => (r.codexNew?.length ?? 0) > 0).length.toLocaleString()})
+                  {(data?.rows ?? []).filter((r) => (r.codexNew?.length ?? 0) > 0).length.toLocaleString("en-US")})
                 </button>
               </Tooltip>
               <span className="fdb-filters__gap" />
@@ -395,14 +397,14 @@ export function FirstDiscoveryBacklogModal({
 
               {rows.length > PAGE ? (
                 <p className="dim tiny disc-more">
-                  Showing the first {PAGE.toLocaleString()} of {rows.length.toLocaleString()} — raise the
+                  Showing the first {PAGE.toLocaleString("en-US")} of {rows.length.toLocaleString("en-US")} — raise the
                   floor or turn on a filter to bring the rest into view.
                 </p>
               ) : null}
               {rows.length === 0 ? (
-                <p className="fdb-empty">
+                <EmptyState>
                   Nothing at this threshold. Lower it, or you have genuinely finished them.
-                </p>
+                </EmptyState>
               ) : null}
             </div>
           </>

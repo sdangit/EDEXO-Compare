@@ -14,6 +14,8 @@ import {
   type BookmarksListDTO,
 } from "@shared/bookmarks";
 import { memoOnSnapSlice, type SnapSlice } from "./snapSlice";
+import { sendJson } from "./http";
+import { Star } from "lucide-react";
 
 /*
   Both answer null / false when the server cannot be reached (a restart, a phone off the LAN) instead of throwing
@@ -21,11 +23,7 @@ import { memoOnSnapSlice, type SnapSlice } from "./snapSlice";
 */
 async function saveBookmark(b: Partial<BookmarkDTO> & { system: string }): Promise<BookmarkDTO | null> {
   try {
-    const r = await fetch("/api/bookmarks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(b),
-    });
+    const r = await sendJson("/api/bookmarks", b);
     const j = (await r.json().catch(() => null)) as { ok?: boolean; bookmark?: BookmarkDTO } | null;
     if (j?.ok) window.dispatchEvent(new Event(BOOKMARKS_CHANGED));
     return j?.ok && j.bookmark ? j.bookmark : null;
@@ -193,7 +191,7 @@ export function BookmarkEditor({
         </p>
       ) : null}
       <div className="bm-editor__actions">
-        <button type="button" className="fdb-chip fdb-chip--on" disabled={busy} onClick={() => void save()}>
+        <button type="button" className="fdb-chip fdb-chip--on fdb-chip--primary ui-btn ui-btn--primary ui-btn--sm" disabled={busy} onClick={() => void save()}>
           {initial.id ? "Save" : "Bookmark"}
         </button>
         <button type="button" className="fdb-chip" onClick={onCancel}>
@@ -250,8 +248,9 @@ export function BookmarkButton({
               {/* The glyph is drawn by CSS, so the system name's text stays just the name. */}
             </button>
           ) : (
-            <button type="button" className={`g3d-btn bm-btn${existing ? " bm-btn--on" : ""}`} title={title}>
-              {existing ? "★ Bookmarked" : "☆ Bookmark"}
+            <button type="button" className={`g3d-btn bm-btn ui-btn ui-btn--secondary ui-btn--sm${existing ? " bm-btn--on" : ""}`} title={title}>
+              <Star size={14} strokeWidth={2} fill={existing ? "currentColor" : "none"} aria-hidden="true" />
+              {existing ? "Bookmarked" : "Bookmark"}
             </button>
           )
         }

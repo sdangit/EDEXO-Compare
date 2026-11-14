@@ -35,7 +35,7 @@
  *
  * Both come free in the file, so this costs no extra request.
  */
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { carrierHasServices, parseCarrierServices } from "../shared/carrierServices.js";
 import { carrierMatchesQuery, parseCarrierQuery } from "../shared/carrierSearch.js";
@@ -44,6 +44,7 @@ import { fetchDssaData, readDssaByCallsign } from "./edastroDssa.js";
 import { networkForCallsign } from "../shared/carrierNetworks.js";
 import type { CarrierDataStatusDTO, CarrierRowDTO } from "../shared/types.js";
 import { APP_USER_AGENT } from "./appVersion.js";
+import { writeFileAtomic } from "./atomicWrite.js";
 
 const CARRIERS_URL = "https://edastro.com/mapcharts/files/fleetcarriers.csv";
 
@@ -100,7 +101,7 @@ function readMeta(): CarrierCacheMeta | null {
 
 function writeMeta(meta: CarrierCacheMeta): void {
   try {
-    writeFileSync(resolveCarrierMetaPath(), JSON.stringify(meta, null, 2), "utf8");
+    writeFileAtomic(resolveCarrierMetaPath(), JSON.stringify(meta, null, 2), "utf8");
   } catch {
     /* best effort; a lost meta file costs one full download, not correctness */
   }
@@ -422,9 +423,7 @@ export async function fetchCarrierData(opts?: {
   try {
     // Write beside the target and rename, so an interrupted download cannot leave a half file that
     // parses to a plausible subset of the galaxy.
-    const tmp = `${path}.part`;
-    writeFileSync(tmp, text, "utf8");
-    renameSync(tmp, path);
+    writeFileAtomic(path, text, "utf8");
   } catch (e) {
     return { ok: false, status: before, error: e instanceof Error ? e.message : "Could not save the file." };
   }

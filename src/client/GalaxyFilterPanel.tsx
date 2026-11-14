@@ -12,6 +12,8 @@ import { tabListKeyDown } from "./ui/Tabs";
 import { useEffect, useMemo, useState } from "react";
 import type { GalaxySpeciesCatalogueDTO } from "@shared/types";
 import { MenuToggle } from "./galaxy3d/G3dMenu";
+import { jsonOrNull } from "./http";
+import { Disclosure, Done } from "./ui/glyphs";
 
 export interface GalaxyFilterState {
   tab: "exobio" | "bodies";
@@ -109,19 +111,19 @@ function TickRow({
             expand.onClick();
           }}
         >
-          {expand.open ? "▾" : "▸"}
+          <Disclosure open={expand.open} />
         </button>
       ) : null}
       <span className="g3d-row__label">{label}</span>
       <span className="g3d-row__count">{count}</span>
       <span className={on ? "g3d-tick g3d-tick--on" : "g3d-tick"} aria-hidden="true">
-        {on ? "✓" : ""}
+        {on ? <Done /> : ""}
       </span>
     </label>
   );
 }
 
-const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e4 ? `${Math.round(n / 1e3)} k` : n.toLocaleString());
+const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e4 ? `${Math.round(n / 1e3)} k` : n.toLocaleString("en-US"));
 
 export function GalaxyFilterPanel({
   value,
@@ -143,11 +145,11 @@ export function GalaxyFilterPanel({
   useEffect(() => {
     let live = true;
     void fetch("/api/galaxy/species")
-      .then((r) => (r.ok ? (r.json() as Promise<GalaxySpeciesCatalogueDTO>) : null))
+      .then(jsonOrNull<GalaxySpeciesCatalogueDTO>)
       .then((c) => live && setCatalogue(c))
       .catch(() => live && setCatalogue(null));
     void fetch("/api/galaxy/traits")
-      .then((r) => (r.ok ? (r.json() as Promise<TraitsDTO>) : null))
+      .then(jsonOrNull<TraitsDTO>)
       .then((t) => live && setTraits(t))
       .catch(() => live && setTraits(null));
     return () => {
@@ -250,7 +252,7 @@ export function GalaxyFilterPanel({
           <>
             <div className="g3d-row">
               <span className="g3d-row__label g3d-filter__matched">
-                {busy ? "Finding…" : matched != null ? `${matched.toLocaleString()} systems match` : ""}
+                {busy ? "Finding…" : matched != null ? `${matched.toLocaleString("en-US")} systems match` : ""}
               </span>
               <button
                 type="button"

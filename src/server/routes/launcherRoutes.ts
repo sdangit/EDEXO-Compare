@@ -6,7 +6,7 @@ import type express from "express";
 import type { CommandersDTO } from "../../shared/types.js";
 import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
 import { getHudBridge } from "../hudBridge.js";
-import { isLoopbackAddress, localOnly } from "../lanAuth.js";
+import { localOnly, requestIsFromThisPc } from "../lanAuth.js";
 import {
   isLauncherOpenMode,
   readColonizeOpenMode,
@@ -15,6 +15,7 @@ import {
   writeLanAccess,
   writeLauncherOpenMode,
 } from "../launcherPrefs.js";
+import { fail } from "../errorText.js";
 
 export function registerLauncherRoutes(
   app: express.Express,
@@ -41,13 +42,13 @@ export function registerLauncherRoutes(
       else writeLauncherOpenMode(mode);
       res.json({ ok: true, mode });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      fail(res, e);
     }
   });
 
   /** The launcher's "LAN access" switch; applies at the next start. From this PC only. */
   app.post("/api/launcher/lan-access", localOnly, (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!requestIsFromThisPc(req)) {
       res.status(403).json({ ok: false, error: "LAN access can only be changed on the PC running the app." });
       return;
     }
@@ -60,7 +61,7 @@ export function registerLauncherRoutes(
       writeLanAccess(enabled);
       res.json({ ok: true, lanAccess: opts.getStatus().lanAccess });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      fail(res, e);
     }
   });
 
@@ -75,7 +76,7 @@ export function registerLauncherRoutes(
     it restarts the app.
   */
   app.post("/api/commanders/switch", async (req, res) => {
-    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    if (!requestIsFromThisPc(req)) {
       res.status(403).json({ ok: false, error: "The commander can only be switched on the PC running the app." });
       return;
     }
@@ -97,7 +98,7 @@ export function registerLauncherRoutes(
       const r = await bridge.switchCommander({ fid: target.fid });
       res.status(r.ok ? 200 : 500).json({ ...r, commander: { fid: target.fid, name: target.name } });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      fail(res, e);
     }
   });
 }

@@ -7,6 +7,7 @@ import type { GalaxySearchApplied } from "../GalaxySearchPanel";
 import type { Graphics } from "./capabilities";
 import type { EngineStats } from "./engineTypes";
 import type { Colour } from "./mapConstants";
+import { Disclosure } from "../ui/glyphs";
 
 export function StatusBar({
   graphics,
@@ -53,11 +54,11 @@ export function StatusBar({
         <span>Loading 5.4 million systems…</span>
       ) : (
         <span>
-          {stats.overviewPoints.toLocaleString()} systems
+          {stats.overviewPoints.toLocaleString("en-US")} systems
           {stats.tilesLoaded
-            ? ` · close-up: ${stats.tilesLoaded} sectors, ${stats.tilePoints.toLocaleString()} systems`
+            ? ` · close-up: ${stats.tilesLoaded} sectors, ${stats.tilePoints.toLocaleString("en-US")} systems`
             : ""}
-          {stats.level ? ` · groups of ${stats.level.toLocaleString()} ly` : ""}
+          {stats.level ? ` · groups of ${stats.level.toLocaleString("en-US")} ly` : ""}
           {" · "}
           {fmtLy(stats.distanceLy)} away · tilt {stats.tiltDeg}°
         </span>
@@ -69,7 +70,7 @@ export function StatusBar({
         onClick={() => setLegendOn(!legendOn)}
         title={legendOn ? "Hide the legend" : "Show what the colours mean"}
       >
-        {legendOn ? "▾" : "▸"} Legend
+        <Disclosure open={legendOn} /> Legend
       </button>
       {!legendOn ? null : codexOn ? (
         <span className="g3d-legend">

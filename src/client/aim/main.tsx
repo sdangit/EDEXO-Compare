@@ -15,8 +15,15 @@ import { openMark, projectMarks, viewOf, type ScreenMark, type View } from "./pr
 import { startPitchCapture, type PitchCapture, type PitchRead } from "./pitchCapture";
 import { useDistanceReader } from "./useDistanceReader";
 import { setHudRecolour } from "./gameScreen";
-import { invertHudMatrix, recolourRgba, type HudColourMatrix, type HudColourSupport } from "@shared/hudColourMatrix";
+import { invertHudMatrix, type HudColourMatrix, type HudColourSupport } from "@shared/hudColourMatrix";
 import "./aim.css";
+import { setGameInFront } from "./readerThread";
+import { sendJson, jsonOrNull } from "../http";
+
+/* The game in front or not (aimWindow.cjs): the readers read only while it is (review 2026-11-10 E3). */
+(window as unknown as { edexoElectron?: { onAimGameFront?: (cb: (on: unknown) => void) => () => void } }).edexoElectron?.onAimGameFront?.(
+  (on) => setGameInFront(on !== false),
+);
 
 type MiniMap = ExoMinimapDTO | null;
 
@@ -157,7 +164,7 @@ function usePitchReader(wanted: boolean): ReaderState {
       setState({ kind: "read", pitchDeg: accepted?.pitchDeg ?? null, headingDeg: accepted?.headingDeg ?? null, last: accepted, heldMs });
       if (r) {
         const body = { pitchDeg: r.pitchDeg, rollDeg: r.rollDeg };
-        void fetch("/api/hud-pitch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
+        void sendJson("/api/hud-pitch", body).catch(() => {});
       }
     };
     if (wanted) {
@@ -213,7 +220,7 @@ function ReaderLine({ s, view, colour }: { s: ReaderState; view: View; colour: H
 function useHudLook(look: "default" | "xml", matrix: HudColourMatrix | null, xmlColour: HudColourSupport): HudColourSupport {
   const inverse = look === "xml" && xmlColour === "undo" && matrix ? invertHudMatrix(matrix) : null;
   useEffect(() => {
-    setHudRecolour({ pitch: inverse ? (px: Uint8ClampedArray) => recolourRgba(px, inverse) : null });
+    setHudRecolour({ pitch: inverse });
     // The inverse is rebuilt from these each render; its inputs are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [look, matrix, xmlColour]);
@@ -229,7 +236,7 @@ function useView(): { view: View; matrix: HudColourMatrix | null; colour: HudCol
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   useEffect(() => {
     void fetch("/api/elite-view")
-      .then((r) => (r.ok ? r.json() : null))
+      .then(jsonOrNull<{ verticalFovDeg?: number | null; hudMatrix?: HudColourMatrix | null; hudColour?: HudColourSupport }>)
       .then((v: { verticalFovDeg?: number | null; hudMatrix?: HudColourMatrix | null; hudColour?: HudColourSupport } | null) => {
         setFov(v?.verticalFovDeg ?? null);
         setMatrix(v?.hudMatrix ?? null);

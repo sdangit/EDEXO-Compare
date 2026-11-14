@@ -28,6 +28,9 @@ import type { PoiQueryResultDTO } from "@shared/types";
 import { CopySystemButton } from "./CopySystemButton";
 import { fmtLyAway } from "@shared/format";
 import { usePullToRefresh } from "./ui/usePullToRefresh";
+import { sendJson } from "./http";
+import { X } from "lucide-react";
+import { EmptyState } from "./ui/EmptyState";
 
 const ly = fmtLyAway;
 
@@ -96,11 +99,7 @@ export function PoiModal({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/poi/fetch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
+      const res = await sendJson("/api/poi/fetch", {});
       const body = (await res.json()) as { ok?: boolean; error?: string };
       if (!body.ok) setError(body.error ?? "EDAstro fetch failed.");
       await load();
@@ -146,14 +145,14 @@ export function PoiModal({ onClose }: { onClose: () => void }) {
             </p>
           </div>
           <button type="button" className="modal-close" onClick={() => withTransition(onClose)} aria-label="Close">
-            ×
+            <X size={18} strokeWidth={2} aria-hidden="true" />
           </button>
         </header>
 
         <div className="carriers-fetch">
           <button
             type="button"
-            className="fdb-chip fdb-chip--on"
+            className="fdb-chip fdb-chip--on fdb-chip--primary ui-btn ui-btn--primary ui-btn--sm"
             onClick={() => void fetchFromEdastro()}
             disabled={busy || cooling}
           >
@@ -174,14 +173,14 @@ export function PoiModal({ onClose }: { onClose: () => void }) {
           ) : null}
         </div>
 
-        {error ? <p className="fdb-empty">{error}</p> : null}
+        {error ? <EmptyState tone="error">{error}</EmptyState> : null}
 
         {!data && querying ? (
           <LoadingNote className="fdb-empty" label="Searching the points of interest…" />
         ) : !haveData && !busy ? (
-          <p className="fdb-empty">
+          <EmptyState>
             No data. Click <strong>Fetch from EDAstro</strong> above to download the catalogue.
-          </p>
+          </EmptyState>
         ) : null}
 
         {haveData ? (
@@ -295,10 +294,10 @@ export function PoiModal({ onClose }: { onClose: () => void }) {
             </div>
 
             {rows.length === 0 ? (
-              <p className="fdb-empty">
+              <EmptyState>
                 Nothing matches{search.trim() ? <> “{search.trim()}”</> : " those filters"}. The catalogue is
                 2,766 points across the whole galaxy, so the nearest can be a long way out.
-              </p>
+              </EmptyState>
             ) : null}
           </>
         ) : null}

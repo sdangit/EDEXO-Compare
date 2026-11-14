@@ -10,6 +10,9 @@ import { CopySystemButton } from "./CopySystemButton";
 import { LoadingNote } from "./ui/Loading";
 import { AutoRefreshPick } from "./AutoRefreshPick";
 import { fmtLyAway } from "@shared/format";
+import { jsonOrNull } from "./http";
+import { pickRow } from "./ui/pickRow";
+import { EmptyState } from "./ui/EmptyState";
 
 interface StationRow {
   name: string;
@@ -108,7 +111,7 @@ export function StationsPanel({
     const ac = new AbortController();
     const t = window.setTimeout(() => {
       void fetch(`/api/stations/search?q=${encodeURIComponent(q)}${fromParams}`, { signal: ac.signal })
-        .then((r) => (r.ok ? r.json() : null))
+        .then(jsonOrNull<{ stations?: StationRow[] }>)
         .then((j: { stations?: StationRow[] } | null) => {
           if (!ac.signal.aborted) setNamed(j?.stations ?? []);
         })
@@ -203,7 +206,7 @@ export function StationsPanel({
         {!status?.present || newer ? (
           <button
             type="button"
-            className="fdb-chip fdb-chip--on"
+            className="fdb-chip fdb-chip--on fdb-chip--primary ui-btn ui-btn--primary ui-btn--sm"
             onClick={() => void download()}
             disabled={!!dl}
           >
@@ -223,8 +226,8 @@ export function StationsPanel({
         </span>
         {status?.present ? <AutoRefreshPick which="stationsHours" /> : null}
       </div>
-      {status?.error ? <p className="fdb-empty">Download failed: {status.error}</p> : null}
-      {error ? <p className="fdb-empty">{error}</p> : null}
+      {status?.error ? <EmptyState>Download failed: {status.error}</EmptyState> : null}
+      {error ? <EmptyState tone="error">{error}</EmptyState> : null}
       {status?.present ? (
         <>
           <input
@@ -309,17 +312,17 @@ export function StationsPanel({
             </div>
           </div>
           {named ? (
-            <p className="fdb-empty">
+            <EmptyState>
               {named.length
                 ? `Stations named like "${name.trim()}", nearest first`
                 : `No station is named like "${name.trim()}".`}
-            </p>
+            </EmptyState>
           ) : null}
           {!named && rows == null && querying ? (
             <LoadingNote className="fdb-empty" label="Searching the stations…" />
           ) : null}
           {!named && rows && rows.length === 0 ? (
-            <p className="fdb-empty">No station near {from ? "there" : "you"} has all of that.</p>
+            <EmptyState>No station near {from ? "there" : "you"} has all of that.</EmptyState>
           ) : null}
           {(named ?? rows)?.length ? (
             <div className="fdb-scroll">
@@ -347,8 +350,7 @@ export function StationsPanel({
                     <tr
                       key={`${r.system}|${r.name}`}
                       title={`${r.services.join(" · ")}${onPick ? "\n\nClick to show it on the map" : ""}`}
-                      className={onPick ? "is-pickable" : undefined}
-                      onClick={onPick ? () => onPick(r) : undefined}
+                      {...(onPick ? pickRow(() => onPick(r)) : {})}
                     >
                       <td
                         className={r.own ? "stations-own" : undefined}

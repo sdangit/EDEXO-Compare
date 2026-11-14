@@ -68,6 +68,18 @@ module.exports = {
   appId: "com.edexo.compare",
   productName: "EDExoCompare",
   copyright,
+  /*
+    Electron fuses (review 2026-11-07 §7): the built exe ignores ELECTRON_RUN_AS_NODE, NODE_OPTIONS and --inspect, so
+    it cannot be started as a bare Node or with a debugger attached by whatever runs it. Nothing here uses them: the
+    server is a utility process, the diagnostic build profiles through the in-process inspector, NODE_COMPILE_CACHE is
+    its own variable. Cookie encryption, asar-only loading and asar integrity are left as they are (the first would sign
+    the browser's saved sessions out).
+  */
+  electronFuses: {
+    runAsNode: false,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+  },
   directories: {
     output: "dist/electron-out",
     buildResources: "build",
@@ -142,6 +154,16 @@ module.exports = {
     { from: "electron/update-apply.ps1", to: "edexo/update-apply.ps1" },
     // sql.js's WebAssembly for the feeder database (in-app dump import); feederDb.ts `wasmPath`.
     { from: "node_modules/sql.js/dist/sql-wasm.wasm", to: "sql-wasm/sql-wasm.wasm" },
+  ],
+  /*
+    Beside the exe (review 2026-11-10 E4): the licence, the notices, the data licence and the bundled libraries' own
+    licences (build/THIRD-PARTY-LICENSES.txt, written by scripts/bundle.mjs). The build carried none of them.
+  */
+  extraFiles: [
+    { from: "LICENSE", to: "LICENSE.txt" },
+    { from: "NOTICE.md", to: "NOTICE.md" },
+    { from: "data/LICENSE-DATA.txt", to: "LICENSE-DATA.txt" },
+    { from: "build/THIRD-PARTY-LICENSES.txt", to: "THIRD-PARTY-LICENSES.txt" },
   ],
   win,
   /*

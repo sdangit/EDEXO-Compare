@@ -2,7 +2,7 @@
  * The 3D galaxy map's engine (G1–G2, docs/galaxy-plan-28092026.md): renderer, camera and controls,
  * the layers, picking, groups, labels, and a frame loop that only runs when something changed.
  *
- * Frame: (1) the backdrop — the drawn Milky Way and region borders — straight to the screen; (2) every
+ * Frame: (1) the backdrop — the Milky Way picture and region borders — straight to the screen; (2) every
  * system summed additively into a half-float buffer; (3) that buffer tone-mapped and added on top;
  * (4) the group rings and the hover / selection markers, crisp, on top of everything.
  *
@@ -71,6 +71,7 @@ import {
   makeCellMask,
   makeRenderTarget,
   NAMES_MAX,
+  NAMES_RETRY_MS,
   PLANE_UNDER_CLOUDS,
   ringRadius,
   SOL,
@@ -228,6 +229,13 @@ export class GalaxyEngine {
   private selected: Selection | null = null;
   private readonly names = new Map<number, string>();
   private namesInflight = false;
+  /**
+   * After a failed `/api/galaxy/names` (server busy, galaxy index missing) no new request before this time; and the
+   * systems an answer left out are not asked for again (review 2026-11-10 F2: with the pointer resting on a system, a
+   * failure re-asked every frame, each with a GPU pick and a full render).
+   */
+  private namesRetryAt = 0;
+  private readonly namesMissing = new Set<number>();
   private systemLabels: {
     ordinal: number;
     x: number;
@@ -357,7 +365,8 @@ export class GalaxyEngine {
     window.addEventListener("blur", this.onBlur);
 
     this.resize();
-    this.loop();
+    // One frame loop: resize() has started it when the map is shown; a hidden one starts when it is shown.
+    this.wake();
   }
 
   // ---------------------------------------------------------------------------------------- setup
@@ -414,6 +423,7 @@ export class GalaxyEngine {
 
   resize(): void {
     if (!this.shown()) return;
+    this.wake();
     const w = this.host.clientWidth;
     const h = this.host.clientHeight;
     const ratio = Math.min(window.devicePixelRatio, 2);
@@ -513,7 +523,7 @@ export class GalaxyEngine {
 
   /**
    * The Milky Way as clouds (owner, 2026-10-04: "make the PNG a 3D cloud, not just another PNG"):
-   * galaxyCloudSprites' output, in the drawing's pixels, placed by the same rectangle the picture
+   * galaxyCloudSprites' output, in the picture's pixels, placed by the same rectangle the picture
    * used. The light adds up; the dust, drawn after it, dims what is behind.
    */
   setClouds(
@@ -585,7 +595,7 @@ export class GalaxyEngine {
     this.invalidate();
   }
 
-  /** The Milky Way (drawn, galaxyClouds.ts; already placed in ly) and the region outlines. */
+  /** The Milky Way picture (already placed in ly) and the region outlines. */
   setBackdrop(
     photo: { url: string; x0: number; x1: number; zBottom: number; zTop: number } | null,
     outlines: RegionOutlines | null,
@@ -1628,16 +1638,24 @@ export class GalaxyEngine {
   // ---------------------------------------------------------------------------------------- names
 
   private async fetchNames(ordinals: number[]): Promise<void> {
-    const want = ordinals.filter((o) => !this.names.has(o));
-    if (!want.length || this.namesInflight) return;
+    const want = ordinals.filter((o) => !this.names.has(o) && !this.namesMissing.has(o));
+    if (!want.length || this.namesInflight || Date.now() < this.namesRetryAt) return;
     this.namesInflight = true;
+    let added = false;
     try {
-      const r = await fetch(`${this.api}/api/galaxy/names?i=${want.slice(0, 400).join(",")}`, {
+      const asked = want.slice(0, 400);
+      const r = await fetch(`${this.api}/api/galaxy/names?i=${asked.join(",")}`, {
         signal: this.requests.signal,
       });
       const got = r.ok ? ((await r.json()) as Record<string, string>) : null;
+      if (!got) this.namesRetryAt = Date.now() + NAMES_RETRY_MS;
       if (got && !this.disposed) {
-        for (const [k, v] of Object.entries(got)) this.names.set(Number(k), v);
+        for (const [k, v] of Object.entries(got)) {
+          this.names.set(Number(k), v);
+          added = true;
+        }
+        for (const o of asked) if (!(String(o) in got)) this.namesMissing.add(o);
+        if (this.namesMissing.size > NAMES_MAX) this.namesMissing.clear();
         // A long session of flying about asks for tens of thousands; the oldest go (plan 2.5).
         if (this.names.size > NAMES_MAX) {
           for (const k of this.names.keys()) {
@@ -1647,10 +1665,12 @@ export class GalaxyEngine {
         }
       }
     } catch {
-      /* labels wait for the next try */
+      // Labels wait for the next try, a few seconds on.
+      this.namesRetryAt = Date.now() + NAMES_RETRY_MS;
     } finally {
       this.namesInflight = false;
-      if (!this.disposed) {
+      // Only a new name redraws the tooltip: a failure redrawn at once asked again on the next frame.
+      if (!this.disposed && added) {
         this.hovered = null; // let the tooltip pick up the name
         if (this.hoverQueued === null && this.lastMouse) this.hoverQueued = this.lastMouse;
         this.invalidate();
@@ -1718,6 +1738,12 @@ export class GalaxyEngine {
 
   invalidate(): void {
     this.needsRender = true;
+    this.wake();
+  }
+
+  /** Start the frame loop again if it stopped while the map was hidden. */
+  private wake(): void {
+    if (!this.disposed && this.raf === 0 && this.shown()) this.raf = requestAnimationFrame(this.loop);
   }
 
   // ---------------------------------------------------------------------------- Elite controls
@@ -1785,9 +1811,16 @@ export class GalaxyEngine {
 
   private loop = (): void => {
     if (this.disposed) return;
+    /*
+      Hidden behind another tab: nothing to draw, and the loop stops (review 2026-11-07 §4.2): a hidden pane in the
+      same window is not throttled like a hidden page, so it ran 60 empty frames a second. The host's
+      ResizeObserver calls resize() when it is shown again, which wakes it; a frame asked for meanwhile waits.
+    */
+    if (!this.shown()) {
+      this.raf = 0;
+      return;
+    }
     this.raf = requestAnimationFrame(this.loop);
-    // Hidden behind another tab: nothing to draw; a frame asked for meanwhile waits until it is shown.
-    if (!this.shown()) return;
     const now = performance.now();
     const flying = this.stepFlight();
     if (this.elite && this.keys.size) this.stepKeys(now);

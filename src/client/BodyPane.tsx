@@ -40,6 +40,8 @@ import { GenusMatchGroup } from "./GenusMatchGroup";
 import { VolcanismFact } from "./VolcanismFact";
 import { JumponiumFact } from "./JumponiumFact";
 import type { JumponiumDTO } from "@shared/jumponium";
+import { copyText } from "./copyText";
+import { Disclosure, Done, NotDone } from "./ui/glyphs";
 export { GlanceGenera } from "./BodyGlance";
 
 /** One empty list for a body with no on-foot locks, so the rows' context value keeps its identity. */
@@ -151,7 +153,7 @@ export const BodyPane = memo(function BodyPane({
   const copyBodySummary = useCallback(() => {
     void (async () => {
       try {
-        await navigator.clipboard.writeText(bodySummaryOneLine);
+        await copyText(bodySummaryOneLine);
         setBodySummaryCopied(true);
         window.setTimeout(() => setBodySummaryCopied(false), 1500);
       } catch {
@@ -297,12 +299,12 @@ export const BodyPane = memo(function BodyPane({
               className="glance-item"
               title={body.state.dssComplete ? "Mapped with the DSS" : "Not mapped with the DSS yet"}
             >
-              <small>DSS</small> {body.state.dssComplete ? "✓" : "✗"}
+              <small>DSS</small> {body.state.dssComplete ? <Done /> : <NotDone />}
             </span>
             <GlanceGenera rows={genusRows} />
             {arrivalLs != null ? (
               <span className="glance-item">
-                {arrivalLs === 0 ? "0" : arrivalLs.toLocaleString(undefined, { maximumFractionDigits: 0 })}{" "}
+                {arrivalLs === 0 ? "0" : arrivalLs.toLocaleString("en-US", { maximumFractionDigits: 0 })}{" "}
                 {/* The game's spelling, Ls, as in the cards (review V5); the glance bar's capitals skip it. */}
                 <small className="glance-unit-ls">Ls</small>
               </span>
@@ -557,7 +559,7 @@ export const BodyPane = memo(function BodyPane({
                         if (canOpenJournalScanModal) setJournalScanModalOpen(true);
                       }}
                     >
-                      DSS {s.dssComplete ? "✓" : "✗"}
+                      DSS {s.dssComplete ? <Done /> : <NotDone />}
                     </button>
                   }
                 >
@@ -773,7 +775,7 @@ export const BodyPane = memo(function BodyPane({
                         onClick={() => setShowUnlikely((v) => !v)}
                         title="One criterion off — unlikely, not impossible."
                       >
-                        {showUnlikely ? "▾" : "▸"} {showUnlikely ? "Hide" : "Show"} unlikely (
+                        <Disclosure open={showUnlikely} /> {showUnlikely ? "Hide" : "Show"} unlikely (
                         {unlikelyMatches.length})
                       </button>
                       {showUnlikely ? (

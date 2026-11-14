@@ -42,6 +42,7 @@ import {
   readSpeciesColourRules,
   collectGenusColorVariantRich,
 } from "./genusColourMeta.js";
+import { errorText } from "./errorText.js";
 export { buildCriterionFromRecord } from "./speciesCriterionParser.js";
 
 function isDir(p: string): boolean {
@@ -63,13 +64,23 @@ export function clearGenusPhotosFolderCache(): void {
   genusPhotosFolderCache.clear();
 }
 
+/** Test seam: how many folders the cache holds. */
+export function genusPhotosFolderCacheSize(): number {
+  return genusPhotosFolderCache.size;
+}
+
 /** Subfolder like `Stratum_photos` next to genus json. */
 export function findGenusPhotosFolder(genusDirPath: string, folderBaseName: string): string | null {
   const cacheKey = `${genusDirPath}::${folderBaseName}`;
   const cached = genusPhotosFolderCache.get(cacheKey);
   if (cached !== undefined) return cached;
   const resolved = findGenusPhotosFolderUncached(genusDirPath, folderBaseName);
-  genusPhotosFolderCache.set(cacheKey, resolved);
+  /*
+    Only real genus folders are kept (review 2026-11-10 C7): the key comes from a URL segment
+    (`/species-photos/:genusDir/:file`), and every made-up name added an entry for as long as the app ran. There are
+    some 30 genera; the cap is a backstop.
+  */
+  if ((resolved !== null || isDir(genusDirPath)) && genusPhotosFolderCache.size < 256) genusPhotosFolderCache.set(cacheKey, resolved);
   return resolved;
 }
 
@@ -312,7 +323,9 @@ function parseGenusFile(jsonPath: string, folderBaseName: string, projectRoot: s
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(jsonPath, "utf8"));
-  } catch {
+  } catch (e) {
+    // Said, not swallowed (review 2026-11-10 A12): a genus missing from the matcher is a miss on every body it grows on.
+    speciesDataWarnings.push(`${rel} could not be read, so its genus is not matched: ${errorText(e)}`);
     return [];
   }
 
@@ -613,12 +626,16 @@ export function loadSpeciesDatabaseFromTree(projectRoot: string): SpeciesDatabas
   }
 
   const species: SpeciesEntry[] = [];
+  const byId = new Map<string, SpeciesEntry>();
   let loadedNew = 0;
   let loadedLegacy = 0;
 
   let dirs: string[];
   try {
-    dirs = readdirSync(base).filter((n) => isDir(join(base, n)));
+    // Sorted: the folder order is the species order, and ties are broken by it; readdirSync's differs by file system.
+    dirs = readdirSync(base)
+      .filter((n) => isDir(join(base, n)))
+      .sort();
   } catch {
     return { species: [] };
   }
@@ -637,7 +654,16 @@ export function loadSpeciesDatabaseFromTree(projectRoot: string): SpeciesDatabas
       const rule = colourVariantRuleFor(projectRoot, e.genusDataDir, e.displayName);
       if (rule) e.colourVariant = rule;
     }
-    species.push(...genusSpecies);
+    for (const e of genusSpecies) {
+      // One row per id (A12): a second would be matched, priced and counted twice under one name.
+      const first = byId.get(e.id);
+      if (first) {
+        speciesDataWarnings.push(`${e.id} is listed twice (${first.genusDataDir}, ${e.genusDataDir}); the second is left out.`);
+        continue;
+      }
+      byId.set(e.id, e);
+      species.push(e);
+    }
   }
 
   if (species.length) {

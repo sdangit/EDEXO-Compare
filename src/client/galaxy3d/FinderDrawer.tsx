@@ -26,6 +26,9 @@ import { isBool, isNum, isStrArr, oneOf, usePersistedState } from "../usePersist
 import { CopySystemButton } from "../CopySystemButton";
 import { LoadingNote } from "../ui/Loading";
 import { G3D_HELP, MenuHead } from "./G3dMenu";
+import { pickRow } from "../ui/pickRow";
+import { Disclosure, Done } from "../ui/glyphs";
+import { EmptyState } from "../ui/EmptyState";
 
 interface FinderStatusDTO {
   present: boolean;
@@ -85,7 +88,7 @@ function DataButton({
   title?: string;
 }) {
   return (
-    <button type="button" className="fdb-chip fdb-chip--on" onClick={onClick} disabled={busy} title={title}>
+    <button type="button" className="fdb-chip fdb-chip--on fdb-chip--primary ui-btn ui-btn--primary ui-btn--sm" onClick={onClick} disabled={busy} title={title}>
       {busy
         ? progress?.total
           ? `${verb}… ${Math.round((100 * progress.done) / progress.total)} %`
@@ -102,7 +105,7 @@ function GroupHead({ name, on, isOpen, onToggle }: { name: string; on: number; i
       <span>{name}</span>
       {on ? <span className="finder-group__count">{on}</span> : null}
       <span className="finder-group__chev" aria-hidden="true">
-        {isOpen ? "▾" : "▸"}
+        <Disclosure open={isOpen} />
       </span>
     </button>
   );
@@ -253,10 +256,10 @@ export function FinderDrawer({
       <MenuHead title="Colonisation candidate search" help={G3D_HELP.finder} />
       {status && !status.present ? (
         <div className="g3d-menu__section g3d-menu__section--first">
-          <p className="fdb-empty">
+          <EmptyState>
             This search needs its own data: the systems within 150 ly of inhabited space, with what their bodies are
             and whether someone colonised them, from Spansh&apos;s dump.
-          </p>
+          </EmptyState>
           <div className="carriers-fetch">
             <DataButton
               verb="Downloading"
@@ -266,7 +269,7 @@ export function FinderDrawer({
               onClick={() => void download()}
             />
           </div>
-          {error ? <p className="fdb-empty">{error}</p> : null}
+          {error ? <EmptyState tone="error">{error}</EmptyState> : null}
         </div>
       ) : null}
 
@@ -484,8 +487,8 @@ export function FinderDrawer({
             </div>
           </div>
 
-          {error ? <p className="fdb-empty">{error}</p> : null}
-          {result?.problem ? <p className="fdb-empty">{result.problem}</p> : null}
+          {error ? <EmptyState tone="error">{error}</EmptyState> : null}
+          {result?.problem ? <EmptyState tone="error">{result.problem}</EmptyState> : null}
           {/* Every search shows it is running, not only the first: a new search over an old list only dimmed the
               list, and "All colonised" reads the whole file (owner, 2026-10-19: "it needs some loading indicator"). */}
           {busy ? (
@@ -516,7 +519,7 @@ export function FinderDrawer({
                 </thead>
                 <tbody>
                   {hits.map((h) => (
-                    <tr key={h.id64} className="is-pickable" onClick={() => onPick(h)} title="Click to show it on the map">
+                    <tr key={h.id64} {...pickRow(() => onPick(h))} title="Click to show it on the map">
                       <td>
                         {h.name} <CopySystemButton system={h.name} />
                         {h.mainStar ? <span className="dim tiny"> {h.mainStar}</span> : null}
@@ -527,7 +530,7 @@ export function FinderDrawer({
                         {h.bodyCount != null && h.bodyCount !== h.listed ? (
                           <span className="dim">/{h.bodyCount}</span>
                         ) : null}
-                        {h.fullyScanned ? <span className="dim tiny" title="Every body listed"> ✓</span> : null}
+                        {h.fullyScanned ? <span className="dim tiny" title="Every body listed"> <Done /></span> : null}
                       </td>
                       <td className="finder-counts">{countsLine(h)}</td>
                     </tr>

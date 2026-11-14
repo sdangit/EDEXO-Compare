@@ -20,6 +20,8 @@ import {
 } from "./exoAlertsStore";
 import { readLsBool } from "./lsPrefs";
 import { memoOnSnapSlice, type SnapSlice } from "./snapSlice";
+import { copyText } from "./copyText";
+import { sendJson } from "./http";
 
 const ALERT_FIELDS = ["bodies", "exoOverlayFocusBody", "sharedExomastery", "journalBoot"] as const;
 
@@ -90,11 +92,7 @@ export const ExoDataAlertsHeaderHub = memoOnSnapSlice(ALERT_FIELDS, function Exo
       setDismissed(readExoAlertDismissals());
       setAckEpoch((e) => e + 1);
       if (detectFeeder) {
-        const r = await fetch("/api/exomastery/reload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
+        const r = await sendJson("/api/exomastery/reload", {});
         const j = (await r.json().catch(() => null)) as {
           error?: string;
         } | null;
@@ -125,18 +123,14 @@ export const ExoDataAlertsHeaderHub = memoOnSnapSlice(ALERT_FIELDS, function Exo
       const fallbackClipboard = async () => {
         const text = (a.fixClipboard ?? `${a.title}\n${a.detail}`).trim();
         try {
-          await navigator.clipboard.writeText(text);
+          await copyText(text);
         } catch {
           window.prompt("Copy fix hints (clipboard unavailable):", text);
         }
       };
       if (a.speciesEntryId && a.genusDataDir) {
         try {
-          const r = await fetch("/api/exo-data-alerts/fix", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ alert: a }),
-          });
+          const r = await sendJson("/api/exo-data-alerts/fix", { alert: a });
           const j = (await r.json().catch(() => null)) as {
             ok?: boolean;
             written?: { root: string; relativePath: string }[];
@@ -199,7 +193,7 @@ export const ExoDataAlertsHeaderHub = memoOnSnapSlice(ALERT_FIELDS, function Exo
             <div className="exo-data-alert__actions">
               <button
                 type="button"
-                className="exo-data-alert__btn"
+                className="exo-data-alert__btn ui-btn ui-btn--primary ui-btn--sm"
                 title="Append a fixes_*.json stub in your user data folder, where an update cannot replace it (never overwrites the original codex or exomastery file)."
                 onClick={() => void fix(a)}
               >
@@ -207,7 +201,7 @@ export const ExoDataAlertsHeaderHub = memoOnSnapSlice(ALERT_FIELDS, function Exo
               </button>
               <button
                 type="button"
-                className="exo-data-alert__btn exo-data-alert__btn--secondary"
+                className="exo-data-alert__btn exo-data-alert__btn--secondary ui-btn ui-btn--secondary ui-btn--sm"
                 onClick={() => dismiss(a.id)}
               >
                 Dismiss

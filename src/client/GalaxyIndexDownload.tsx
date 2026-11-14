@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fmtPct } from "@shared/format";
 import { MenuRow } from "./galaxy3d/G3dMenu";
 import { DUE_CLASS } from "./galaxyIndexDue";
+import { sendJson } from "./http";
 
 interface IndexStatus {
   present: boolean;
@@ -26,7 +27,7 @@ interface IndexStatus {
   extraBytes?: number;
 }
 
-const mb = (n: number) => `${Math.round(n / 1e6).toLocaleString()} MB`;
+const mb = (n: number) => `${Math.round(n / 1e6).toLocaleString("en-US")} MB`;
 
 /** 5.3 million, 10.3k, 870. */
 export function fmtSystems(n: number): string {
@@ -87,7 +88,7 @@ export function GalaxyIndexDownload() {
       {d ? (
         <div className="g3d-index-download__progress" aria-live="polite">
           <div className="g3d-index-download__bar">
-            <span style={{ width: `${pct ?? 5}%` }} />
+            <span style={{ transform: `scaleX(${(pct ?? 5) / 100})` }} />
           </div>
           <span>
             {d.name}: {mb(d.done)}
@@ -98,7 +99,7 @@ export function GalaxyIndexDownload() {
       ) : (
         <button
           type="button"
-          className="g3d-btn g3d-btn--primary-small"
+          className="g3d-btn g3d-btn--primary-small ui-btn ui-btn--primary ui-btn--sm"
           onClick={() => {
             sessionStorage.setItem("galaxyIndexDownloading", "1");
             void fetch("/api/galaxy/index/download", { method: "POST" }).then(() => load());
@@ -176,11 +177,7 @@ export function GalaxyIndexRow() {
             (st.downloadBytes ? ` (a ${mb(st.downloadBytes)} download)` : "")
           }
           onClick={() =>
-            void fetch("/api/galaxy/index/download", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ extrasOnly }),
-            }).then(() => load())
+            void sendJson("/api/galaxy/index/download", { extrasOnly }).then(() => load())
           }
         >
           {update

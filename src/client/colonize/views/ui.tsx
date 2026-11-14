@@ -5,10 +5,11 @@
  */
 import type { ReactNode } from "react";
 import { FoldPanel } from "../../ui/Fold";
+import { copyText as writeClipboard } from "../../copyText";
 
 /** Compare's buttons: the framed one, the filled "go", and the small text action (Compare's "Copy"). */
 export const BTN = "btn-top-neutral";
-export const BTN_GO = "btn-confirm-go";
+export const BTN_GO = "btn-confirm-go ui-btn ui-btn--primary ui-btn--md";
 export const BTN_WARN = "btn-top-neutral cz-btn--warn";
 export const BTN_BAD = "btn-top-neutral cz-btn--bad";
 export const BTN_LINK = "cz-link";
@@ -57,9 +58,9 @@ export function Panel({
 /** Puts text on the clipboard (Trips and Search had a copy each); never throws. */
 export async function copyText(text: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboard(text);
   } catch {
-    /* no clipboard in this browser (or not over plain http): the text is on screen to copy by hand */
+    /* the browser refused: the text is on screen to copy by hand */
   }
 }
 

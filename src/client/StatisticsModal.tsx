@@ -32,6 +32,9 @@ import { useModal } from "./ui/useModal";
 import { formatWeeks } from "@shared/carrierUpkeep";
 import type { RankEstimateDTO } from "@shared/rankProgress";
 import { RollingNumber } from "./ui/RollingNumber";
+import { sendJson, jsonOrNull } from "./http";
+import { X } from "lucide-react";
+import { EmptyState } from "./ui/EmptyState";
 
 /*
   A rank with about how many credits to the next one (shared/rankProgress.ts). The bar is the game's
@@ -107,18 +110,14 @@ function RecordsSection() {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     void fetch("/api/records")
-      .then((r) => (r.ok ? r.json() : null))
+      .then(jsonOrNull<RecordsResponse>)
       .then((j: RecordsResponse | null) => setData(j?.rows ? j : null))
       .catch(() => setData(null));
   }, []);
   const download = () => {
     setBusy(true);
     setError(null);
-    void fetch("/api/records/fetch-galactic", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: true }),
-    })
+    void sendJson("/api/records/fetch-galactic", { force: true })
       .then((r) => r.json())
       .then((j: RecordsResponse & { ok?: boolean; error?: string }) => {
         if (j.ok) setData(j);
@@ -179,7 +178,7 @@ function RecordsSection() {
             {data.rows.map((r) => (
               <tr key={r.key}>
                 <td>{r.label}</td>
-                <td className="stats-rec__n">{r.count.toLocaleString()}</td>
+                <td className="stats-rec__n">{r.count.toLocaleString("en-US")}</td>
                 {cell(r.largest, r.subject, true)}
                 {g.haveData ? cell(r.galactic?.largest, r.subject) : null}
                 {cell(r.smallest, r.subject, true)}
@@ -469,7 +468,7 @@ export function StatisticsModal({ onClose }: { onClose: () => void }) {
             </p>
           </div>
           <button type="button" className="modal-close" onClick={() => withTransition(onClose)} aria-label="Close">
-            ×
+            <X size={18} strokeWidth={2} aria-hidden="true" />
           </button>
         </header>
 
@@ -509,7 +508,7 @@ export function StatisticsModal({ onClose }: { onClose: () => void }) {
           </Tooltip>
         </div>
 
-        {error ? <p className="fdb-empty">{error}</p> : null}
+        {error ? <EmptyState tone="error">{error}</EmptyState> : null}
         {busy && !data ? (
           <LoadingNote
             className="fdb-empty"

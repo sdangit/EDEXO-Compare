@@ -358,6 +358,9 @@ describe("the address bar", () => {
     expect(isLocalHost("172.20.0.1")).toBe(true);
     expect(isLocalHost("example.com")).toBe(false);
     expect(isLocalHost("172.40.0.1")).toBe(false);
+    // Review 2026-11-10 D7: public names that start like a private address.
+    expect(isLocalHost("10.example.com")).toBe(false);
+    expect(isLocalHost("192.168.evil.com")).toBe(false);
   });
 });
 
@@ -783,6 +786,16 @@ describe("review 1.2.16", () => {
     vi.advanceTimersByTime(5000);
     expect(FakeView.made[0]!.webContents.closed).toBe(false);
     expect(FakeView.made[0]!.visible).toBe(true);
+  });
+
+  it("forgets a site addressed by IP with origins Chromium accepts, the page's own among them (review 2026-11-10 D7)", async () => {
+    const t = setup();
+    await t.call({ op: "start" });
+    const { id } = (await t.call({ op: "open", text: "http://192.168.1.20:8080/" })) as { id: number };
+    t.ses.cleared.length = 0;
+    expect(await t.call({ op: "forgetSite", id })).toEqual({ ok: true });
+    expect(t.ses.cleared).toEqual([{ origins: ["https://192.168.1.20", "http://192.168.1.20:8080"] }]);
+    for (const o of (t.ses.cleared[0] as { origins: string[] }).origins) expect(() => new URL(o)).not.toThrow();
   });
 
   it("keeps the remembered sites' origins valid, an address site too", () => {

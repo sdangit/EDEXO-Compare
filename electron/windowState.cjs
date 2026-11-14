@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Window positions and zoom for the launcher and the app window. Split out of main.cjs (code review D,
  * 2026-09-28). The settings folder is main.cjs's to decide, so it is passed in.
@@ -9,7 +10,21 @@ const { writeFileAtomic } = require("./atomicWrite.cjs");
 const { GALAXY_MIN } = require("./childWindows.cjs");
 
 /** The smallest a saved window may come back; a smaller saved size is ignored. */
+/** @type {Record<string, { w: number; h: number }>} */
 const WINDOW_MIN = { launcher: { w: 380, h: 420 }, app: { w: 640, h: 420 }, colonize: { w: 640, h: 420 }, galaxy: GALAXY_MIN };
+
+/**
+ * Each dragged-out tab window keeps its own entry (`tab:<key>`), one per drag, and none was ever let go (review
+ * 2026-11-10 D7): the last TAB_WINDOWS_KEPT saved stay, the oldest go.
+ */
+const TAB_WINDOWS_KEPT = 24;
+/** @param {Record<string, { savedAt?: number }>} all */
+function pruneTabWindows(all) {
+  const tabs = Object.keys(all).filter((k) => k.startsWith("tab:"));
+  if (tabs.length <= TAB_WINDOWS_KEPT) return;
+  tabs.sort((a, b) => (all[b]?.savedAt ?? 0) - (all[a]?.savedAt ?? 0));
+  for (const k of tabs.slice(TAB_WINDOWS_KEPT)) delete all[k];
+}
 
 /** @param {() => string} stateDir the folder window-state.json lives in */
 function createWindowState(stateDir) {
@@ -42,7 +57,11 @@ function createWindowState(stateDir) {
     }
   }
 
-  /** Saved bounds for one window, or null when there are none or they no longer land on a screen. */
+  /**
+   * Saved bounds for one window, or null when there are none or they no longer land on a screen.
+   *
+   * @param {string} name
+   */
   function readWindowState(name) {
     let b = readWindowStates()[name];
     if (!b && name === "app") {
@@ -70,13 +89,18 @@ function createWindowState(stateDir) {
       : null;
   }
 
+  /**
+   * @param {string} name
+   * @param {import("electron").BrowserWindow | null | undefined} win
+   */
   function saveWindowState(name, win) {
     if (!win || win.isDestroyed() || win.isMinimized()) return;
     try {
       const maximized = win.isMaximized();
       const b = maximized ? win.getNormalBounds() : win.getBounds();
       const all = readWindowStates();
-      all[name] = { ...b, maximized };
+      all[name] = { ...b, maximized, savedAt: Date.now() };
+      pruneTabWindows(all);
       fs.mkdirSync(path.dirname(windowStatePath()), { recursive: true });
       writeFileAtomic(windowStatePath(), JSON.stringify(all, null, 2), "utf8");
     } catch {
@@ -84,8 +108,14 @@ function createWindowState(stateDir) {
     }
   }
 
-  /** Keep a window's state on disk as it moves; half a second after the last move, and on close. */
+  /**
+   * Keep a window's state on disk as it moves; half a second after the last move, and on close.
+   *
+   * @param {string} name
+   * @param {import("electron").BrowserWindow} win
+   */
   function trackWindowState(name, win) {
+    /** @type {ReturnType<typeof setTimeout> | null} */
     let t = null;
     const soon = () => {
       if (t) clearTimeout(t);
@@ -94,7 +124,10 @@ function createWindowState(stateDir) {
         saveWindowState(name, win);
       }, 500);
     };
-    for (const ev of ["resize", "move", "maximize", "unmaximize"]) win.on(ev, soon);
+    win.on("resize", soon);
+    win.on("move", soon);
+    win.on("maximize", soon);
+    win.on("unmaximize", soon);
     win.on("close", () => {
       if (t) clearTimeout(t);
       saveWindowState(name, win);
@@ -116,8 +149,10 @@ const ZOOM_STEP = 0.5;
 const ZOOM_MIN = -3;
 const ZOOM_MAX = 5;
 
+/** @param {import("electron").BrowserWindow} win */
 function enableZoom(win) {
   const wc = win.webContents;
+  /** @param {number} dir */
   const step = (dir) => {
     const next = dir === 0 ? 0 : Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, wc.getZoomLevel() + dir * ZOOM_STEP));
     wc.setZoomLevel(next);
@@ -134,4 +169,4 @@ function enableZoom(win) {
   });
 }
 
-module.exports = { WINDOW_MIN, createWindowState, enableZoom };
+module.exports = { WINDOW_MIN, createWindowState, enableZoom, pruneTabWindows };

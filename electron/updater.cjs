@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 /**
  * Installing a downloaded update on restart (owner, 2026-10-02: "instead of the user having to
@@ -15,6 +16,7 @@
  * console builds keep the release-page link.
  */
 const { spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -26,7 +28,7 @@ const EXE_NAME = "EDExoCompare.exe";
  * Copies before 1.3.0 know only EDExoCompare.exe: a release that renames the exe must still carry that file for them.
  */
 const EXE_NAMES = [EXE_NAME, "EDEXO.exe"];
-const isAppExe = (file) => EXE_NAMES.some((n) => n.toLowerCase() === path.basename(file).toLowerCase());
+const isAppExe = (/** @type {string} */ file) => EXE_NAMES.some((n) => n.toLowerCase() === path.basename(file).toLowerCase());
 
 /**
  * "portable" | "zip" | "appimage" | null for this copy.
@@ -45,7 +47,10 @@ function selfUpdateForm(o) {
   return null;
 }
 
-/** What the swap replaces: the user's exe, the program folder, or the AppImage. */
+/**
+ * What the swap replaces: the user's exe, the program folder, or the AppImage.
+ * @param {string | null} form
+ */
 function updateTarget(form, env = process.env, execPath = process.execPath) {
   if (form === "portable") return env.PORTABLE_EXECUTABLE_FILE || null;
   if (form === "zip") return path.dirname(execPath);
@@ -53,18 +58,28 @@ function updateTarget(form, env = process.env, execPath = process.execPath) {
   return null;
 }
 
+/*
+  The program folder an update moves aside carries this file (review 2026-11-10, Electron 1): written into the running
+  folder just before the swap, so it is in `<folder>.old` afterwards. Only a folder holding it is removed; a
+  `<folder>.old` the commander made himself (a copy of the previous version) was deleted with everything in it.
+*/
+const MOVED_MARK = ".edexo-moved-aside";
+
 /**
- * The copy the last update moved aside, removed at the next start. A folder only when it holds this
- * app's exe — never a guess at someone else's folder.
+ * The copy the last update moved aside, removed at the next start: a program folder only when the update marked it
+ * (MOVED_MARK), never a guess at someone else's folder. The mark left in the running folder by a swap that failed
+ * and put it back goes too.
+ * @param {string | null} form
  */
 function removeOldCopy(form, env = process.env, execPath = process.execPath) {
   const target = updateTarget(form, env, execPath);
   if (!target) return;
   const old = target + ".old";
+  if (form === "zip") fs.rmSync(path.join(target, MOVED_MARK), { force: true });
   try {
     if (!fs.existsSync(old)) return;
     if (form === "zip") {
-      if (!EXE_NAMES.some((n) => fs.existsSync(path.join(old, n)))) return;
+      if (!fs.existsSync(path.join(old, MOVED_MARK))) return;
       fs.rmSync(old, { recursive: true, force: true });
     } else {
       fs.rmSync(old, { force: true });
@@ -78,20 +93,50 @@ function removeOldCopy(form, env = process.env, execPath = process.execPath) {
  * Start the swap on the way out. Call from will-quit with the staged update (`ready.json`).
  * Returns how the app comes back: "helper" (the PowerShell starts it), "relaunch" (Electron should
  * relaunch the given path), or "none" (nothing to install: relaunch as usual).
- * @param {{ form: string, file: string, version: string }} staged
- * @param {{ form: string, scriptPath: string, logPath: string, pids: number[], env?: NodeJS.ProcessEnv, execPath?: string, start?: boolean }} o
+ * @param {{ form: string, file: string, version: string, sha256?: string }} staged
+ * @param {{ form: string | null, scriptPath: string, logPath: string, pids: number[], env?: NodeJS.ProcessEnv, execPath?: string, start?: boolean }} o
+ * @returns {{ how: "helper" | "relaunch" | "none", execPath?: string, refused?: string }}
  */
 function installOnQuit(staged, o) {
   const env = o.env || process.env;
   const target = updateTarget(o.form, env, o.execPath || process.execPath);
   if (!staged || staged.form !== o.form || !target || !fs.existsSync(staged.file)) return { how: "none" };
+  /*
+    Checked again on the way out (review 2026-11-10 D1): the hash was checked once, at download, and the install can
+    be a later run; a file damaged or swapped since went in over the good copy. A folder at a drive root ("D:\") is
+    refused: its trailing backslash swallows the closing quote of the helper's argument.
+  */
+  /** @param {string} why */
+  const refuse = (why) => {
+    logFailure(o.logPath, why);
+    return { how: /** @type {const} */ ("none"), refused: why };
+  };
+  if (/[\\/]$/.test(target)) return refuse("a program folder at a drive root");
+  if (typeof staged.sha256 !== "string" || sha256File(staged.file) !== staged.sha256.toLowerCase())
+    return refuse("the downloaded file no longer matches its checksum");
   if (o.form === "appimage") {
     // Same folder, then a rename over the running image: atomic, and Linux lets a running file go.
     const next = target + ".new";
-    fs.copyFileSync(staged.file, next);
-    fs.chmodSync(next, 0o755);
-    fs.renameSync(next, target);
+    try {
+      fs.copyFileSync(staged.file, next);
+      fs.chmodSync(next, 0o755);
+      fs.renameSync(next, target);
+    } catch (e) {
+      fs.rmSync(next, { force: true });
+      logFailure(o.logPath, e instanceof Error ? e.message : String(e));
+      throw e;
+    }
     return { how: "relaunch", execPath: target };
+  }
+  // The swap clears what sits at <target>.old / <target>.new; one it did not make is renamed aside instead.
+  if (o.form === "zip") {
+    keepAsideUnlessOurs(target + ".old", (p) => fs.existsSync(path.join(p, MOVED_MARK)));
+    keepAsideUnlessOurs(target + ".new", () => false);
+    try {
+      fs.writeFileSync(path.join(target, MOVED_MARK), `moved aside by the update to ${staged.version}\n`, "utf8");
+    } catch {
+      /* unmarked, the moved-aside copy stays for the commander to remove; the update still goes in */
+    }
   }
   const args = [
     "-NoProfile",
@@ -137,4 +182,45 @@ function installOnQuit(staged, o) {
   return { how: "helper" };
 }
 
-module.exports = { selfUpdateForm, updateTarget, removeOldCopy, installOnQuit, EXE_NAME, EXE_NAMES };
+/**
+ * A failure in the swap's log, as update-apply.ps1 writes one, so the next start says why (appUpdater
+ * lastInstallFailure; 5.1 §7: a failed Linux install wrote nothing).
+ * @param {string} logPath
+ * @param {string} why
+ */
+function logFailure(logPath, why) {
+  try {
+    if (logPath) fs.appendFileSync(logPath, `${new Date().toISOString()} update: FAILED, the old copy stays: ${why}\n`);
+  } catch {
+    /* the console has it */
+  }
+}
+
+/**
+ * SHA-256 of a file, read in pieces (the zip is a few hundred MB).
+ * @param {string} file
+ */
+function sha256File(file) {
+  const h = createHash("sha256");
+  const buf = Buffer.allocUnsafe(1 << 20);
+  const fd = fs.openSync(file, "r");
+  try {
+    let n;
+    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, n));
+  } finally {
+    fs.closeSync(fd);
+  }
+  return h.digest("hex");
+}
+
+/**
+ * A folder at `p` that `ours` does not claim is renamed `<p>-kept-<time>`, never removed.
+ * @param {string} p
+ * @param {(p: string) => boolean} ours
+ */
+function keepAsideUnlessOurs(p, ours) {
+  if (!fs.existsSync(p) || ours(p)) return;
+  fs.renameSync(p, `${p}-kept-${Date.now()}`);
+}
+
+module.exports = { selfUpdateForm, updateTarget, removeOldCopy, installOnQuit, sha256File, keepAsideUnlessOurs, EXE_NAME, EXE_NAMES, MOVED_MARK };

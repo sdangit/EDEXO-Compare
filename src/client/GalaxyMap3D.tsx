@@ -14,7 +14,6 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import {
   GalaxyEngine,
   type EngineStats,
-  type HoverInfo,
   type MarkerItem,
   type Selection,
 } from "./galaxy3d/GalaxyEngine";
@@ -22,14 +21,12 @@ import { usePlotted } from "./galaxy3d/plottedSystems";
 import { detectGraphics, type Graphics } from "./galaxy3d/capabilities";
 import { SYSTEM_CHANGED_EVENT } from "./useLiveSnapshot";
 import { placeLabels } from "./galaxy3d/labelPlacement";
-import { formatCount } from "./galaxy3d/clusters";
 import type { GalaxySearchApplied } from "./GalaxySearchPanel";
 import { GalaxyIndexDownload } from "./GalaxyIndexDownload";
-import { DUE_CLASS, useGalaxyIndexDue } from "./galaxyIndexDue";
+import { useGalaxyIndexDue } from "./galaxyIndexDue";
 import type { NavRouteSystemDTO } from "./GalaxyNavRoutePanel";
 import {
   EMPTY_GALAXY_FILTER,
-  GalaxyFilterPanel,
   galaxyFilterQuery,
   galaxyFilterTicks,
   isGalaxyFilterState,
@@ -45,15 +42,11 @@ import type { JumpRow } from "./galaxy3d/jumpRow";
 import type { FinderHit, FinderResult } from "@shared/finder";
 import { StationsList } from "./galaxy3d/StationsAt";
 import { STATIONS_CHANGED_EVENT } from "./StationsPanel";
-import { CARRIERS_STATIONS_TITLE, useCarriersStationsTab, type CarriersStationsPick } from "./carriersStationsTab";
+import { useCarriersStationsTab, type CarriersStationsPick } from "./carriersStationsTab";
 import {
-  CarriersStationsBody,
-  CarriersStationsTabs,
   CodexMenu,
   DrawerLoading,
   FinderDrawer,
-  GalaxyNavRoutePanel,
-  GalaxySearchPanel,
   JumponiumDrawer,
   NeutronDrawer,
   SpanshRouteDrawer,
@@ -63,17 +56,17 @@ import { clearStationsAtCache } from "./galaxy3d/StationsAt";
 import { keptNeutronMarks, neutronMarkers, NEUTRON_LINE_COLOUR, type NeutronMark } from "./galaxy3d/neutronMarks";
 import type { ExpeditionFieldDTO, ExpeditionPlanDTO } from "@shared/dto/expedition";
 import {
-  drawnGalaxyFrame,
-  drawnGalaxySprites,
+  galaxyPictureSprites,
   galaxyImageRect,
   REGION_MAP_SIZE,
   xForRegionPx,
   zForRegionPz,
 } from "./regionBackdrop";
-import { CLOUD_SPRITE_STRIDE } from "@shared/galaxyClouds";
+import { CLOUD_SPRITE_STRIDE } from "@shared/galaxySprites";
 import { regionOutlines, type RegionOutlines } from "@shared/regionBorders.js";
 import { regionIndexForCoords, regionJoinKey, type RegionMapData } from "@shared/regionMap.js";
 import type { GalaxyFindDTO, GalaxyMineDTO, GalaxyNextDTO, GalaxyRouteDTO } from "@shared/types";
+import { copyText } from "./copyText";
 import type {
   CodexMapKind,
   CodexMapRegionDTO,
@@ -89,8 +82,7 @@ import {
 } from "@shared/galaxyLayers.js";
 import { isBool, usePersistedState } from "./usePersistedState";
 import { keptValue, useKeptState } from "./useKeptState";
-import { Tooltip } from "./ui/Tooltip";
-import { G3D_HELP, G3D_TABS, G3dIcon, MenuHead } from "./galaxy3d/G3dMenu";
+import { MapTabs } from "./galaxy3d/G3dMenu";
 import {
   codexColour,
   dist,
@@ -112,13 +104,16 @@ import {
   type SpanshFindHit,
 } from "./galaxy3d/mapConstants";
 import type { MapLookups } from "./galaxy3d/pointLookup";
-import { hoverTip } from "./galaxy3d/hoverTip";
+import { createHoverStore, HoverTip } from "./galaxy3d/hoverTip";
 import { selectionPanel } from "./galaxy3d/selectionPanel";
 import { ViewMenu } from "./galaxy3d/ViewMenu";
 import { TargetsMenu } from "./galaxy3d/TargetsMenu";
 import { LayersMenu } from "./galaxy3d/LayersMenu";
 import { StatusBar } from "./galaxy3d/StatusBar";
+import { FindBox, type FindLayerHit } from "./galaxy3d/FindBox";
+import { FilterDrawer, NavRouteDrawer, SearchDrawer, StationsDrawer } from "./galaxy3d/InlineDrawers";
 import { onServerChange } from "./serverChanges";
+import { jsonOrNull } from "./http";
 
 /** The base layers (View menu); a stored copy missing a key, or with a non-boolean, is not used. */
 const BASE_LAYERS = { photo: true, borders: true, labels: true, groups: true, you: true };
@@ -162,7 +157,7 @@ export function GalaxyMap3D() {
   const [colour, setColour] = usePersistedState<Colour>("galaxy.view.colour", 0, isColour);
   const [exposure, setExposure] = usePersistedState("galaxy.view.exposure", 1.2, isExposure);
   const [layers, setLayers] = usePersistedState("galaxy.layer.base", BASE_LAYERS, isBaseLayers);
-  const [hover, setHover] = useState<HoverInfo | null>(null);
+  const hoverStore = useMemo(createHoverStore, []);
   const [selection, setSelection] = useKeptState<Selection | null>("galaxy.selection", null);
   /*
     Carriers & Stations measures from the picked system, else the ship (R4, owner 2026-10-23). A row picked in the
@@ -356,7 +351,7 @@ export function GalaxyMap3D() {
     const e = new GalaxyEngine(el, {
       tier: graphics.tier,
       onStats: setStats,
-      onHover: setHover,
+      onHover: hoverStore.set,
       onSelect: setSelection,
       onPlaneClick: (g) => {
         // The Codex mode: a click on the map picks the region under it.
@@ -452,12 +447,12 @@ export function GalaxyMap3D() {
     win.__galaxy = debugHandle;
 
     void e.load();
-    // Backdrop: the region outlines, and the drawn Milky Way (placed by the same pin as the 2D map).
-    // Each as soon as it is ready: Find's region names must not wait for the drawing.
+    // Backdrop: the region outlines, and the game's picture of the Milky Way (placed by the same pin as the 2D map).
+    // Each as soon as it is ready: Find's region names must not wait for the picture.
     void track(
       "regions",
       fetch("/api/region-map")
-        .then((r) => (r.ok ? (r.json() as Promise<RegionMapData>) : null))
+        .then(jsonOrNull<RegionMapData>)
         .catch(() => null),
     ).then((regions) => {
       if (engine.current !== e) return;
@@ -466,30 +461,31 @@ export function GalaxyMap3D() {
       e.setBackdrop(null, outlines.current);
       setRegionAnchors(outlines.current?.anchors ?? []);
     });
-    // The Milky Way as clouds in 3D (owner, 2026-10-04), fewer on the light tier.
+    // The Milky Way as clouds in 3D, made from the picture (owner, 2026-10-04 / 2026-11-12), fewer on the light tier.
     const light = graphics.tier === "light";
-    void drawnGalaxySprites(light ? { emission: 40_000, dust: 12_000 } : { emission: 140_000, dust: 40_000 })
+    void galaxyPictureSprites(light ? { emission: 40_000, dust: 12_000 } : { emission: 140_000, dust: 40_000 })
       .catch(() => null)
       .then((got) => {
         if (engine.current !== e || !got) return;
-        const f = drawnGalaxyFrame();
-        const r = galaxyImageRect(f.width, f.height);
+        // the rect from the picture itself; the clouds' frame is the smaller copy they were worked out on
+        const f = got.frame;
+        const r = galaxyImageRect(got.image.width, got.image.height);
         const rect = {
           x0: xForRegionPx(r.x),
           x1: xForRegionPx(r.x + r.width),
           zTop: zForRegionPz(REGION_MAP_SIZE - 1 - r.y),
           zBottom: zForRegionPz(REGION_MAP_SIZE - 1 - (r.y + r.height)),
         };
-        // The drawing, faint on the plane, fills the gaps between the clouds seen from above; edge-on
+        // The picture, faint on the plane, fills the gaps between the clouds seen from above; edge-on
         // the plane is a line and the clouds carry it (owner, 2026-10-04: "less patchiness").
-        if (got.image) e.setBackdrop({ url: got.image.url, ...rect }, null);
+        e.setBackdrop({ url: got.image.url, ...rect }, null);
         e.setClouds(got.sprites, { ...rect, width: f.width, height: f.height }, CLOUD_SPRITE_STRIDE);
       });
 
     // The commander's own systems (again whenever the route poll says they changed).
     loadMine.current = () =>
       fetch("/api/galaxy/mine")
-        .then((r) => (r.ok ? (r.json() as Promise<GalaxyMineDTO>) : null))
+        .then(jsonOrNull<GalaxyMineDTO>)
         .then((d) => {
           if (d && engine.current === e) setMine(new Map(d.systems.map((s) => [String(s.addr), s])));
         })
@@ -499,7 +495,13 @@ export function GalaxyMap3D() {
 
     const onResize = () => e.resize();
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") e.select(null);
+      /*
+        Only while the map is in front, and not an Escape that closes something else first (a menu, a dialog, the Find
+        list): it dropped the selection from behind other tabs too (review 2026-11-10 F6).
+      */
+      if (ev.key !== "Escape" || ev.defaultPrevented || el.clientWidth === 0) return;
+      if (ev.target instanceof Element && ev.target.closest("input, textarea, select, [role='dialog'], [role='menu']")) return;
+      e.select(null);
     };
     window.addEventListener("resize", onResize);
     window.addEventListener("keydown", onKey);
@@ -516,7 +518,7 @@ export function GalaxyMap3D() {
       e.dispose();
       pool.forEach((d) => d.remove());
     };
-  }, [graphics.tier, track, setSelection, setCodexRegion]);
+  }, [graphics.tier, track, setSelection, setCodexRegion, hoverStore]);
 
   /*
     Where the ship is and this session's jumps, while the map is in front: behind another tab it stays
@@ -529,7 +531,7 @@ export function GalaxyMap3D() {
     const tick = () => {
       if (document.hidden) return;
       fetch("/api/galaxy/route")
-        .then((r) => (r.ok ? (r.json() as Promise<GalaxyRouteDTO>) : null))
+        .then(jsonOrNull<GalaxyRouteDTO>)
         .then((d) => {
           if (!live || !d) return;
           setRoute(d);
@@ -601,7 +603,7 @@ export function GalaxyMap3D() {
       void track(
         l.label,
         fetch(`/api/galaxy/layers?kind=${l.kind}`)
-          .then((r) => (r.ok ? r.json() : null))
+          .then(jsonOrNull<GalaxyLayerDTO>)
           .then((d: GalaxyLayerDTO | null) => {
             if (d) setExtraData((prev) => ({ ...prev, [l.kind]: d }));
           })
@@ -645,7 +647,7 @@ export function GalaxyMap3D() {
     type Own = { name: string; x: number; y: number; z: number };
     const read = () =>
       void fetch("/api/galaxy/own")
-        .then((r) => (r.ok ? r.json() : null))
+        .then(jsonOrNull<{ carrier: Own | null; colonies: Own[] }>)
         .then((j: { carrier: Own | null; colonies: Own[] } | null) => {
           if (!j || engine.current !== e) return;
           const by = new Map<string, Own & { carrier: boolean; colony: boolean }>();
@@ -822,7 +824,7 @@ export function GalaxyMap3D() {
     }
     let alive = true;
     void fetch(`/api/galaxy/system?i=${selection.ordinal}`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ name?: string }>) : null))
+      .then(jsonOrNull<{ name?: string }>)
       .then((d) => {
         if (alive) setFinderAround({ name: d?.name || "Selected system", ...at });
       })
@@ -1030,7 +1032,7 @@ export function GalaxyMap3D() {
         if (live) retry = setTimeout(() => setCodexAsk((n) => n + 1), 2000);
       };
       fetch("/api/codex/regions")
-        .then((r) => (r.ok ? (r.json() as Promise<CodexMapRegionsDTO>) : null))
+        .then(jsonOrNull<CodexMapRegionsDTO>)
         .then((d) => (d ? live && setCodexRegions(d) : later()))
         .catch(later);
       return () => {
@@ -1118,7 +1120,7 @@ export function GalaxyMap3D() {
       }
       if (t) {
         try {
-          await navigator.clipboard.writeText(t.name);
+          await copyText(t.name);
           setCopied(true);
         } catch {
           setCopied(false);
@@ -1179,7 +1181,7 @@ export function GalaxyMap3D() {
     let live = true;
     const t = setTimeout(() => {
       fetch(`/api/galaxy/find?q=${encodeURIComponent(q)}`)
-        .then((r) => (r.ok ? (r.json() as Promise<GalaxyFindDTO>) : null))
+        .then(jsonOrNull<GalaxyFindDTO>)
         .then((d) => live && setFind(d))
         .catch(() => {});
     }, 250);
@@ -1204,7 +1206,7 @@ export function GalaxyMap3D() {
     for (const kind of ["ggg", "helium", "bookmarks", "guardian", "thargoid"] as const) {
       if (extraData[kind]) continue;
       void fetch(`/api/galaxy/layers?kind=${kind}`)
-        .then((r) => (r.ok ? r.json() : null))
+        .then(jsonOrNull<GalaxyLayerDTO>)
         .then((d: GalaxyLayerDTO | null) => {
           if (d) setExtraData((prev) => (prev[kind] ? prev : { ...prev, [kind]: d }));
         })
@@ -1232,7 +1234,7 @@ export function GalaxyMap3D() {
     setSpanshFind({ q, hits: [], busy: true });
     const t = setTimeout(() => {
       fetch(`/api/system/spansh-search?q=${encodeURIComponent(q)}`)
-        .then((r) => (r.ok ? (r.json() as Promise<{ systems?: SpanshFindHit[] }>) : null))
+        .then(jsonOrNull<{ systems?: SpanshFindHit[] }>)
         .then((d) => {
           if (live) setSpanshFind({ q, hits: (d?.systems ?? []).filter((h) => h.x != null), busy: false });
         })
@@ -1260,16 +1262,7 @@ export function GalaxyMap3D() {
   const findLayerHits = useMemo(() => {
     const q = findText.trim().toLowerCase();
     if (q.length < 2) return [];
-    const hits: {
-      kind: GalaxyLayerKind;
-      id: string;
-      label: string;
-      system: string;
-      what: string;
-      x: number;
-      y: number;
-      z: number;
-    }[] = [];
+    const hits: FindLayerHit[] = [];
     for (const l of GALAXY_LAYERS) {
       const d = extraData[l.kind];
       if (!d) continue;
@@ -1317,7 +1310,7 @@ export function GalaxyMap3D() {
             when the graphics card crashes at start), ticking it again may bring the 3D map back.
           </p>
           {/* In a tab, a window of its own: in place it replaced the whole app window, tabs and all (2026-10-26). */}
-          <a className="g3d-btn g3d-btn--primary" href="?screen=map" {...(inTab ? { target: "_blank", rel: "noreferrer" } : {})}>
+          <a className="g3d-btn g3d-btn--primary ui-btn ui-btn--primary ui-btn--md" href="?screen=map" {...(inTab ? { target: "_blank", rel: "noreferrer" } : {})}>
             Open the Classic map
           </a>
         </div>
@@ -1351,7 +1344,6 @@ export function GalaxyMap3D() {
     codexSystems,
     neutronHops,
   };
-  const tip = hoverTip(hover, lookups);
 
   const panel = selectionPanel(selection, {
     ...lookups,
@@ -1368,19 +1360,6 @@ export function GalaxyMap3D() {
   });
 
   const ship = route?.position;
-  // Spansh hits the map already shows (as a system or a layer point) are not offered twice.
-  const shownNames = new Set([
-    ...(find?.systems ?? []).map((s) => s.name.toLowerCase()),
-    ...findLayerHits.map((h) => h.system.toLowerCase()),
-  ]);
-  const spanshShown = spanshFind.hits.filter((h) => !shownNames.has(h.starSystem.toLowerCase())).slice(0, 6);
-  const hasFind =
-    findOpen &&
-    (findRegions.length > 0 ||
-      findLayerHits.length > 0 ||
-      spanshShown.length > 0 ||
-      spanshFind.busy ||
-      (find && (find.sectors.length || find.systems.length || (find.stations?.length ?? 0) > 0)));
 
   return (
     <div className="g3d-screen" ref={screenRef}>
@@ -1394,14 +1373,7 @@ export function GalaxyMap3D() {
       <div ref={host} className="g3d-canvas" />
       <div ref={labelLayer} className="g3d-labels" aria-hidden="true" />
 
-      {hover && tip ? (
-        <div
-          className="g3d-tip"
-          style={{ transform: `translate(${Math.round(hover.x + 16)}px, ${Math.round(hover.y - 10)}px)` }}
-        >
-          {tip}
-        </div>
-      ) : null}
+      <HoverTip store={hoverStore} lookups={lookups} />
 
       {selection ? (
         <aside className="g3d-panel" aria-label="Selected" data-testid="g3d-panel">
@@ -1425,7 +1397,7 @@ export function GalaxyMap3D() {
           <div className="g3d-panel__actions">
             <button
               type="button"
-              className="g3d-btn"
+              className="g3d-btn ui-btn ui-btn--secondary ui-btn--sm"
               onClick={() => engine.current?.flyTo(selection, selection.kind === "sector" ? 9_000 : 250)}
             >
               Centre here
@@ -1524,30 +1496,20 @@ export function GalaxyMap3D() {
       ) : null}
 
       {drawer === "stations" ? (
-        <aside
-          className="g3d-drawer g3d-menu g3d-plan g3d-stations-drawer"
-          aria-label={CARRIERS_STATIONS_TITLE}
-          data-testid="g3d-stations"
-        >
-          <MenuHead title={CARRIERS_STATIONS_TITLE} help={G3D_HELP.stations} />
-          <div className="g3d-menu__section g3d-menu__section--first">
-            <CarriersStationsTabs tab={csTab} setTab={setCsTab} />
-            <CarriersStationsBody
-              tab={csTab}
-              compact
-              from={csFrom}
-              onPick={(p: CarriersStationsPick) => {
-                const at = p.at;
-                csOwnPick.current = `${at.x.toFixed(1)},${at.y.toFixed(1)},${at.z.toFixed(1)}`;
-                if (p.kind === "carrier") extraSet.carriers(true);
-                if (p.kind === "station") extraSet.stations(true);
-                engine.current?.flyTo(at, 400);
-                if (p.kind === "station" && p.stationSys != null)
-                  engine.current?.select({ kind: "marker", layer: "x-stations", id: String(p.stationSys), ...at });
-              }}
-            />
-          </div>
-        </aside>
+        <StationsDrawer
+          tab={csTab}
+          setTab={setCsTab}
+          from={csFrom}
+          onPick={(p: CarriersStationsPick) => {
+            const at = p.at;
+            csOwnPick.current = `${at.x.toFixed(1)},${at.y.toFixed(1)},${at.z.toFixed(1)}`;
+            if (p.kind === "carrier") extraSet.carriers(true);
+            if (p.kind === "station") extraSet.stations(true);
+            engine.current?.flyTo(at, 400);
+            if (p.kind === "station" && p.stationSys != null)
+              engine.current?.select({ kind: "marker", layer: "x-stations", id: String(p.stationSys), ...at });
+          }}
+        />
       ) : null}
 
       {drawer === "jumponium" ? (
@@ -1596,36 +1558,20 @@ export function GalaxyMap3D() {
       ) : null}
 
       {drawer === "navroute" ? (
-        <aside className="g3d-drawer g3d-drawer--filter" aria-label="NavRoute" data-testid="g3d-navroute">
-          <MenuHead title="NavRoute" help={G3D_HELP.navroute} />
-          <GalaxyNavRoutePanel
-            next={route?.navRoute ?? []}
-            readRoute={readRoute}
-            onShown={setNavShown}
-            onFly={(s) => engine.current?.flyTo({ x: s.pos[0], y: s.pos[1], z: s.pos[2] }, 250)}
-          />
-        </aside>
+        <NavRouteDrawer
+          next={route?.navRoute ?? []}
+          readRoute={readRoute}
+          onShown={setNavShown}
+          onFly={(s) => engine.current?.flyTo({ x: s.pos[0], y: s.pos[1], z: s.pos[2] }, 250)}
+        />
       ) : null}
 
       {drawer === "filter" ? (
-        <aside className="g3d-drawer g3d-drawer--filter" aria-label="Filter" data-testid="g3d-filter">
-          <MenuHead title="Filter" help={G3D_HELP.filter} />
-          <GalaxyFilterPanel value={filter} onChange={setFilter} matched={filterMatched} busy={filterBusy} />
-        </aside>
+        <FilterDrawer value={filter} onChange={setFilter} matched={filterMatched} busy={filterBusy} />
       ) : null}
 
       {drawer === "search" ? (
-        <aside className="g3d-drawer g3d-drawer--search" aria-label="Search" data-testid="g3d-search">
-          <MenuHead title="Species search" help={G3D_HELP.search} />
-          <GalaxySearchPanel variant="menu" onApply={onApply} commanderRegionId={commanderRegionId} />
-          {search ? (
-            <p className="g3d-panel__note">
-              {search.label}: {search.matchedSystems.toLocaleString()} systems in{" "}
-              {search.spreadCells.toLocaleString()} sectors; the map shows one per sector (
-              {search.hits.length.toLocaleString()}).
-            </p>
-          ) : null}
-        </aside>
+        <SearchDrawer onApply={onApply} commanderRegionId={commanderRegionId} search={search} />
       ) : null}
 
       {codexOn ? (
@@ -1644,146 +1590,20 @@ export function GalaxyMap3D() {
       </Suspense>
 
       <header className="g3d-bar" ref={barRef}>
-        <nav className="g3d-tabs" aria-label="Galaxy map menus">
-          {G3D_TABS.map((t) => {
-            const on = drawer === t.key;
-            const label = t.key === "filter" && filterTicks ? `Filter (${filterTicks})` : t.label;
-            return (
-              <Tooltip key={t.key} text={t.hint}>
-                <button
-                  type="button"
-                  className={`${on ? "g3d-tab g3d-tab--on" : "g3d-tab"}${t.key === "view" && indexDue && !on ? ` ${DUE_CLASS}` : ""}`}
-                  aria-pressed={on}
-                  aria-label={label}
-                  onClick={() => openDrawer(t.key)}
-                >
-                  <G3dIcon name={t.key} />
-                  {t.key === "filter" && filterTicks ? (
-                    <span className="g3d-tab__badge">{filterTicks}</span>
-                  ) : null}
-                </button>
-              </Tooltip>
-            );
-          })}
-        </nav>
-        <div className="g3d-find g3d-find--centre">
-          <input
-            type="search"
-            className="g3d-find__input"
-            placeholder="Find a system, sector or region"
-            aria-label="Find"
-            value={findText}
-            onChange={(ev) => {
-              setFindText(ev.target.value);
-              setFindOpen(true);
-            }}
-            onFocus={() => setFindOpen(true)}
-            onKeyDown={(ev) => ev.key === "Escape" && setFindOpen(false)}
-          />
-          {hasFind ? (
-            <ul className="g3d-find__list" role="listbox" data-testid="g3d-find">
-              {findRegions.map((a) => (
-                <li key={`r${a.index}`}>
-                  <button type="button" onClick={() => go({ x: a.x, y: 0, z: a.z }, 40_000)}>
-                    <span>{a.name}</span>
-                    <em>region</em>
-                  </button>
-                </li>
-              ))}
-              {find?.sectors.map((s) => (
-                <li key={`s${s.name}`}>
-                  <button type="button" onClick={() => go(s, 12_000)}>
-                    <span>{s.name}</span>
-                    <em>sector · {formatCount(s.systems)}</em>
-                  </button>
-                </li>
-              ))}
-              {find?.systems.map((s) => (
-                <li key={`y${s.addr ?? s.ordinal}`}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      go(
-                        s,
-                        400,
-                        s.mine
-                          ? { kind: "marker", layer: "you", id: s.addr!, x: s.x, y: s.y, z: s.z }
-                          : s.plotted
-                            ? { kind: "marker", layer: "plotted", id: s.addr!, x: s.x, y: s.y, z: s.z }
-                            : { kind: "index", ordinal: s.ordinal!, x: s.x, y: s.y, z: s.z },
-                      )
-                    }
-                  >
-                    <span>{s.name}</span>
-                    <em title={s.plotted}>{s.mine ? "yours" : s.plotted ? "plotted" : "system"}</em>
-                  </button>
-                </li>
-              ))}
-              {find?.stations?.map((h) => (
-                <li key={`st${h.layerId}-${h.label}`}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      extraSet.stations(true);
-                      go(h, 400, {
-                        kind: "marker",
-                        layer: "x-stations",
-                        id: String(h.layerId),
-                        x: h.x,
-                        y: h.y,
-                        z: h.z,
-                      });
-                    }}
-                  >
-                    <span className={h.own ? "stations-own" : undefined}>{h.label}</span>
-                    <em>
-                      {h.own ? "your station" : "station"}
-                      {h.pad ? ` · ${h.pad} pad` : ""}
-                      {h.label === h.name ? ` · ${h.system}` : ""}
-                    </em>
-                  </button>
-                </li>
-              ))}
-              {findLayerHits.map((h) => (
-                <li key={`l${h.kind}${h.id}`}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      extraSet[h.kind](true);
-                      go(h, 400, { kind: "marker", layer: `x-${h.kind}`, id: h.id, x: h.x, y: h.y, z: h.z });
-                    }}
-                  >
-                    <span>{h.label}</span>
-                    <em>{h.what}</em>
-                  </button>
-                </li>
-              ))}
-              {spanshShown.map((h) => (
-                <li key={`s${h.systemAddress}`}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSpanshPicked((m) => new Map(m).set(String(h.systemAddress), h));
-                      go({ x: h.x!, y: h.y!, z: h.z! }, 400, {
-                        kind: "marker",
-                        layer: "spansh",
-                        id: String(h.systemAddress),
-                        x: h.x!,
-                        y: h.y!,
-                        z: h.z!,
-                      });
-                    }}
-                  >
-                    <span>{h.starSystem}</span>
-                    <em>Spansh</em>
-                  </button>
-                </li>
-              ))}
-              {spanshFind.busy ? <li className="g3d-find__more">Asking Spansh…</li> : null}
-              {find?.partial ? <li className="g3d-find__more">Type more of the name for the rest</li> : null}
-            </ul>
-          ) : null}
-        </div>
+        <MapTabs drawer={drawer} filterTicks={filterTicks} indexDue={indexDue} onOpen={openDrawer} />
+        <FindBox
+          findText={findText}
+          setFindText={setFindText}
+          findOpen={findOpen}
+          setFindOpen={setFindOpen}
+          find={find}
+          findRegions={findRegions}
+          findLayerHits={findLayerHits}
+          spanshFind={spanshFind}
+          setSpanshPicked={setSpanshPicked}
+          extraSet={extraSet}
+          go={go}
+        />
         <span className="g3d-title">Galaxy map</span>
       </header>
 

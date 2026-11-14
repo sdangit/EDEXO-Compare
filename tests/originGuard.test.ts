@@ -17,6 +17,21 @@ afterEach(async () => {
   for (const c of closers.splice(0)) await c();
 });
 
+describe("never through a proxy or tunnel", () => {
+  // Owner 2026-11-13: EDEXO is not to be reached through a tunnel (the Cloudflare tunnel service on this PC connects
+  // over loopback and names the real client in a header).
+  it("refuses a request a proxy relayed (the WebSocket handshake goes through the same check) and serves it without the header", async () => {
+    const port = await start();
+    const host = `127.0.0.1:${port}`;
+    for (const h of ["cf-connecting-ip", "x-forwarded-for", "forwarded", "x-real-ip", "true-client-ip"]) {
+      const r = await request(port, "GET", "/api/status", { Host: host, [h]: h === "forwarded" ? "for=203.0.113.9" : "203.0.113.9" });
+      expect(r.status, h).toBe(403);
+    }
+    expect((await request(port, "GET", "/api/status", { Host: host })).status).toBe(200);
+    expect(requestOriginIsAllowed({ headers: { host, "cf-connecting-ip": "203.0.113.9" }, socket: { remoteAddress: "127.0.0.1" } } as never, () => false, { checkOrigin: false })).toBe(false);
+  });
+});
+
 async function start() {
   const { server, listening } = createHttpServer({
     port: 0,
@@ -50,6 +65,17 @@ describe("Host and Origin", () => {
     expect(r.status).toBe(403);
     expect((await request(port, "GET", "/api/status", { Host: `127.0.0.1:${port}` })).status).toBe(200);
     expect((await request(port, "GET", "/api/status", { Host: "localhost:5173" })).status).toBe(200); // dev proxy
+  });
+
+  // Review 2026-11-10 C1: `<img src="http://127.0.0.1:7111/api/…?file=\\host\x">` on any web page is a GET
+  // the Origin test lets through. The browser says where it comes from; another site gets no API answer.
+  it("refuses an API request a page of another site sent, GETs included; same-origin, direct and script ones pass", async () => {
+    const port = await start();
+    const get = (site?: string, path = "/api/status") =>
+      request(port, "GET", path, { Host: `127.0.0.1:${port}`, ...(site ? { "Sec-Fetch-Site": site } : {}) });
+    expect((await get("cross-site")).status).toBe(403);
+    expect((await get("cross-site", "/api/feeder/import-dump/status?file=x")).status).toBe(403);
+    for (const site of ["same-origin", "none", undefined]) expect((await get(site)).status).toBe(200);
   });
 
   it("refuses a cross-site POST, and lets the app's own and Origin-less requests through", async () => {
@@ -101,6 +127,21 @@ describe("Host and Origin", () => {
     // ...but not another site's page posting from that phone.
     expect(requestOriginIsAllowed(req("203.0.113.5", "my.ddns.example:7111", "https://evil.example"), lan, o)).toBe(false);
     expect(requestOriginIsAllowed(req("192.0.2.20", "192.0.2.10:7111", "null"), lan, o)).toBe(false);
+  });
+
+  // Review 2026-11-10 C9: any page on localhost had this PC's trust, whatever its port or scheme.
+  it("takes a page of this PC as its own only on the app's port", () => {
+    const req = (host: string, origin: string, localPort = 7111) =>
+      ({ socket: { remoteAddress: "127.0.0.1", localPort }, headers: { host, origin } }) as unknown as http.IncomingMessage;
+    const none = () => false;
+    const o = { checkOrigin: true };
+    expect(requestOriginIsAllowed(req("127.0.0.1:7111", "http://127.0.0.1:7111"), none, o)).toBe(true);
+    expect(requestOriginIsAllowed(req("127.0.0.1:7111", "http://localhost:7111"), none, o)).toBe(true);
+    expect(requestOriginIsAllowed(req("127.0.0.1:7111", "http://localhost:3000"), none, o)).toBe(false);
+    expect(requestOriginIsAllowed(req("127.0.0.1:7111", "https://localhost:7111"), none, o)).toBe(true);
+    expect(requestOriginIsAllowed(req("127.0.0.1:7111", "https://localhost"), none, o)).toBe(false);
+    // The dev server proxies with its own Host: same-origin.
+    expect(requestOriginIsAllowed(req("localhost:5173", "http://localhost:5173"), none, o)).toBe(true);
   });
 });
 

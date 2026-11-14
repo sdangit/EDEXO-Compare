@@ -31,12 +31,15 @@
  * directly; nothing of it is in this repository or the installer.
  */
 import { K10_CODEX_ID } from "../shared/greenGasGiant.js";
-import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { resolveUserSettingsJsonPath } from "./paths.js";
 import { splitCsvLine } from "./edastroCarriers.js";
 import { APP_USER_AGENT } from "./appVersion.js";
 import { regionJoinKey } from "../shared/regionMap.js";
+import { writeFileAtomic } from "./atomicWrite.js";
+import { stallGuard } from "./stallGuard.js";
+import { errorText } from "./errorText.js";
 
 export const NSP_URL = "https://edastro.com/mapcharts/files/codex-data.csv";
 /** What the button says; the real figure comes from the server's Content-Length once it starts. */
@@ -374,7 +377,7 @@ export function startNspDownload(opts: { force?: boolean; fetchImpl?: typeof fet
   job.error = null;
   void downloadNsp(opts.fetchImpl ?? fetch)
     .catch((e) => {
-      job.error = e instanceof Error ? e.message : String(e);
+      job.error = errorText(e);
     })
     .finally(() => {
       job.running = false;
@@ -386,7 +389,8 @@ async function downloadNsp(fetchImpl: typeof fetch): Promise<void> {
   const prev = loadFile()?.file ?? null;
   const headers: Record<string, string> = { "User-Agent": APP_USER_AGENT };
   if (prev?.etag && prev.filterVersion === NSP_FILTER_VERSION) headers["If-None-Match"] = prev.etag;
-  const res = await fetchImpl(NSP_URL, { headers });
+  const guard = stallGuard("codex-data.csv");
+  const res = await fetchImpl(NSP_URL, { headers, signal: guard.signal });
   if (res.status === 304 && prev) {
     // Unchanged: keep the rows (read back from the file), restart the clock.
     const onDisk = JSON.parse(readFileSync(resolveNspCachePath(), "utf8")) as NspFile;
@@ -424,12 +428,14 @@ async function downloadNsp(fetchImpl: typeof fetch): Promise<void> {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    guard.touch();
     job.bytesDone += value.byteLength;
     const text = rest + decoder.decode(value, { stream: true });
     const lines = text.split("\n");
     rest = lines.pop() ?? "";
     for (const l of lines) take(l.replace(/\r$/, ""));
   }
+  guard.done();
   rest += decoder.decode();
   if (rest.trim()) take(rest.replace(/\r$/, ""));
   if (!col) throw new Error("codex-data.csv was empty");
@@ -459,9 +465,7 @@ export function edastroBioRegionIds(): { ids: ReadonlySet<string>; fetchedAtMs: 
 
 function writeNspFile(file: NspFile): void {
   const p = resolveNspCachePath();
-  const tmp = `${p}.tmp`;
-  writeFileSync(tmp, JSON.stringify(file), "utf8");
-  renameSync(tmp, p);
+  writeFileAtomic(p, JSON.stringify(file), "utf8");
   memo = null;
   checked = null;
 }
