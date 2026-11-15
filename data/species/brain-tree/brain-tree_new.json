@@ -74,11 +74,13 @@
           "Carbon Dioxide",
           "Helium",
           "Neon-rich",
-          "Argon-rich"
+          "Argon-rich",
+          "Carbon dioxide-rich"
         ],
         "matchContextNotes": [
           "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 20-1,780 K, no temperature rule; a gas giant with water-based life in 50 of 58 whole systems.",
-          "Measured 2026-10-04 (owner: no misses): of 1,022 confirmed single-species bodies, 46 have a thin atmosphere: helium 27, carbon dioxide 13, neon-rich 3, argon-rich 2, silicate vapour 1 (not listed: one body). A genus-wide airless-only gate hid every Brain Tree on such bodies; it is gone and this list says where they grow."
+          "Measured 2026-10-04 (owner: no misses): of 1,022 confirmed single-species bodies, 46 have a thin atmosphere: helium 27, carbon dioxide 13, neon-rich 3, argon-rich 2, silicate vapour 1 (not listed: one body). A genus-wide airless-only gate hid every Brain Tree on such bodies; it is gone and this list says where they grow.",
+          "-rich types added 2026-11-14 (1.4.0): Carbon dioxide-rich 4 bodies in the EDDN year (2+ bodies, never one system alone; a lone body is not enough). The list check now keeps \"-rich\" apart from the plain gas."
         ]
       }
     },
@@ -184,7 +186,7 @@
       "conditions": {
         "temperature_K": {
           "min": 100,
-          "max": 220
+          "max": 255
         },
         "requires_system_bodies": true,
         "planet_types": [
@@ -198,7 +200,8 @@
           "Helium"
         ],
         "matchContextNotes": [
-          "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 101-219 K."
+          "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 101-219 K.",
+          "Temperature ceiling 220 → 255 K (1.4.0, 2026-11-15): 9 of its 366 bodies in the EDDN year lie at 226-254 K, each in its own system (7 airless, 2 thin sulphur dioxide), a thin tail of 2-3 bodies every 5 K from 190 K with no pile-up at 220."
         ]
       }
     },
@@ -228,11 +231,13 @@
           "Argon",
           "Oxygen",
           "Water",
-          "Water-rich"
+          "Water-rich",
+          "Carbon dioxide-rich"
         ],
         "matchContextNotes": [
           "Measured 2026-09-28 on Spansh dump single-species bodies and Bioforge: airless or thin (sulphur dioxide, carbon dioxide, helium); 200-500 K; companion rule off (about 30 of 313 whole systems).",
-          "Measured 2026-10-04 (owner: no misses): of 2,558 confirmed single-species bodies, 252 have a thin atmosphere: carbon dioxide 194 (5 of them carbon-dioxide-rich), sulphur dioxide 38, argon-rich 8, oxygen 4, argon 1, water 1, water-rich 1. A genus-wide airless-only gate hid every Brain Tree on such bodies; it is gone and this list says where they grow."
+          "Measured 2026-10-04 (owner: no misses): of 2,558 confirmed single-species bodies, 252 have a thin atmosphere: carbon dioxide 194 (5 of them carbon-dioxide-rich), sulphur dioxide 38, argon-rich 8, oxygen 4, argon 1, water 1, water-rich 1. A genus-wide airless-only gate hid every Brain Tree on such bodies; it is gone and this list says where they grow.",
+          "-rich types added 2026-11-14 (1.4.0): Carbon dioxide-rich 14 bodies in the EDDN year (2+ bodies, never one system alone; a lone body is not enough). The list check now keeps \"-rich\" apart from the plain gas."
         ]
       }
     }
