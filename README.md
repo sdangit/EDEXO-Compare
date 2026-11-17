@@ -28,8 +28,8 @@ Windows; everything the app saves lives in `%LOCALAPPDATA%\ED Exo Compare\`.
 
 |                                                                                                                |                                                                       |
 | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **[Portable — one file](https://github.com/bahuckel/EDEXO/releases/download/v1.3.9/EDExoCompare.exe)** | Download and run. Unpacks itself somewhere temporary each time.       |
-| **[Program folder — .zip](https://github.com/bahuckel/EDEXO/releases/tag/v1.3.9-zip)**                 | Extract and keep. Starts faster, and includes the two console builds. |
+| **[Portable — one file](https://github.com/bahuckel/EDEXO/releases/download/v1.4.0/EDExoCompare.exe)** | Download and run. Unpacks itself somewhere temporary each time.       |
+| **[Program folder — .zip](https://github.com/bahuckel/EDEXO/releases/tag/v1.4.0-zip)**                 | Extract and keep. Starts faster, and includes the two console builds. |
 
 Both are the same version and the same code — [all releases](https://github.com/bahuckel/EDEXO/releases).
 
@@ -52,10 +52,10 @@ saying what worked and what did not — distro, desktop, X11 or Wayland — is t
 
 |                                                                                                                                         |                                                                                          |
 | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **[AppImage — launcher + HUD](https://github.com/bahuckel/EDEXO/releases/download/v1.3.9-zip/EDExoCompare-1.3.9-x86_64.AppImage)** | The same app as on Windows: launcher window, tray, HUD overlays. One file, x86_64.       |
-| **[Browser build — .tar.gz](https://github.com/bahuckel/EDEXO/releases/download/v1.3.9-zip/EDExoCompare-1.3.9-linux-x64.tar.gz)** | No Electron. The app and the HUD pages open in your browser. For anything the AppImage cannot run on. |
+| **[AppImage — launcher + HUD](https://github.com/bahuckel/EDEXO/releases/download/v1.4.0-zip/EDExoCompare-1.4.0-x86_64.AppImage)** | The same app as on Windows: launcher window, tray, HUD overlays. One file, x86_64.       |
+| **[Browser build — .tar.gz](https://github.com/bahuckel/EDEXO/releases/download/v1.4.0-zip/EDExoCompare-1.4.0-linux-x64.tar.gz)** | No Electron. The app and the HUD pages open in your browser. For anything the AppImage cannot run on. |
 
-**AppImage:** `chmod +x EDExoCompare-1.3.9-x86_64.AppImage`, then run it. It needs FUSE 2:
+**AppImage:** `chmod +x EDExoCompare-1.4.0-x86_64.AppImage`, then run it. It needs FUSE 2:
 
 | Distro                                           | Command                                |
 | ------------------------------------------------ | -------------------------------------- |
@@ -66,7 +66,7 @@ saying what worked and what did not — distro, desktop, X11 or Wayland — is t
 | openSUSE                                         | `sudo zypper install libfuse2`         |
 | Arch, CachyOS, Manjaro                           | `sudo pacman -S --needed fuse2`        |
 
-Without FUSE, `./EDExoCompare-1.3.9-x86_64.AppImage --appimage-extract-and-run` works too.
+Without FUSE, `./EDExoCompare-1.4.0-x86_64.AppImage --appimage-extract-and-run` works too.
 
 On start the launcher checks your desktop and lists anything the HUD needs that is missing, with the
 install command for your distro: XWayland on a Wayland session, a compositor on a bare window
@@ -78,13 +78,13 @@ and starts again by itself; tick it to try the graphics card again later. If it 
 once with the graphics card off:
 
 ```bash
-./EDExoCompare-1.3.9-x86_64.AppImage --disable-gpu --disable-gpu-sandbox
+./EDExoCompare-1.4.0-x86_64.AppImage --disable-gpu --disable-gpu-sandbox
 ```
 
 or set `EDEXO_SAFE_GRAPHICS=1` to keep it off. Without the graphics card the 3D galaxy map draws in
 software (slower); the Classic map is unaffected.
 
-**Browser build:** `tar xzf EDExoCompare-1.3.9-linux-x64.tar.gz`, then `./edexo-client.sh` in the
+**Browser build:** `tar xzf EDExoCompare-1.4.0-linux-x64.tar.gz`, then `./edexo-client.sh` in the
 folder it makes. Its `README.txt` has the rest.
 
 **Both:** the journals are found inside the game's Proton or Wine prefix — every Steam library
@@ -108,8 +108,8 @@ sampling run per genus.
 It is built from how often a species has actually been recorded at this gravity, temperature,
 pressure, planet class, atmosphere and host star, weighted by how common it is, and normalised
 across the body's candidates, then weighed against how often each genus turns up on bodies like this
-one. Checked on 14,560 bodies other commanders logged on EDDN, where every species on the body is known:
-rows it calls 90–100 % turn up 98.9 % of the time, rows under 10 % 6.0 %.
+one. Checked on 372,812 bodies other commanders logged on EDDN, where every species on the body is known
+(1.4.0, before a DSS): rows it calls 90–100 % turn up 99.1 % of the time, rows under 10 % 3.5 %.
 
 **Which species, once you have mapped it.** After a DSS names the genus, the same posterior
 renormalises inside that genus to say which of its species you are looking at.
@@ -348,10 +348,12 @@ same way: rules say where a species can grow, and records of where it has grown 
   volcanism, star — were written for this app and are corrected by what has actually been found.
   Where a rule and the records disagree on a species seen often enough, **observation wins**.
 - **The species profiles** (how often each species is found at each temperature, gravity, pressure and
-  so on) are built, since 1.4.0, from every confirmed sighting in a year of EDDN — 2,081,985 bodies, each
+  so on) are built, since 1.4.0, from every confirmed sighting in a year of EDDN — 2,065,004 bodies, each
   species logged on the exact body by a codex entry, a composition scan or an organic sample, from the
-  EDGalaxyData archive — with up to 5,000 bodies per species chosen to cover its whole range, and every
-  body for species seen fewer than 1,000 times. A lone find never sets a range.
+  EDGalaxyData archive, plus the older sightings it lacked, plus — for Bark Mounds, Amphora Plant and
+  Crystalline Shards, each the only species of its genus — every body Spansh's galaxy dump lists with
+  that genus: 4,215,072 species-on-body sightings in the profiles; only finds without a body record and lone outliers are left out. A lone
+  find never sets a range (`data/exomastery/outlier-register.json` lists each one).
 - **What grows on a body of this kind** (planet class, atmosphere, volcanism, temperature band) is counted
   on 1.79 million of those finds, on bodies where every genus was sampled.
 - **How often each genus is on a body like this one** — by planet type, signal count, atmosphere,
@@ -370,7 +372,7 @@ No number reaches the screen as a percentage unless it has been checked against 
 Every candidate carries a **Chance here** figure — how often a species with this profile turns out to
 actually be on a body like this one. It is the one percentage in the app that has been calibrated
 against real outcomes: on 372,812 EDDN bodies where every species is known (1.4.0), the 90-100 % band
-comes in at 98.9 % and the 0-10 % band at 3.5 % before a DSS.
+comes in at 99.1 % and the 0-10 % band at 3.5 % before a DSS.
 
 Candidates below **1 %** are moved behind _show unlikely_ rather than listed. The rule is no misses
 first: a list of three where one is right beats a list of one that is wrong. The floor was 5 % until
