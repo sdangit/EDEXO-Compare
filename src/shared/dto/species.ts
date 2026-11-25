@@ -39,6 +39,11 @@ export interface SpeciesMatchContext {
    */
   hostStarClasses?: string[];
   /**
+   * The same set before the brightest-star override: the star (or stars) the body orbits. Read by host gates judged
+   * on the orbit (`judgedOn: "orbit"`, Crystalline Shards).
+   */
+  orbitalHostStarClasses?: string[];
+  /**
    * Journal star types of every star that could colour this body (the stars behind {@link hostStarClasses}, before
    * the brightest-star override), as the journal writes them — "A" and "AeBe" kept apart. Read by the Stratum
    * colour rule in matchSpecies (owner, 2026-10-16).
@@ -711,6 +716,11 @@ export interface SpeciesMatch {
    * Small counts mean the habitat signal is weak, not that the habitat is wrong.
    */
   exomasteryProfileSampleCount?: number | null;
+  /**
+   * The colour whose own profile the habitat figures were read from (the chance stays on the species): the predicted colour, when it has
+   * a profile of enough bodies (server/colourProfiles.ts). Absent when they are the whole species'.
+   */
+  exomasteryProfileColour?: string;
   /**
    * Profile present, habitat quality exactly 0, and enough samples for that to mean something:
    * the body does not resemble anywhere this species has been observed. The candidate is still

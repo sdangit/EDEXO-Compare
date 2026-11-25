@@ -84,6 +84,7 @@ export const ROUTE_REACH: Readonly<Record<string, RouteReach>> = {
   // routes/expeditionRoutes.ts
   "GET /api/expedition/field": "lan",
   "GET /api/expedition/targets": "lan",
+  "GET /api/expedition/hunt": "lan",
   "GET /api/expedition/ends": "lan",
   "GET /api/expedition/plan": "lan",
   "GET /api/expedition/boxel": "lan",
@@ -151,6 +152,7 @@ export const ROUTE_REACH: Readonly<Record<string, RouteReach>> = {
   "GET /api/match-detail": "lan",
   "GET /api/state": "lan",
   "GET /api/foot-scanned": "lan",
+  "GET /api/journal-systems": "lan",
   // routes/serverStatusRoutes.ts
   "GET /api/elite-server-status/orerve": "lan",
   "GET /api/elite-server-status/edsm": "lan",
@@ -178,7 +180,8 @@ export const ROUTE_REACH: Readonly<Record<string, RouteReach>> = {
   "POST /api/feeder/import-dump": "pc",
   "GET /api/feeder/import-dump/status": "pc",
   // routes/settingsRoutes.ts
-  "POST /api/settings/hud-prefs": "lan",
+  // Only the PC's launcher sends it, and the PC's screen marker starts its pitch and distance readers from it.
+  "POST /api/settings/hud-prefs": "pc",
   "POST /api/settings/poll-rates": "lan",
   "GET /api/settings/collection-focus": "lan",
   "POST /api/settings/collection-focus": "lan",

@@ -40,6 +40,11 @@ export interface ExpeditionBoxelDTO {
    */
   matches?: number;
   matchesPerJump?: number;
+  /**
+   * A whole-galaxy hunt's boxel looked up on Spansh (plan-1.4.0 §6.2): the systems it knows there and how many of
+   * them already hold the target (absent when a look-up cannot tell). `matches` is after both.
+   */
+  spansh?: { known: number; found?: number; fetchedAt: string };
   /** On a route (plan 5.2): the detour of going by it, its distance from the line, and how far along (0-1). */
   detourLy?: number;
   offLy?: number;
@@ -73,6 +78,13 @@ export interface ExpeditionFieldDTO {
   /** A route's end and corridor, or null for a sphere. */
   to?: { x: number; y: number; z: number } | null;
   widthLy?: number | null;
+  /** A whole-galaxy hunt (plan-1.4.0 §6.2) and the mass codes it listed; absent for a sphere or a route. */
+  galaxy?: boolean;
+  codes?: string[];
+  /** A whole-galaxy hunt for bodies, stars or worth: the mass codes where it is commonest of all (the list may hold none of them). */
+  commonestCodes?: string[];
+  /** A whole-galaxy hunt's Spansh look-ups of its nearest boxels: still to come, and finished since it was asked. */
+  lookups?: { queued: number; done: number };
   /** The species' position rule, or null when it has none (or no species is picked). */
   rule: ExpeditionRuleDTO | null;
   boxels: ExpeditionBoxelDTO[];

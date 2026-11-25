@@ -4,11 +4,19 @@
 */
 import { localOnly, requestIsFromThisPc } from "../lanAuth.js";
 import { boxelSystems, boxelTable, previousBoxelsPage, type SystemStats } from "../boxel.js";
-import { parseBoxel, type SavedBoxelDTO } from "../../shared/boxel.js";
+import { boxelIndexOf, parseBoxel, type SavedBoxelDTO } from "../../shared/boxel.js";
 import { shortestBoxelOrder } from "../../shared/boxelOrder.js";
-import { boxelPositions, setBoxelLookupSource } from "../boxelPositions.js";
+import {
+  boxelPositionSet,
+  setBoxelFlownSource,
+  setBoxelLookupSource,
+  setBoxelSectorSource,
+} from "../boxelPositions.js";
+import type { Vec3 } from "../../shared/boxelOrder.js";
 import { createBoxelLookups } from "../boxelLookup.js";
-import { boxelJournalFacts, notableBodiesForSystem, systemBodyTally } from "../snapshotSystemInfo.js";
+import { setGalaxyHuntLookupService } from "../galaxyHuntLookups.js";
+import { arrivalStarScan, boxelJournalFacts, notableBodiesForSystem, systemBodyTally } from "../snapshotSystemInfo.js";
+import { boxelArrivalScans, boxelStarSet } from "../boxelStars.js";
 import type { GameStateStore } from "../gameState.js";
 import { getCachedSpeciesDatabase } from "../snapshot.js";
 import path from "node:path";
@@ -17,6 +25,7 @@ import { tileIndex, tileIndexAsync } from "../galaxyTiles.js";
 import { touchGalaxyMemory } from "../galaxyMemory.js";
 import { loadSystemTraits, loadSystemTraitsAsync } from "../galaxyTraits.js";
 import { navRouteLog } from "../navRouteLog.js";
+import { loadSectorNames } from "../expedition.js";
 import type { HttpServerOptions, RouteContext } from "../httpServerTypes.js";
 import { resolveCommanderDataDir } from "../paths.js";
 
@@ -31,7 +40,7 @@ function boxelStats(store: GameStateStore): SystemStats {
 export function registerBoxelRoutes(
   app: express.Express,
   opts: HttpServerOptions,
-  _ctx: RouteContext,
+  ctx: RouteContext,
 ): void {
   /*
     One boxel (shared/boxel.ts): `?name=` any system in it (or the boxel with a trailing "-"), `?end=`
@@ -98,6 +107,52 @@ export function registerBoxelRoutes(
     },
   });
   setBoxelLookupSource((prefix) => lookups.get(prefix));
+  // The whole-galaxy hunt looks up its nearest boxels with it too (server/galaxyHuntLookups.ts).
+  setGalaxyHuntLookupService(lookups);
+  /*
+    A generated sector's name → its place on the 1,280 ly grid, for the predicted positions
+    (shared/stellarPlacement.ts). Read on the first question; a name two cells share answers nothing.
+  */
+  let sectorCells: Map<string, readonly [number, number, number] | null> | null = null;
+  setBoxelSectorSource((sector) => {
+    if (!sectorCells) {
+      sectorCells = new Map();
+      try {
+        for (const [cell, { name }] of loadSectorNames(ctx.root).byCell) {
+          const k = name.toLowerCase();
+          const [x, y, z] = cell.split(",").map(Number) as [number, number, number];
+          sectorCells.set(k, sectorCells.has(k) ? null : [x, y, z]);
+        }
+      } catch {
+        // No sector table in this build: positions are predicted only where an address is known.
+      }
+    }
+    return sectorCells.get(sector.toLowerCase()) ?? null;
+  });
+  /*
+    The systems he has flown, by boxel, with the journals' own positions: seen positions for the predictions
+    (server/boxelPositions.ts). Built once per journal store and again when a system is added.
+  */
+  let flown: { store: GameStateStore; size: number; by: Map<string, { n: number; address: number; pos: Vec3 }[]> } | null =
+    null;
+  setBoxelFlownSource((prefix) => {
+    const store = opts.getJournalStore?.() ?? null;
+    if (!store) return [];
+    if (!flown || flown.store !== store || flown.size !== store.visitedSystems.size) {
+      const by = new Map<string, { n: number; address: number; pos: Vec3 }[]>();
+      for (const [address, name] of store.visitedSystems) {
+        const p = store.systemPositions.get(address);
+        const b = p ? parseBoxel(name) : null;
+        if (!b || b.index == null) continue;
+        const k = b.prefix.toLowerCase();
+        let list = by.get(k);
+        if (!list) by.set(k, (list = []));
+        list.push({ n: b.index, address, pos: [p!.x, p!.y, p!.z] });
+      }
+      flown = { store, size: store.visitedSystems.size, by };
+    }
+    return flown.by.get(prefix.toLowerCase()) ?? [];
+  });
   /*
     Systems known to exist without being flown (auto-boxel detector, owner 2026-10-06): every route he
     plotted (the NavRoute finder) and every system he targeted in the galaxy map (journals' FSDTarget,
@@ -127,16 +182,53 @@ export function registerBoxelRoutes(
     );
     return { ok: true, items: items.map((b) => (b.shortest ? withOrder(b, store) : b)), autoCopyNext: opts.savedBoxels!.autoCopyNext() };
   };
+  /** Where he is, as a seen position for the boxel he is in (server/boxelPositions.ts). */
+  const hereOf = (store: GameStateStore | null) => {
+    const p = store?.commanderPos;
+    return p && store?.currentSystem ? { name: store.currentSystem, pos: [p.x, p.y, p.z] as const } : null;
+  };
   /** A boxel flown in the shortest order (shared/boxelOrder.ts): what is left in that order, and its next system. */
   const withOrder = (b: SavedBoxelDTO, store: GameStateStore | null): SavedBoxelDTO => {
     const r = opts.savedBoxels!.remaining(b.id, store ? store.visitedSystems.entries() : [], sightings(store), store?.currentSystem ?? null);
     if (!r) return b;
     const p = store?.commanderPos;
-    const o = shortestBoxelOrder(r.todo, boxelPositions(b.prefix), p ? [p.x, p.y, p.z] : null);
+    const at = p ? ([p.x, p.y, p.z] as const) : null;
+    const where = boxelPositionSet(b.prefix, r.end, hereOf(store));
+    const o = shortestBoxelOrder(r.todo, where.positions, at);
+    const predicted = o.order.slice(0, o.placed).filter((n) => where.predicted.has(n)).length;
+    /*
+      The star each stop's address predicts (server/boxelStars.ts), sharpened by his scans of the boxel's arrival
+      stars; left out where a route he plotted, a target he set or a Spansh look-up already names the star.
+    */
+    const stars = store
+      ? boxelStarSet(
+          b.prefix,
+          r.end,
+          hereOf(store),
+          boxelArrivalScans(b.prefix, store.visitedSystems.entries(), (addr) => arrivalStarScan(store, addr)),
+        )?.stars
+      : null;
+    const named = new Set<number>();
+    if (stars) {
+      for (const s of sightings(store)) {
+        const n = s.starClass?.trim() ? boxelIndexOf(s.name, b.prefix) : null;
+        if (n != null) named.add(n);
+      }
+      for (const [k, f] of Object.entries(lookups.get(b.prefix)?.systems ?? {})) if (f.mainStar) named.add(Number(k));
+    }
+    const starOf = (n: number) => (named.has(n) ? undefined : stars?.get(n));
     return {
       ...b,
-      order: o.order.map((n, i) => ({ n, ly: o.legs[i] ?? null })),
+      order: o.order.map((n, i) => ({
+        n,
+        ly: o.legs[i] ?? null,
+        ...(where.predicted.has(n) ? { predicted: true } : {}),
+        ...(starOf(n) ? { star: starOf(n) } : {}),
+      })),
       placed: o.placed,
+      ...(predicted && where.exact != null
+        ? { predicted, predictedExact: where.exact, predictedChecked: where.checked }
+        : {}),
       orderLy: o.orderLy,
       numericLy: o.numericLy,
       // No position known: next in line as before; nothing left: the probe past the end, as the run takes it.
@@ -215,6 +307,8 @@ export function registerBoxelRoutes(
         visitedAt: (addr) => store?.systemVisitedAt.get(addr) ?? null,
         lookup: (prefix) => lookups.get(prefix),
         routed: sightings(store),
+        arrival: store ? (addr) => arrivalStarScan(store, addr) : undefined,
+        stars: (b, scans) => boxelStarSet(b.prefix, b.end, hereOf(store), scans)?.stars ?? null,
       }),
     });
   });
@@ -280,6 +374,12 @@ export function registerBoxelRoutes(
     // The cut drops systems: a delete, which the phone rule keeps on this PC (review 2026-11-10 C3).
     if (typeof body.cutFrom === "number" && !requestIsFromThisPc(req))
       return void res.status(403).json({ ok: false, error: "Systems are cut from a boxel on the PC running the app." });
+    // `lastIs` below the end drops the systems after it the same way; the probe's button only ever sends the end.
+    if (typeof body.lastIs === "number" && !requestIsFromThisPc(req)) {
+      const endNow = opts.savedBoxels.list([]).find((x) => x.id === id)?.end;
+      if (endNow != null && body.lastIs < endNow)
+        return void res.status(403).json({ ok: false, error: "Systems are cut from a boxel on the PC running the app." });
+    }
     if (typeof body.cutFrom === "number") done = opts.savedBoxels.cutFrom(id, body.cutFrom);
     else if (typeof body.skip === "number")
       done = opts.savedBoxels.setSkipped(id, body.skip, body.on !== false);
