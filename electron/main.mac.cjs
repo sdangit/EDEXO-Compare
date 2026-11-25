@@ -104,6 +104,8 @@ else {
       await launcher.loadURL(`${base}/launcher.html`);
     })
     .catch((error) => {
+      // Quitting destroys the launcher window and can reject its pending loadURL.
+      if (quitting) return;
       dialog.showErrorBox("ED Exo Compare — startup failed", String(error?.stack || error));
       app.quit();
     });

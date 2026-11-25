@@ -8,12 +8,12 @@ type Sender = { sender: EventEmitter };
 type Handler = (event: Sender, options?: Record<string, unknown>) => unknown;
 
 // Execute the real shell with fake Electron surfaces: exercise lifecycle and IPC without a GUI.
-async function boot({ packaged = true, lock = true } = {}) {
+async function boot({ packaged = true, lock = true, navigation = Promise.resolve() } = {}) {
   const handlers = new Map<string, Handler>();
   const windows: FakeWindow[] = [];
   class FakeWindow {
     webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler: vi.fn() });
-    loadURL = vi.fn(async () => {});
+    loadURL = vi.fn(() => navigation);
     show = vi.fn();
     focus = vi.fn();
     restore = vi.fn();
@@ -212,6 +212,19 @@ describe("macOS Electron shell", () => {
     );
     h.app.emit("before-quit", { preventDefault: vi.fn() });
     expect(h.runtime.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("handles launcher load failure with shutdown in progress: %s", async (quitting) => {
+    let failLoad!: (error: Error) => void;
+    const navigation = new Promise<void>((_, reject) => {
+      failLoad = reject;
+    });
+    const h = await boot({ navigation });
+    if (quitting) h.app.emit("before-quit", { preventDefault: vi.fn() });
+    failLoad(new Error("ERR_FAILED loading launcher.html"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(h.dialog.showErrorBox).toHaveBeenCalledTimes(quitting ? 0 : 1);
+    expect(h.app.quit).toHaveBeenCalledOnce();
   });
 
   it("quits when all windows close", async () => {
